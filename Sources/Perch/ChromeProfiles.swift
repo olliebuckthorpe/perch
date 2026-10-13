@@ -66,12 +66,18 @@ struct ChromeProfile: Identifiable {
             if !AXIsProcessTrusted() { Self.log("jump to \(name): Perch is not allowed under Accessibility, opening a new window") }
             if jumpToExistingWindow() { return }
         }
-        var args = ["-na", "Google Chrome", "--args", "--profile-directory=\(id)"]
-        if let url { args.append(url.absoluteString) }
+        // Run Chrome's own program directly. It passes the request to the Chrome that is already
+        // open and exits in under half a second. Going through `open -n` instead starts a whole
+        // second copy of Chrome first, which is what bounced in the Dock for seconds.
+        let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome")
+            ?? URL(fileURLWithPath: "/Applications/Google Chrome.app")
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = args
+        p.executableURL = chrome.appendingPathComponent("Contents/MacOS/Google Chrome")
+        p.arguments = ["--profile-directory=\(id)"] + (url.map { [$0.absoluteString] } ?? [])
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
         try? p.run()
+        NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").first?.activate()
     }
 
     static var canJump: Bool { AXIsProcessTrusted() }

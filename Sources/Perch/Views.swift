@@ -747,7 +747,6 @@ private struct ProfileAvatar: View {
             } else if let picture {
                 Image(nsImage: picture).resizable().aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size).clipShape(Circle())
-                    .overlay(Circle().strokeBorder(tint, lineWidth: max(1.5, size * 0.09)))
             } else {
                 Text(initial).font(.system(size: size * 0.5, weight: .bold)).foregroundStyle(.black.opacity(0.8))
                     .frame(width: size, height: size).background(tint, in: Circle())
