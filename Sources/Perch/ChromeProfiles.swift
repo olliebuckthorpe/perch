@@ -6,6 +6,8 @@ struct ChromeProfile: Identifiable {
     let id: String        // Chrome's folder name for it, e.g. "Profile 3"
     let name: String
     let email: String
+    /// The Google account's display name, which Chrome puts in its Profiles menu next to the profile name.
+    let account: String
     let lastUsed: Double
 
     static func all() -> [ChromeProfile] {
@@ -17,6 +19,7 @@ struct ChromeProfile: Identifiable {
         let order = profile["profiles_order"] as? [String] ?? []
         return cache.map { dir, info in
             ChromeProfile(id: dir, name: info["name"] as? String ?? dir, email: info["user_name"] as? String ?? "",
+                          account: info["gaia_name"] as? String ?? "",
                           lastUsed: info["active_time"] as? Double ?? 0)
         }.sorted {
             // Chrome's own order when it has one, otherwise most recently used first.
@@ -29,7 +32,10 @@ struct ChromeProfile: Identifiable {
     /// Takes you to this profile: the window it already has open if there is one, otherwise a new
     /// one. With a `url`, opens that link in the profile.
     func open(_ url: URL? = nil) {
-        if url == nil, jumpToExistingWindow() { return }
+        if url == nil {
+            if !AXIsProcessTrusted() { Self.log("jump to \(name): Perch is not allowed under Accessibility, opening a new window") }
+            if jumpToExistingWindow() { return }
+        }
         var args = ["-na", "Google Chrome", "--args", "--profile-directory=\(id)"]
         if let url { args.append(url.absoluteString) }
         let p = Process()
@@ -67,15 +73,43 @@ struct ChromeProfile: Identifiable {
         guard let bar, CFGetTypeID(bar) == AXUIElementGetTypeID() else { return false }
         let menuBar = bar as! AXUIElement
         guard let profilesMenu = children(menuBar).first(where: { title($0) == "Profiles" }),
-              let menu = children(profilesMenu).first else { return false }
-        // Two profiles can share a name; Chrome lists them in the same order it gave us.
-        let twins = ChromeProfile.all().filter { $0.name == name }
-        let position = twins.firstIndex { $0.id == id } ?? 0
-        let matches = children(menu).filter { title($0) == name || title($0).hasPrefix("\(name) (") }
-        guard matches.indices.contains(position) else { return false }
-        guard AXUIElementPerformAction(matches[position], kAXPressAction as CFString) == .success else { return false }
+              let menu = children(profilesMenu).first else {
+            Self.log("jump to \(name): no Profiles menu found; menu bar = \(children(menuBar).map(title))")
+            return false
+        }
+        // Chrome writes a signed-in profile as "Account Name (Profile Name)" and a local one as
+        // just its name, so accept either shape.
+        let titles = children(menu).map(title)
+        var matches = children(menu).filter { item in
+            let t = title(item)
+            return t == name || t.hasSuffix("(\(name))") || t.hasPrefix("\(name) (")
+        }
+        // Two profiles can share a name: tell them apart by the account, then by Chrome's order.
+        if matches.count > 1, !account.isEmpty {
+            let exact = matches.filter { title($0).contains(account) }
+            if !exact.isEmpty { matches = exact }
+        }
+        let twins = ChromeProfile.all().filter { $0.name == name && $0.account == account }
+        let position = min(twins.firstIndex { $0.id == id } ?? 0, max(0, matches.count - 1))
+        let pressed = matches.indices.contains(position)
+            && AXUIElementPerformAction(matches[position], kAXPressAction as CFString) == .success
+        Self.log("jump to \(name) [\(id)]: menu = \(titles) | matched \(matches.map(title)) | pressed \(pressed)")
+        guard pressed else { return false }
         chrome.activate()
         return true
+    }
+
+    /// A short record of the last few jumps, for working out why one went to the wrong place.
+    static func log(_ line: String) {
+        let path = "\(Shell.home)/.perch/chrome-jump.log"
+        let entry = "\(Date()) \(line)\n"
+        if let handle = FileHandle(forWritingAtPath: path) {
+            _ = try? handle.seekToEnd()
+            handle.write(Data(entry.utf8))
+            try? handle.close()
+        } else {
+            try? entry.write(toFile: path, atomically: true, encoding: .utf8)
+        }
     }
 
     /// A web link sitting on the clipboard, if there is one.
