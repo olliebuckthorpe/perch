@@ -11,6 +11,8 @@ struct TaskItem: Identifiable, Equatable {
     /// Which part of life or work it belongs to: Upshow, Pipeline Engine, Personal or Uni.
     var area: String?
     var url: String?
+    /// When the card was made. Notion's API gives this as an ISO date, which sorts as text.
+    var created = ""
 }
 
 /// The user's Notion to-do list: the same cards as "Jonny's board" (not done, not Ollie's),
@@ -83,7 +85,7 @@ final class NotionTasks {
         ]]
         let body: [String: Any] = [
             "filter": filter, "page_size": 100,
-            "sorts": [["property": "Due date", "direction": "ascending"]],
+            "sorts": [["property": "Due date", "direction": "ascending"], ["timestamp": "created_time", "direction": "ascending"]],
         ]
         call("POST", "databases/\(Self.database)/query", body) { [weak self] json, error in
             guard let self else { return }
@@ -94,7 +96,16 @@ final class NotionTasks {
                 return
             }
             self.problem = nil
-            self.tasks = rows.compactMap(Self.item)
+            // The board's own order: soonest due first, cards with no date after all the dated
+            // ones, and ties (or no date at all) in the order the cards were made.
+            self.tasks = rows.compactMap(Self.item).sorted { a, b in
+                switch (a.due, b.due) {
+                case let (x?, y?) where x != y: return x < y
+                case (_?, nil): return true
+                case (nil, _?): return false
+                default: return a.created < b.created
+                }
+            }
         }
     }
 
@@ -114,7 +125,7 @@ final class NotionTasks {
         let start = (((props["Due date"] as? [String: Any])?["date"] as? [String: Any])?["start"] as? String).map { String($0.prefix(10)) }
         return TaskItem(id: id, name: title, column: select("Column") ?? "My to-dos",
                         due: start.flatMap { day.date(from: $0) }, priority: select("Priority"), area: select("Area"),
-                        url: row["url"] as? String)
+                        url: row["url"] as? String, created: row["created_time"] as? String ?? "")
     }
 
     /// Ticks a card off: moves it to Done on the board, exactly as dragging it there would.
