@@ -956,6 +956,8 @@ private struct NewChatView: View {
 private struct ChatView: View {
     let agent: Agent
     @Environment(NotchUI.self) private var ui
+    /// How many of the most recent messages are drawn.
+    @State private var shown = 10
     /// Rests the view on the newest message, by its top edge: a long reply is read from its
     /// first line, and anything shorter simply sits at the bottom of the chat.
     private func settle(_ proxy: ScrollViewProxy) {
@@ -983,6 +985,10 @@ private struct ChatView: View {
                     // Not lazy: every message has to exist for the view to be able to come to
                     // rest on the newest one, and a chat is only a few dozen messages.
                     VStack(alignment: .leading, spacing: 10) {
+                        if messages.count > shown {
+                            Button("Show earlier messages") { shown += 20 }
+                                .buttonStyle(LinkButton()).frame(maxWidth: .infinity)
+                        }
                         ForEach(items) { item in
                             Group {
                                 if item.peers.isEmpty, let message = item.message {
@@ -1062,7 +1068,9 @@ private struct ChatView: View {
 
     private var items: [Item] {
         var out: [Item] = []
-        for message in messages {
+        // Drawing a whole long conversation is what made the island slow to open, so only the
+        // recent part is laid out until earlier messages are asked for.
+        for message in messages.suffix(shown) {
             if message.peerName != nil {
                 if let last = out.indices.last, !out[last].peers.isEmpty {
                     out[last].peers.append(message)
@@ -1450,9 +1458,16 @@ private struct MessageBody: View {
         return out
     }
 
+    private static var formatted: [String: AttributedString] = [:]
+
+    /// Formatting is worked out once per piece of text and kept, so reopening a chat is cheap.
     private static func inline(_ s: String) -> AttributedString {
+        if let done = formatted[s] { return done }
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+        let result = (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+        if formatted.count > 600 { formatted.removeAll() }
+        formatted[s] = result
+        return result
     }
 
     var body: some View {
