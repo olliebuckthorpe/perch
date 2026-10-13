@@ -8,7 +8,8 @@ swift build -c release -j 4
 APP="$HOME/Applications/Perch.app"
 pkill -x Perch 2>/dev/null || true
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp bridge/grok-bridge.mjs "$APP/Contents/Resources/grok-bridge.mjs"
 cp .build/release/Perch "$APP/Contents/MacOS/Perch"
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>

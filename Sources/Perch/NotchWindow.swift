@@ -280,6 +280,11 @@ final class NotchController {
         let strip = CGRect(x: frame.midX + openOffset - openWidth / 2, y: frame.maxY - ui.notch.height,
                            width: openWidth, height: ui.notch.height + 20)
         let onIsland = island.contains(mouse)
+        // Tell the edge guard which stretch of the top edge belongs to the island right now.
+        if let primary = NSScreen.screens.first {
+            let span = ui.expanded ? island : strip
+            EdgeGuard.shared.setZone(minX: span.minX, maxX: span.maxX, topY: primary.frame.maxY - frame.maxY)
+        }
         if panel.ignoresMouseEvents == onIsland { panel.ignoresMouseEvents = !onIsland }
         ui.hover(onIsland || (!ui.expanded && strip.contains(mouse)))
     }

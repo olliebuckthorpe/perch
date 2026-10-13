@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installEditMenu()
         controller = NotchController(store: AgentStore.shared)
         CodingSessions.shared.start()
+        if EdgeGuard.wanted { EdgeGuard.shared.start(prompt: false) }
         codex.start()
         GrokSource.shared.start()
 

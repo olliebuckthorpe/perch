@@ -282,6 +282,10 @@ private struct ChatView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(messages) { bubble($0) }
+                        if agent.status == .working {
+                            Text(agent.source == .grok ? "\(agent.name) is working…" : "Working…")
+                                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                        }
                         Color.clear.frame(height: 1).id("end")
                     }
                     .padding(.horizontal, 6)
@@ -290,6 +294,8 @@ private struct ChatView: View {
                 .defaultScrollAnchor(.bottom)
                 .frame(height: min(max(contentHeight, 30), 400))
                 .onChange(of: messages.last?.id) { proxy.scrollTo("end", anchor: .bottom) }
+                .onChange(of: contentHeight) { proxy.scrollTo("end", anchor: .bottom) }
+                .onAppear { DispatchQueue.main.async { proxy.scrollTo("end", anchor: .bottom) } }
             }
             if !agent.queued.isEmpty {
                 Text("Sent. It will read this at its next step.").font(.system(size: 10.5))
@@ -349,15 +355,27 @@ private struct ChatView: View {
     @ViewBuilder private func bubble(_ message: ChatMessage) -> some View {
         let text = Text(Self.markdown(message.text)).font(.system(size: 12.5)).lineSpacing(2)
             .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-        if message.fromUser {
-            HStack {
-                Spacer(minLength: 50)
-                text.foregroundStyle(.white)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(.white.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        VStack(alignment: message.fromUser ? .trailing : .leading, spacing: 3) {
+            if message.fromUser {
+                HStack {
+                    Spacer(minLength: 50)
+                    text.foregroundStyle(.white)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(.white.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+            } else {
+                text.foregroundStyle(.white.opacity(0.88)).frame(maxWidth: .infinity, alignment: .leading)
             }
-        } else {
-            text.foregroundStyle(.white.opacity(0.88)).frame(maxWidth: .infinity, alignment: .leading)
+            if !message.reactions.isEmpty {
+                // Reactions the agent (or you) left on this message in Grok Bot.
+                HStack(spacing: 3) {
+                    ForEach(Array(message.reactions.enumerated()), id: \.offset) { _, emoji in
+                        Text(emoji).font(.system(size: 11))
+                            .padding(.horizontal, 5).padding(.vertical, 1.5)
+                            .background(.white.opacity(0.1), in: Capsule())
+                    }
+                }
+            }
         }
     }
 
@@ -632,6 +650,7 @@ private struct Footer: View {
     @Environment(AgentStore.self) private var store
     @Environment(NotchUI.self) private var ui
     @State private var sounds = Settings.sounds
+    @State private var edgeGuard = EdgeGuard.wanted
     @State private var replyWindow = Settings.replyWindow
     @State private var loginItem = SMAppService.mainApp.status == .enabled
 
@@ -649,6 +668,7 @@ private struct Footer: View {
                 }
                 Toggle("Launch at login", isOn: $loginItem)
                 Toggle("Sounds", isOn: $sounds)
+                Toggle("Keep the menu bar hidden in full screen", isOn: $edgeGuard)
                 Picker("Wait for a reply when a session finishes", selection: $replyWindow) {
                     Text("Off").tag(0)
                     Text("30 seconds").tag(30)
@@ -664,6 +684,10 @@ private struct Footer: View {
         }
         .padding(.horizontal, 6)
         .onChange(of: sounds) { _, on in Settings.sounds = on }
+        .onChange(of: edgeGuard) { _, on in
+            EdgeGuard.wanted = on
+            if on { EdgeGuard.shared.start(prompt: true) } else { EdgeGuard.shared.stop() }
+        }
         .onChange(of: replyWindow) { _, seconds in Settings.replyWindow = seconds }
         .onChange(of: loginItem) { _, on in
             do {

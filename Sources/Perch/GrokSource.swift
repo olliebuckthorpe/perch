@@ -1,7 +1,8 @@
 import AppKit
 
-/// Grok Bot agents, read through the `grokbot` CLI that ships with the Claude Code plugin.
-/// That CLI talks to Grok Bot's private host API, so an app update can break this.
+/// Grok Bot agents. Talks to the Grok Bot host through one long-lived bridge process
+/// (bridge/grok-bridge.mjs) that reuses the gateway client from the grokbot Claude Code
+/// plugin. That client uses Grok Bot's private host API, so an app update can break this.
 final class GrokSource {
     static let shared = GrokSource()
     static let bundleID = "com.anysphere.sand"
@@ -9,11 +10,15 @@ final class GrokSource {
     private let store = AgentStore.shared
     private var node: String?
     private var cli: String?
-    private var events: Process?
-    private var refreshing = false
-    private var refreshQueued = false
+    private var bridge: Process?
+    private var bridgeInput: FileHandle?
+    private var buffer = Data()
+    private var nextID = 1
+    private var waiting: [Int: (Any?) -> Void] = [:]
     private var debounce: DispatchWorkItem?
     private var timer: Timer?
+    /// The newest transcript entry each bot's cached thread was loaded at.
+    private var threadStamp: [String: String] = [:]
 
     func start() {
         node = Shell.find("node")
@@ -22,14 +27,14 @@ final class GrokSource {
             store.grokError = node == nil ? "Node was not found" : "The grokbot plugin was not found"
             return
         }
+        startBridge()
         refresh()
-        streamEvents()
         // Safety net in case the event stream drops something.
         timer = Timer.scheduledTimer(withTimeInterval: 45, repeats: true) { [weak self] _ in self?.refresh() }
         timer?.tolerance = 10
     }
 
-    func stop() { events?.terminate() }
+    func stop() { bridge?.terminate() }
 
     private static func locateCLI() -> String? {
         let cache = "\(Shell.home)/.claude/plugins/cache"
@@ -45,39 +50,95 @@ final class GrokSource {
         return found.max { $0.1 < $1.1 }?.0
     }
 
-    private func streamEvents() {
-        guard let node, let cli else { return }
-        events = Shell.run(node, [cli, "events"], onOutput: { [weak self] _ in
-            self?.scheduleRefresh()
-        }, completion: { [weak self] _, _ in
-            // The stream ends when the host restarts or the Mac sleeps. Pick it back up.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { self?.streamEvents() }
-        })
+    // MARK: Bridge
+
+    private func startBridge() {
+        guard let node, let cli, let script = Bundle.main.path(forResource: "grok-bridge", ofType: "mjs") else {
+            store.grokError = "Perch is missing its Grok bridge"
+            return
+        }
+        let src = URL(fileURLWithPath: cli).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("src").path
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: node)
+        p.arguments = [script, src]
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = Shell.path
+        p.environment = env
+        let input = Pipe(), output = Pipe()
+        p.standardInput = input
+        p.standardOutput = output
+        p.standardError = FileHandle.nullDevice
+        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            DispatchQueue.main.async { self?.receive(chunk) }
+        }
+        p.terminationHandler = { [weak self] _ in
+            output.fileHandleForReading.readabilityHandler = nil
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.bridge = nil
+                self.bridgeInput = nil
+                self.buffer = Data()
+                let stranded = self.waiting
+                self.waiting = [:]
+                for done in stranded.values { done(nil) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.startBridge() }
+            }
+        }
+        do { try p.run() } catch {
+            store.grokError = "Could not start the Grok bridge"
+            return
+        }
+        bridge = p
+        bridgeInput = input.fileHandleForWriting
     }
+
+    private func receive(_ chunk: Data) {
+        buffer.append(chunk)
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            let line = buffer.subdata(in: buffer.startIndex..<newline)
+            buffer.removeSubrange(buffer.startIndex...newline)
+            guard let msg = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
+            if msg["event"] != nil {
+                scheduleRefresh()
+            } else if let id = msg["id"] as? Int, let done = waiting.removeValue(forKey: id) {
+                done(msg["ok"] as? Bool == true ? (msg["data"] ?? NSNull()) : nil)
+            }
+        }
+    }
+
+    /// `completion` gets the host's reply, or nil if the call failed.
+    private func request(_ command: String, _ body: [String: Any] = [:], completion: @escaping (Any?) -> Void = { _ in }) {
+        guard let bridgeInput,
+              let data = try? JSONSerialization.data(withJSONObject: ["id": nextID, "command": command, "body": body]) else {
+            completion(nil)
+            return
+        }
+        waiting[nextID] = completion
+        nextID += 1
+        bridgeInput.write(data + Data([0x0A]))
+    }
+
+    // MARK: Roster
 
     private func scheduleRefresh() {
         debounce?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.refresh() }
         debounce = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
     func refresh() {
-        guard let node, let cli else { return }
-        guard !refreshing else { refreshQueued = true; return }
-        refreshing = true
-        Shell.run(node, [cli, "agents", "list", "--json"]) { [weak self] code, output in
+        request("listAgents") { [weak self] reply in
             guard let self else { return }
-            self.refreshing = false
-            if code == 0, let list = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [[String: Any]] {
+            let rows = reply as? [[String: Any]] ?? (reply as? [String: Any])?["agents"] as? [[String: Any]]
+            if let rows {
                 self.store.grokError = nil
-                self.apply(list)
+                self.apply(rows)
             } else {
                 self.store.grokError = "Grok Bot is not reachable"
-            }
-            if self.refreshQueued {
-                self.refreshQueued = false
-                self.scheduleRefresh()
             }
         }
     }
@@ -98,7 +159,9 @@ final class GrokSource {
 
             let running = (raw["isRunning"] as? Bool ?? false) || (raw["isRunningTurn"] as? Bool ?? false)
             let awaiting = !(raw["awaitingUserResponse"] is NSNull) && raw["awaitingUserResponse"] != nil
-            let unread = raw["unreadCount"] as? Int ?? 0
+            // Reading a chat in the notch is reading it; do not let a stale count bring the badge back.
+            let open = NotchUI.shared.expanded && NotchUI.shared.selectedID == agent.id
+            let unread = open ? 0 : raw["unreadCount"] as? Int ?? 0
             let preview = raw["lastMessagePreview"] as? String ?? ""
             if let ms = raw["lastActivityAt"] as? Double { agent.lastActivity = Date(timeIntervalSince1970: ms / 1000) }
 
@@ -106,58 +169,96 @@ final class GrokSource {
             let newlyLoud = (status == .needsYou && agent.status != .needsYou) || unread > agent.unread
             agent.unread = unread
             agent.status = status
-            if !agent.sending || !running {
-                agent.lastMessage = preview
-                agent.detail = running && preview.isEmpty ? "Working" : oneLine(preview)
-            }
-            if !running { agent.sending = false }
+            agent.lastMessage = preview
+            agent.detail = running && preview.isEmpty ? "Working" : oneLine(preview)
             if newlyLoud && NSWorkspace.shared.frontmostApplication?.bundleIdentifier != Self.bundleID {
                 store.ping(agent)
             }
+
+            // Keep every bot's conversation warm, so opening a chat is instant.
+            let newest = "\(raw["newestEntryId"] as? String ?? "")|\(running)"
+            if threadStamp[agent.id] != newest {
+                threadStamp[agent.id] = newest
+                loadThread(agent)
+            }
+            if open, (raw["unreadCount"] as? Int ?? 0) > 0 { request("setAgentUnread", ["id": id, "isUnread": false]) }
         }
         for a in store.grokBots where !live.contains(a.id) { store.remove(a) }
     }
 
-    func send(_ agent: Agent, text: String, files: [Attachment] = []) {
-        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let node, let cli, !(text.isEmpty && files.isEmpty) else { return }
-        agent.sending = true
-        agent.addLocal(text.isEmpty ? "(image)" : text)
-        agent.status = .working
-        agent.detail = text.isEmpty ? "You sent an image" : "You: \(oneLine(text))"
-        guard files.isEmpty else {
-            upload(files, to: agent, done: []) { [weak self, weak agent] paths in
-                guard let self, let agent else { return }
-                guard let paths else {
-                    agent.sending = false
-                    agent.detail = "Image did not upload"
-                    return
-                }
-                let body: [String: Any] = [
-                    "agentId": agent.sessionID, "prompt": text.isEmpty ? "See the attached image." : text,
-                    "clientNonce": UUID().uuidString.lowercased(),
-                    "attachmentPaths": paths, "attachmentNames": files.map(\.name),
-                ]
-                self.call(["gw", "sendPrompt", Self.json(body)]) { [weak agent] code, _ in
-                    if code != 0 {
-                        agent?.sending = false
-                        agent?.detail = "Message did not send"
-                    }
-                    self.scheduleRefresh()
+    // MARK: Conversation
+
+    func loadThread(_ agent: Agent) {
+        request("getAgentTranscriptTail", ["id": agent.sessionID, "limit": 80]) { [weak agent] reply in
+            guard let agent else { return }
+            let entries = reply as? [[String: Any]] ?? (reply as? [String: Any])?["entries"] as? [[String: Any]] ?? []
+            let messages: [ChatMessage] = entries.compactMap { e in
+                let id = e["id"] as? String ?? UUID().uuidString
+                let reactions = (e["reactions"] as? [[String: Any]] ?? []).compactMap { $0["emoji"] as? String }
+                switch e["kind"] as? String {
+                case "message":
+                    guard let text = e["content"] as? String, !text.isEmpty else { return nil }
+                    return ChatMessage(id: id, fromUser: e["role"] as? String == "user", text: text, reactions: reactions)
+                case "send-message":
+                    guard let text = (e["message"] as? [String: Any])?["content"] as? String, !text.isEmpty else { return nil }
+                    return ChatMessage(id: id, fromUser: false, text: text, reactions: reactions)
+                default:
+                    return nil
                 }
             }
-            return
-        }
-        Shell.run(node, [cli, "agents", "send", agent.sessionID, text]) { [weak self, weak agent] code, _ in
-            if code != 0 {
-                agent?.sending = false
-                agent?.detail = "Message did not send"
-            }
-            self?.scheduleRefresh()
+            guard !messages.isEmpty else { return }
+            // A message just sent from the notch stays put until the host's copy of it arrives.
+            let recent = Set(messages.filter(\.fromUser).suffix(6).map(\.text))
+            let unsent = agent.thread.filter { $0.id.hasPrefix("local-") && !recent.contains($0.text) }
+            let merged = messages + unsent
+            if merged != agent.thread { agent.thread = merged }
         }
     }
 
-    private func call(_ args: [String], completion: @escaping (Int32, String) -> Void) {
+    func send(_ agent: Agent, text: String, files: [Attachment] = []) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !(text.isEmpty && files.isEmpty) else { return }
+        let prompt = text.isEmpty ? "See the attached image." : text
+        agent.addLocal(prompt)
+        agent.status = .working
+        agent.detail = text.isEmpty ? "You sent an image" : "You: \(oneLine(text))"
+
+        func post(_ paths: [String]) {
+            var body: [String: Any] = ["agentId": agent.sessionID, "prompt": prompt, "clientNonce": UUID().uuidString.lowercased()]
+            if !paths.isEmpty {
+                body["attachmentPaths"] = paths
+                body["attachmentNames"] = files.map(\.name)
+            }
+            request("sendPrompt", body) { [weak self, weak agent] reply in
+                if reply == nil { agent?.detail = "Message did not send. Is Grok Bot open?" }
+                self?.scheduleRefresh()
+            }
+        }
+        guard !files.isEmpty else { post([]); return }
+        upload(files, to: agent, done: []) { [weak agent] paths in
+            guard let paths else {
+                agent?.detail = "Image did not upload"
+                return
+            }
+            post(paths)
+        }
+    }
+
+    func markRead(_ agent: Agent) {
+        guard agent.unread > 0 else { return }
+        agent.unread = 0
+        if agent.status == .unread { agent.status = .idle }
+        request("setAgentUnread", ["id": agent.sessionID, "isUnread": false])
+    }
+
+    func open(_ agent: Agent) {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bundleID) else { return }
+        NSWorkspace.shared.openApplication(at: url, configuration: .init())
+    }
+
+    // MARK: Image upload (still through the CLI, which knows the upload service)
+
+    private func cli(_ args: [String], completion: @escaping (Int32, String) -> Void) {
         guard let node, let cli else { completion(-1, ""); return }
         Shell.run(node, [cli] + args, completion: completion)
     }
@@ -187,7 +288,7 @@ final class GrokSource {
             "agentId": agent.sessionID, "uploadId": uploadID, "fileName": name,
             "offset": String(offset), "totalSize": String(data.count), "data": chunk.base64EncodedString(),
         ]
-        call(["cursor", "rpc", "UploadGrokBotAgentAttachmentChunk", Self.json(body)]) { [weak self] code, output in
+        cli(["cursor", "rpc", "UploadGrokBotAgentAttachmentChunk", Self.json(body)]) { [weak self] code, output in
             guard code == 0, let self else { completion(nil); return }
             let reply = (try? JSONSerialization.jsonObject(with: Data(output.utf8))) as? [String: Any]
             let next = offset + chunk.count
@@ -197,39 +298,5 @@ final class GrokSource {
                 self.sendChunk(data, offset: next, uploadID: uploadID, name: name, agent: agent, completion: completion)
             }
         }
-    }
-
-    func loadThread(_ agent: Agent) {
-        call(["agents", "tail", agent.sessionID, "-n", "40", "--json"]) { [weak agent] code, output in
-            guard code == 0, let agent,
-                  let root = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any],
-                  let entries = root["entries"] as? [[String: Any]] else { return }
-            let messages: [ChatMessage] = entries.compactMap { e in
-                let id = e["id"] as? String ?? UUID().uuidString
-                switch e["kind"] as? String {
-                case "message":
-                    guard let text = e["content"] as? String, !text.isEmpty else { return nil }
-                    return ChatMessage(id: id, fromUser: e["role"] as? String == "user", text: text)
-                case "send-message":
-                    guard let text = (e["message"] as? [String: Any])?["content"] as? String, !text.isEmpty else { return nil }
-                    return ChatMessage(id: id, fromUser: false, text: text)
-                default:
-                    return nil
-                }
-            }
-            if !messages.isEmpty { agent.thread = messages }
-        }
-    }
-
-    func markRead(_ agent: Agent) {
-        guard let node, let cli, agent.unread > 0 else { return }
-        agent.unread = 0
-        if agent.status == .unread { agent.status = .idle }
-        Shell.run(node, [cli, "agents", "read", agent.sessionID]) { [weak self] _, _ in self?.scheduleRefresh() }
-    }
-
-    func open(_ agent: Agent) {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bundleID) else { return }
-        NSWorkspace.shared.openApplication(at: url, configuration: .init())
     }
 }
