@@ -643,7 +643,7 @@ private struct ProfileAvatar: View {
     }
 
     var body: some View {
-        let initial = String(profile.name.prefix(1)).uppercased()
+        let initial = String(profile.label.prefix(1)).uppercased()
         ZStack {
             if let icon, Self.fillsItsSquare(icon) {
                 // A solid square icon (a block of brand colour) fills the whole circle.
@@ -681,7 +681,7 @@ private struct ProfileStrip: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(profiles.first { $0.id == hovered }.map { $0.email.isEmpty ? $0.name : "\($0.name) · \($0.email)" } ?? "Go to a Chrome profile")
+            Text(profiles.first { $0.id == hovered }.map { $0.email.isEmpty ? $0.label : "\($0.label) · \($0.email)" } ?? "Go to a Chrome profile")
                 .font(.system(size: 10.5)).foregroundStyle(.white.opacity(hovered == nil ? 0.4 : 0.8))
                 .lineLimit(1).truncationMode(.middle)
             HStack(spacing: 5) {
@@ -767,7 +767,7 @@ private struct ProfileRow: View {
         HStack(spacing: 8) {
             ProfileAvatar(profile: profile, size: 24)
             VStack(alignment: .leading, spacing: 0) {
-                Text(profile.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text(profile.label).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                 if !profile.email.isEmpty {
                     Text(profile.email).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
                 }

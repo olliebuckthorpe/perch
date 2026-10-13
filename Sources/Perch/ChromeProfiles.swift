@@ -15,6 +15,12 @@ struct ChromeProfile: Identifiable {
     /// Chrome's own colour for the profile, as it shows in its profile switcher.
     let argb: Int?
 
+    /// What Perch calls the profile. Chrome's own name stays as it is (and is still what finds
+    /// the profile in Chrome's menu); this is only the wording shown in the notch.
+    var label: String {
+        (UserDefaults.standard.dictionary(forKey: "profileLabels") as? [String: String])?[id] ?? name
+    }
+
     /// A chosen icon for the profile (a client's favicon, say), which wins over the Google picture.
     var iconPath: String? {
         let path = "\(Shell.home)/.perch/profile-icons/\(id).png"
