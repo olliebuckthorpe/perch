@@ -139,7 +139,7 @@ final class NotchUI {
                 self.expand()
             }
             expandWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
         } else {
             expandWork?.cancel()
             scheduleCollapse(after: 0.22)
