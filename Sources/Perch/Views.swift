@@ -765,7 +765,7 @@ private struct ProfileStrip: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(profiles.first { $0.id == hovered }.map { $0.email.isEmpty ? $0.label : "\($0.label) · \($0.email)" } ?? "Go to a Chrome profile")
+            Text(profiles.first { $0.id == hovered }?.label ?? "Go to a Chrome profile")
                 .font(.system(size: 10.5)).foregroundStyle(.white.opacity(hovered == nil ? 0.4 : 0.8))
                 .lineLimit(1).truncationMode(.middle)
             HStack(spacing: 5) {
