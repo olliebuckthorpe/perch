@@ -185,6 +185,7 @@ final class CodingSessions {
             hold(agent, req, kind: .question(questions: questions, rawInput: input), seconds: 285)
 
         case ("Stop", "stop"):
+            agent.lastTurnAt = Date()
             let last = j["last_assistant_message"] as? String ?? ""
             if !last.isEmpty { agent.lastMessage = last }
             if !agent.queued.isEmpty {
@@ -218,6 +219,7 @@ final class CodingSessions {
         case "UserPromptSubmit":
             clearPending(agent)
             agent.askElsewhere = nil
+            agent.lastTurnAt = Date()
             agent.status = .working
             agent.detail = oneLine(j["prompt"] as? String ?? "Thinking")
         case "PreToolUse":
@@ -238,6 +240,7 @@ final class CodingSessions {
             }
         case "Stop":
             // Claude Code: the turn ends normally and a waiter takes replies from here on.
+            agent.lastTurnAt = Date()
             let last = j["last_assistant_message"] as? String ?? ""
             if !last.isEmpty { agent.lastMessage = last }
             agent.status = .done
@@ -499,6 +502,7 @@ final class CodingSessions {
         agent.lastActivity = Date()
         agent.kept = true
         titled.insert(agent.id)
+        store.save()
         return agent
     }
 

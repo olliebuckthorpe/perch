@@ -261,6 +261,7 @@ enum SearchItem: Identifiable {
             ui.query = ""
             ui.dismissed[agent.id] = nil
             if agent.source != .grok { agent.kept = true }
+            AgentStore.shared.save()
             ui.select(agent.id)
         case .older(let entry):
             ui.query = ""
@@ -855,6 +856,7 @@ private struct TaskCard: View {
                         }
                         if let areaColor, let area = task.area {
                             Text(area).font(.system(size: 10, weight: .medium)).foregroundStyle(areaColor)
+                                .lineLimit(1).fixedSize()
                                 .padding(.horizontal, 5).padding(.vertical, 1).background(areaColor.opacity(0.15), in: Capsule())
                         }
                         if let color = priorityColor {

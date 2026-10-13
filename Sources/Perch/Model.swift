@@ -87,6 +87,8 @@ final class Agent: Identifiable {
     var desktopBound = false
     /// Added or started by the user on purpose. Stays in the sidebar across restarts until dismissed.
     var kept = false
+    /// When a turn last started or finished: real activity, as opposed to background housekeeping.
+    var lastTurnAt: Date?
     /// A permission question that is being shown in the agent's own app, not held here.
     var askElsewhere: String?
     /// Recent conversation, loaded when the agent's chat is opened.

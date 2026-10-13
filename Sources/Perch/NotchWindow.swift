@@ -59,12 +59,16 @@ final class NotchUI {
 
     func isDismissed(_ agent: Agent) -> Bool {
         guard let at = dismissed[agent.id] else { return false }
-        return agent.pending == nil && agent.status != .working && agent.status != .needsYou
-            && agent.lastActivity.timeIntervalSince1970 <= at
+        // It stays cleared through restarts and background housekeeping. Only something the user
+        // would care about brings it back: it is working, it needs them, it has a new message,
+        // or a turn started or finished after it was cleared.
+        if agent.pending != nil || agent.status == .working || agent.status == .needsYou || agent.status == .unread { return false }
+        return (agent.lastTurnAt?.timeIntervalSince1970 ?? 0) <= at
     }
 
     func dismiss(_ agent: Agent) {
         agent.kept = false
+        defer { AgentStore.shared.save() }
         dismissed[agent.id] = Date().timeIntervalSince1970
         if dismissed.count > 300 { dismissed = dismissed.filter { Date().timeIntervalSince1970 - $0.value < 14 * 86400 } }
         if selectedID == agent.id {
@@ -83,6 +87,7 @@ final class NotchUI {
         guard id != target, shown.contains(id) else { return }
         // Arranging a chat is a sign it should stay.
         AgentStore.shared.find(id)?.kept = true
+        defer { AgentStore.shared.save() }
         var list = shown.filter { $0 != id }
         list.insert(id, at: list.firstIndex(of: target) ?? list.count)
         order = list + order.filter { !list.contains($0) }.prefix(200)
