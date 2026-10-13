@@ -516,16 +516,53 @@ private struct ChatView: View {
         .padding(.horizontal, 2)
     }
 
+    private static let imageNote = try! NSRegularExpression(pattern: #"\[Image attached, saved at ([^\]]+)\]"#)
+    private static let thumbnails = NSCache<NSString, NSImage>()
+
+    /// Pulls the "image attached" notes out of a message, so the pictures can be shown instead.
+    private static func splitImages(_ text: String) -> (text: String, paths: [String]) {
+        let range = NSRange(text.startIndex..., in: text)
+        let paths = imageNote.matches(in: text, range: range).compactMap { m in
+            Range(m.range(at: 1), in: text).map { String(text[$0]) }
+        }
+        guard !paths.isEmpty else { return (text, []) }
+        let cleaned = imageNote.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+        return (cleaned.trimmingCharacters(in: .whitespacesAndNewlines), paths)
+    }
+
+    private static func thumbnail(_ path: String) -> NSImage? {
+        if let cached = thumbnails.object(forKey: path as NSString) { return cached }
+        guard let image = NSImage(contentsOfFile: path) else { return nil }
+        thumbnails.setObject(image, forKey: path as NSString)
+        return image
+    }
+
+    @ViewBuilder private func pictures(_ paths: [String]) -> some View {
+        ForEach(paths, id: \.self) { path in
+            if let image = Self.thumbnail(path) {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 230, maxHeight: 170)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .onTapGesture { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+                    .help("Open the image")
+            }
+        }
+    }
+
     @ViewBuilder private func bubble(_ message: ChatMessage) -> some View {
-        let text = Text(Self.markdown(message.text)).font(.system(size: 12.5)).lineSpacing(2)
+        let parts = Self.splitImages(message.text)
+        let text = Text(Self.markdown(parts.text)).font(.system(size: 12.5)).lineSpacing(2)
             .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         VStack(alignment: message.fromUser ? .trailing : .leading, spacing: 3) {
             if message.fromUser {
-                HStack {
-                    Spacer(minLength: 50)
-                    text.foregroundStyle(.white)
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(.white.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                pictures(parts.paths)
+                if !parts.text.isEmpty {
+                    HStack {
+                        Spacer(minLength: 50)
+                        text.foregroundStyle(.white)
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(.white.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
                 }
             } else if let email = message.email {
                 EmailCard(draft: email, agent: agent)
