@@ -1460,6 +1460,15 @@ private struct ChatView: View {
         }
     }
 
+    /// The fill for the user's own bubbles in this chat.
+    private var mine: Color {
+        switch agent.source {
+        case .claude: return Color(red: 0.80, green: 0.42, blue: 0.29)
+        case .codex: return Color(red: 0.40, green: 0.36, blue: 0.93)
+        case .grok: return Color(white: 0.96)
+        }
+    }
+
     @ViewBuilder private func bubble(_ message: ChatMessage) -> some View {
         let parts = Self.splitImages(message.text)
         let text = Text(Self.markdown(parts.text)).font(.system(size: 12.5)).lineSpacing(2)
@@ -1472,9 +1481,11 @@ private struct ChatView: View {
                 if !parts.text.isEmpty {
                     HStack {
                         Spacer(minLength: 50)
-                        text.foregroundStyle(.white)
+                        // Your side takes the colour of whoever you are talking to: Claude's orange,
+                        // Codex's blue-violet, and plain white (with dark text) for Grok bots.
+                        text.foregroundStyle(agent.source == .grok ? Color.black.opacity(0.88) : .white)
                             .padding(.horizontal, 11).padding(.vertical, 7)
-                            .background(Color(red: 0.15, green: 0.42, blue: 0.92), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                            .background(mine, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                     }
                 }
             } else if let name = message.fileName, let path = message.filePath {
