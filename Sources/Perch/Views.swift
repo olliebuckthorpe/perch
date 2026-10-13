@@ -728,7 +728,10 @@ private struct TasksView: View {
                 }
                 // The board: one column per list, cards you can tick off or drag across.
                 HStack(alignment: .top, spacing: 8) {
-                    ForEach(NotionTasks.columns, id: \.self) { column in
+                    // Open columns sit together on the left; folded ones line up at the right edge.
+                    let arranged = NotionTasks.columns.filter { !notion.folded.contains($0) }
+                        + NotionTasks.columns.filter { notion.folded.contains($0) }
+                    ForEach(arranged, id: \.self) { column in
                         TaskColumn(title: column, cards: notion.cards(in: column))
                     }
                 }
