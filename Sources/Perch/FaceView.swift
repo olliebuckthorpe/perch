@@ -151,7 +151,7 @@ struct GrokEyes: View {
 
     private func eyes(_ raw: EyePose) -> some View {
         let pose = raw.fitted
-        HStack(spacing: 0) {
+        return HStack(spacing: 0) {
             Capsule().fill(.white).frame(width: size * pose.w, height: size * pose.h)
             Spacer(minLength: 0)
             Capsule().fill(.white).frame(width: size * pose.w * pose.far, height: size * pose.h * pose.far)
