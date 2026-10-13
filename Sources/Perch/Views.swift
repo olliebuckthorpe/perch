@@ -73,6 +73,7 @@ private struct Ear: View {
         HStack(spacing: 4) {
             ForEach(agents) { agent in
                 FaceView(agent: agent, size: faceSize)
+                    .reach(2, 9)
                     .onTapGesture { ui.show(agent.id) }
                     .help(agent.name)
             }
@@ -212,15 +213,21 @@ private struct SearchBar: View {
                 Button { ui.query = "" } label: {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(Press())
             }
             Button { ui.composing = true } label: {
                 Image(systemName: "square.and.pencil").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
             }
-            .buttonStyle(.plain).help("New Claude Code chat")
+            .buttonStyle(Press()).help("New Claude Code chat")
         }
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // A click anywhere in the box starts typing, not only on the line of text.
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded {
+            ui.controller?.panel.makeKey()
+            focused = true
+        })
         .onChange(of: focused) { _, on in if on { SessionIndex.shared.refresh() } }
         .onChange(of: ui.query) { ui.searchIndex = 0 }
         .onAppear {
@@ -410,7 +417,7 @@ private struct TopBar: View {
                 ProfileAvatar(profile: profile, size: 22)
                     .scaleEffect(hovered == profile.id ? 1.14 : 1)
                     .animation(.easeOut(duration: 0.1), value: hovered)
-                    .contentShape(Rectangle())
+                    .reach(3, 9)
                     .onHover { hovered = $0 ? profile.id : (hovered == profile.id ? nil : hovered) }
                     .onTapGesture {
                         profile.open()
@@ -491,7 +498,7 @@ private struct Rail: View {
                         .foregroundStyle(.white.opacity(ui.composing ? 0.95 : 0.6))
                         .frame(width: 22, height: 18).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).help("New Claude Code chat")
+                .buttonStyle(Press()).help("New Claude Code chat")
             }
             .foregroundStyle(.white.opacity(ui.browsing ? 0.9 : 0.5))
             .padding(.leading, 8).padding(.trailing, 4).padding(.vertical, 5)
@@ -538,7 +545,7 @@ private struct Rail: View {
                 .background(.white.opacity(on ? 0.12 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain).help(help)
+        .buttonStyle(Press()).help(help)
     }
 }
 
@@ -598,7 +605,7 @@ private struct RailRow: View {
                         .foregroundStyle(.white.opacity(0.6)).frame(width: 16, height: 16)
                         .background(.white.opacity(0.12), in: Circle()).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).help("Remove from the notch")
+                .buttonStyle(Press()).help("Remove from the notch")
             } else if ui.isDrafting(agent.id) {
                 Image(systemName: "pencil").font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
             }
@@ -727,10 +734,16 @@ private struct TasksView: View {
                             .foregroundStyle(.white.opacity(notion.loading ? 0.25 : 0.5))
                             .frame(width: 20, height: 18).contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain).help("Refresh from Notion")
+                    .buttonStyle(Press()).help("Refresh from Notion")
                 }
                 .padding(.horizontal, 8).padding(.vertical, 6)
                 .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // A click anywhere in the box starts typing, not only on the line of text.
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded {
+            NotchUI.shared.controller?.panel.makeKey()
+            focused = true
+        })
 
                 if let problem = notion.problem {
                     Text(problem).font(.system(size: 11)).foregroundStyle(Palette.amber.opacity(0.9))
@@ -817,7 +830,7 @@ private struct TaskColumn: View {
                             Image(systemName: "chevron.compact.left").font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(.white.opacity(0.4)).frame(width: 18, height: 16).contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain).help("Fold this column away")
+                        .buttonStyle(Press()).help("Fold this column away")
                     }
                     .padding(.horizontal, 4)
                     ScrollView {
@@ -877,7 +890,7 @@ private struct TaskCard: View {
                     .foregroundStyle(ticking ? Palette.green : .white.opacity(hovered ? 0.8 : 0.35))
                     .frame(width: 16, height: 16).contentShape(Rectangle())
             }
-            .buttonStyle(.plain).help("Mark as done")
+            .buttonStyle(Press()).help("Mark as done")
             VStack(alignment: .leading, spacing: 4) {
                 Text(task.name).font(.system(size: 12)).foregroundStyle(.white.opacity(ticking ? 0.4 : 0.92))
                     .strikethrough(ticking).lineLimit(3).fixedSize(horizontal: false, vertical: true)
@@ -1089,7 +1102,7 @@ private struct ProfileStrip: View {
                     ProfileAvatar(profile: profile, size: 20)
                         .scaleEffect(hovered == profile.id ? 1.18 : 1)
                         .animation(.easeOut(duration: 0.12), value: hovered)
-                        .contentShape(Rectangle())
+                        .reach(2, 8)
                         .onHover { hovered = $0 ? profile.id : (hovered == profile.id ? nil : hovered) }
                         .onTapGesture {
                             profile.open()
@@ -1254,7 +1267,7 @@ private struct NewChatView: View {
             .background(selected ? Color.white.opacity(0.92) : .white.opacity(0.09), in: Capsule())
             .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(Press())
     }
 
     var body: some View {
@@ -1267,7 +1280,7 @@ private struct NewChatView: View {
                     Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(Press())
                 Text("New Claude Code chat").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                 Spacer()
             }
@@ -1286,7 +1299,7 @@ private struct NewChatView: View {
                             .overlay(Capsule().strokeBorder(.white.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
                             .contentShape(Capsule())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(Press())
                     }
                 }
                 Text(chosen.replacingOccurrences(of: Shell.home, with: "~"))
@@ -1311,15 +1324,21 @@ private struct NewChatView: View {
                         .foregroundStyle(listening ? Palette.red : .white.opacity(0.45))
                         .frame(width: 18, height: 18).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(Press())
                 Button { start(chosen) } label: {
                     Image(systemName: "arrow.up.circle.fill").font(.system(size: 16))
                         .foregroundStyle(draft.wrappedValue.isEmpty ? .white.opacity(0.2) : Palette.blue)
                 }
-                .buttonStyle(.plain).disabled(draft.wrappedValue.isEmpty)
+                .buttonStyle(Press()).disabled(draft.wrappedValue.isEmpty)
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // A click anywhere in the box starts typing, not only on the line of text.
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded {
+            ui.controller?.panel.makeKey()
+            focused = true
+        })
         }
         .frame(height: 452, alignment: .top)
         .padding(.top, 2)
@@ -1496,7 +1515,7 @@ private struct ChatView: View {
                 Image(systemName: "arrow.up.forward.app").font(.system(size: 12))
                     .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
             }
-            .buttonStyle(.plain).help("Open in its own app")
+            .buttonStyle(Press()).help("Open in its own app")
         }
         .padding(.horizontal, 2)
     }
@@ -1723,7 +1742,7 @@ private struct ReplyField: View {
                                     Image(systemName: "xmark.circle.fill").font(.system(size: 12))
                                         .foregroundStyle(.white, .black.opacity(0.7))
                                 }
-                                .buttonStyle(.plain).offset(x: 4, y: -4)
+                                .buttonStyle(Press()).offset(x: 4, y: -4)
                             }
                     }
                 }
@@ -1745,13 +1764,13 @@ private struct ReplyField: View {
                     .foregroundStyle(listening ? Palette.red : .white.opacity(0.45))
                     .frame(width: 18, height: 18).contentShape(Rectangle())
             }
-            .buttonStyle(.plain).disabled(busy)
+            .buttonStyle(Press()).disabled(busy)
             .help(listening ? "Stop dictating" : "Dictate a reply")
             Button(action: send) {
                 Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
                     .foregroundStyle(empty || busy ? .white.opacity(0.2) : agent.color)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(Press())
             .disabled(empty || busy)
         }
         }
@@ -1830,9 +1849,9 @@ private struct AgentBubble: View {
                     }
                 } label: {
                     Image(systemName: "face.smiling").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                        .frame(width: 26, height: 24).contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                .frame(width: 24, height: 22).contentShape(Rectangle())
                 .padding(.leading, 2)
                 .opacity(hovered ? 1 : 0)
             }
@@ -2374,6 +2393,7 @@ private struct Footer: View {
                 Button("Quit Perch") { NSApp.terminate(nil) }
             } label: {
                 Image(systemName: "gearshape.fill").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                    .frame(width: 26, height: 26).contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         }
@@ -2407,12 +2427,37 @@ private struct ChipButton: ButtonStyle {
             .frame(maxWidth: wide ? .infinity : nil, alignment: .leading)
             .background(fill ?? .white.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .opacity(!enabled ? 0.4 : configuration.isPressed ? 0.7 : 1)
-            .contentShape(Rectangle())
+            .reach(3, 5)
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
     }
 }
 
 private struct LinkButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.system(size: 11)).foregroundStyle(.white.opacity(configuration.isPressed ? 0.3 : 0.5))
+            .reach(8, 7)
+    }
+}
+
+/// The look of a plain button, with two things added: it can be hit a little outside what is
+/// drawn (small icons are hard to land on otherwise), and it dips slightly while pressed so a
+/// click is felt.
+struct Press: ButtonStyle {
+    var reach: CGFloat = 6
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .reach(reach, reach)
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+extension View {
+    /// Makes the view clickable this far beyond its edges without moving anything around it.
+    func reach(_ x: CGFloat, _ y: CGFloat) -> some View {
+        padding(.horizontal, x).padding(.vertical, y).contentShape(Rectangle())
+            .padding(.horizontal, -x).padding(.vertical, -y)
     }
 }
