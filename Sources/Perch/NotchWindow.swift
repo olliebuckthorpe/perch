@@ -17,6 +17,7 @@ final class NotchUI {
 
     private(set) var expanded = false
     var selectedID: String?
+    var query = ""
     /// True when the island opened itself for a prompt, so it shows only that prompt.
     private(set) var cardsOnly = false
     /// Half-written replies, kept across closing the island and across restarts.
@@ -106,6 +107,7 @@ final class NotchUI {
         guard expanded else { return }
         expanded = false
         cardsOnly = false
+        query = ""
         // Keep the row with an unsent reply selected, so it is right there on reopening.
         if let id = selectedID, !isDrafting(id) { selectedID = nil }
         Dictation.shared.stop()
@@ -268,25 +270,6 @@ final class NotchController {
         openOffset = offset
     }
 
-    private var menuBarCheck = (at: Date.distantPast, hidden: false)
-
-    /// True in a full screen space, where the menu bar is tucked away until the pointer hits the top.
-    /// The menu bar's own window still reports as on screen there, so look instead for the
-    /// overlay a full screen app keeps at the top to slide its title bar into.
-    private func menuBarHidden() -> Bool {
-        if Date().timeIntervalSince(menuBarCheck.at) < 0.4 { return menuBarCheck.hidden }
-        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
-        let width = Double(screen?.frame.width ?? 0)
-        let hidden = list.contains { w in
-            guard let layer = w[kCGWindowLayer as String] as? Int, (25...30).contains(layer),
-                  w[kCGWindowOwnerName as String] as? String != "Window Server",
-                  let bounds = w[kCGWindowBounds as String] as? [String: Any] else { return false }
-            return bounds["Width"] as? Double == width && bounds["Y"] as? Double == 0
-        }
-        menuBarCheck = (Date(), hidden)
-        return hidden
-    }
-
     private func trackMouse() {
         let mouse = NSEvent.mouseLocation
         let frame = panel.frame
@@ -294,20 +277,9 @@ final class NotchController {
         let island = CGRect(x: frame.minX + liveRect.minX, y: frame.maxY - liveRect.maxY,
                             width: liveRect.width, height: liveRect.height + 20).insetBy(dx: -3, dy: -3)
         // Closed, the whole strip above where the island opens is the trigger, not just the pill.
-        // With the menu bar hidden the trigger reaches a little below the notch band, so the
-        // island opens before the pointer ever gets into the band.
-        let hidden = menuBarHidden()
-        let reach: CGFloat = hidden ? 26 : 0
-        let strip = CGRect(x: frame.midX + openOffset - openWidth / 2, y: frame.maxY - ui.notch.height - reach,
-                           width: openWidth, height: ui.notch.height + reach + 20)
+        let strip = CGRect(x: frame.midX + openOffset - openWidth / 2, y: frame.maxY - ui.notch.height,
+                           width: openWidth, height: ui.notch.height + 20)
         let onIsland = island.contains(mouse)
-        // In a full screen app, the pointer entering the top band makes macOS slide the menu bar
-        // and the app's title bar down. Over the island, hold it just below the band instead.
-        let ceiling = frame.maxY - ui.notch.height - 8
-        if hidden, onIsland || strip.contains(mouse), mouse.y > ceiling, let primary = NSScreen.screens.first {
-            CGWarpMouseCursorPosition(CGPoint(x: mouse.x, y: primary.frame.maxY - ceiling))
-            CGAssociateMouseAndMouseCursorPosition(1)
-        }
         if panel.ignoresMouseEvents == onIsland { panel.ignoresMouseEvents = !onIsland }
         ui.hover(onIsland || (!ui.expanded && strip.contains(mouse)))
     }

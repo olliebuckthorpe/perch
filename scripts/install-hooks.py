@@ -46,6 +46,8 @@ def wanted(source):
         waiter = entry(source, "wait", 43200, background=True, rewake=True)
         hooks["Stop"] = [entry(source, "info", 5, background=True), waiter]
         hooks["SessionStart"].append(waiter)
+        # A fresh waiter after every tool call too, so a message sent mid-turn has a way in.
+        hooks["PostToolUse"] = [waiter]
     return hooks
 
 

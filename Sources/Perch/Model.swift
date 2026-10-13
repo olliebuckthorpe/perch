@@ -75,6 +75,8 @@ final class Agent: Identifiable {
     var pending: PendingRequest?
     /// A background hook parked in an idle Claude Code session. Answering it wakes the session.
     var waiter: HookRequest?
+    /// Replies sent while there was no way in. Delivered at the next opening.
+    var queued: [String] = []
     /// Recent conversation, loaded when the agent's chat is opened.
     var thread: [ChatMessage] = []
     var transcriptPath: String?

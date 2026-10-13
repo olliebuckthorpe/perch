@@ -99,6 +99,11 @@ private struct ExpandedBody: View {
     }
 
     @ViewBuilder private var roster: some View {
+        SearchBar()
+        if ui.query.trimmingCharacters(in: .whitespaces).isEmpty { sections } else { SearchResults() }
+    }
+
+    @ViewBuilder private var sections: some View {
         let sessions = store.sessions
         // Everything active, topped up with the most recent quiet ones.
         let shown = max(4, sessions.filter { $0.status != .idle }.count)
@@ -136,6 +141,88 @@ private struct ExpandedBody: View {
 
             Footer()
         }
+    }
+}
+
+private struct SearchBar: View {
+    @Environment(NotchUI.self) private var ui
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        @Bindable var ui = ui
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+            TextField("Search chats and bots", text: $ui.query)
+                .textFieldStyle(.plain).font(.system(size: 12)).focused($focused)
+            if !ui.query.isEmpty {
+                Button { ui.query = "" } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+            }
+            Button {
+                CodingSessions.shared.newClaudeChat(prompt: nil)
+                ui.collapse()
+            } label: {
+                Image(systemName: "square.and.pencil").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+            }
+            .buttonStyle(.plain).help("New Claude Code chat")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onChange(of: focused) { _, on in if on { SessionIndex.shared.refresh() } }
+    }
+}
+
+/// Live agents first, then older Claude Code sessions by title, then the option to start fresh.
+private struct SearchResults: View {
+    @Environment(AgentStore.self) private var store
+    @Environment(NotchUI.self) private var ui
+
+    var body: some View {
+        let q = ui.query.trimmingCharacters(in: .whitespaces).lowercased()
+        let live = store.agents.filter { $0.name.lowercased().contains(q) || $0.detail.lowercased().contains(q) }
+        let older = SessionIndex.shared.entries
+            .filter { $0.title.lowercased().contains(q) && store.find("claude:\($0.id)") == nil }
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(live.prefix(7)) { AgentRow(agent: $0) }
+            ForEach(older.prefix(6)) { entry in
+                PlainRow(icon: "clock", title: entry.title, trailing: nil) {
+                    ui.query = ""
+                    ui.select(CodingSessions.shared.adopt(entry).id)
+                }
+            }
+            if live.isEmpty && older.isEmpty {
+                Text("Nothing matches.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
+                    .padding(.horizontal, 6).padding(.vertical, 5)
+            }
+            PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(ui.query)", trailing: "Opens Claude") {
+                CodingSessions.shared.newClaudeChat(prompt: ui.query)
+                ui.collapse()
+            }
+        }
+    }
+}
+
+private struct PlainRow: View {
+    let icon: String
+    let title: String
+    let trailing: String?
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).frame(width: 18)
+            Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.85)).lineLimit(1)
+            Spacer(minLength: 4)
+            if let trailing { Text(trailing).font(.system(size: 10)).foregroundStyle(.white.opacity(0.3)) }
+        }
+        .padding(.horizontal, 6).padding(.vertical, 5)
+        .background(.white.opacity(hovered ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: action)
+        .onHover { hovered = $0 }
     }
 }
 
@@ -203,6 +290,10 @@ private struct ChatView: View {
                 .defaultScrollAnchor(.bottom)
                 .frame(height: min(max(contentHeight, 30), 400))
                 .onChange(of: messages.last?.id) { proxy.scrollTo("end", anchor: .bottom) }
+            }
+            if !agent.queued.isEmpty {
+                Text("Sent. It will read this at its next step.").font(.system(size: 10.5))
+                    .foregroundStyle(.white.opacity(0.4)).padding(.horizontal, 6)
             }
             if let pending = agent.pending {
                 if case .followUp = pending.kind {
@@ -317,14 +408,14 @@ private struct ReplyField: View {
     @Environment(NotchUI.self) private var ui
     @FocusState private var focused: Bool
 
-    /// A coding session cannot take a second prompt while it is mid-turn.
-    private var busy: Bool { agent.source != .grok && agent.status == .working && agent.pending == nil }
+    /// Nothing blocks a reply any more: mid-turn messages are delivered at the next step.
+    private var busy: Bool { false }
 
     private var placeholder: String {
         if let problem = Dictation.shared.problem { return problem }
         if Dictation.shared.activeAgentID == agent.id { return "Listening…" }
         if agent.source == .grok { return "Message \(agent.name), paste images too" }
-        if busy { return "Busy. Reply when it finishes." }
+        if agent.source != .grok, agent.status == .working, agent.pending == nil { return "Message now, it reads it at its next step" }
         if agent.pending != nil { return "Tell it what to do next" }
         return agent.waiter != nil ? "Reply to this session" : "Reply in the background"
     }

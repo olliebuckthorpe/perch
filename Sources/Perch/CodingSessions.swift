@@ -45,11 +45,10 @@ final class CodingSessions {
     }
 
     /// The session title and working directory, read from the end of a Claude Code transcript.
-    static func transcriptInfo(_ path: String) -> (title: String?, cwd: String?) {
+    static func transcriptInfo(_ path: String, span: UInt64 = 400 << 10) -> (title: String?, cwd: String?) {
         guard let h = FileHandle(forReadingAtPath: path) else { return (nil, nil) }
         defer { try? h.close() }
         let size = (try? h.seekToEnd()) ?? 0
-        let span: UInt64 = 400 << 10
         try? h.seek(toOffset: size > span ? size - span : 0)
         guard let data = try? h.readToEnd() else { return (nil, nil) }
         var title: String?
@@ -110,18 +109,25 @@ final class CodingSessions {
             }
         }
 
+        let tool = j["tool_name"] as? String ?? ""
+        let input = j["tool_input"] as? [String: Any] ?? [:]
+
         if mode == "wait" {
             guard !headless else { req.respond(); return }
+            // After a tool call the waiter doubles as the progress report.
+            if event == "PostToolUse" { info(event: event, agent: agent, json: j, tool: tool, input: input, headless: headless) }
             agent.waiter?.respond()
+            if !agent.queued.isEmpty {
+                deliver(agent.queued.joined(separator: "\n\n"), to: agent, through: req)
+                agent.queued = []
+                return
+            }
             agent.waiter = req
             req.onCancel = { [weak agent, weak req] in
                 if agent?.waiter === req { agent?.waiter = nil }
             }
             return
         }
-
-        let tool = j["tool_name"] as? String ?? ""
-        let input = j["tool_input"] as? [String: Any] ?? [:]
 
         switch (event, mode) {
         case ("PermissionRequest", "permission"):
@@ -141,6 +147,15 @@ final class CodingSessions {
         case ("Stop", "stop"):
             let last = j["last_assistant_message"] as? String ?? ""
             if !last.isEmpty { agent.lastMessage = last }
+            if !agent.queued.isEmpty {
+                // Something was sent from the notch mid-turn: it becomes the next prompt straight away.
+                let text = agent.queued.joined(separator: "\n\n")
+                agent.queued = []
+                agent.status = .working
+                agent.detail = oneLine(text)
+                req.respond((try? JSONSerialization.data(withJSONObject: ["decision": "block", "reason": text])) ?? Data())
+                return
+            }
             agent.status = .done
             agent.detail = last.isEmpty ? "Finished" : oneLine(last)
             let window = Settings.replyWindow
@@ -281,13 +296,12 @@ final class CodingSessions {
         guard !text.isEmpty else { return }
         agent.addLocal(text)
         if let waiter = agent.waiter {
-            // Wakes the real session, so the reply and the answer both show up in its own chat.
-            waiter.respond(Data("The user replied from Perch, their notch app. Treat this as their next message:\n\n\(text)".utf8))
-            agent.waiter = nil
-            clearPending(agent)
-            agent.status = .working
-            agent.detail = oneLine(text)
-            agent.lastActivity = Date()
+            deliver(text, to: agent, through: waiter)
+            return
+        }
+        if agent.status == .working, agent.pending == nil {
+            // Mid-turn with no way in right now: hold it for the next opening, a moment away.
+            agent.queued.append(text)
             return
         }
         if let pending = agent.pending, case .followUp = pending.kind, agent.source == .codex {
@@ -299,6 +313,40 @@ final class CodingSessions {
             return
         }
         resume(agent, text: text)
+    }
+
+    /// Wakes the real session, so the reply and the answer both show up in its own chat.
+    private func deliver(_ text: String, to agent: Agent, through waiter: HookRequest) {
+        waiter.respond(Data("The user replied from Perch, their notch app. Treat this as their next message:\n\n\(text)".utf8))
+        if agent.waiter === waiter { agent.waiter = nil }
+        clearPending(agent)
+        agent.status = .working
+        agent.detail = oneLine(text)
+        agent.lastActivity = Date()
+    }
+
+    /// Hands a new chat to the Claude desktop app, with the prompt and folder filled in.
+    func newClaudeChat(prompt: String?) {
+        var link = URLComponents(string: "claude://code/new")!
+        var items: [URLQueryItem] = []
+        if let prompt, !prompt.isEmpty { items.append(URLQueryItem(name: "q", value: prompt)) }
+        // Start it where the most recent session was working.
+        if let cwd = store.sessions.first(where: { $0.source == .claude && $0.cwd != nil })?.cwd {
+            items.append(URLQueryItem(name: "folder", value: cwd))
+        }
+        if !items.isEmpty { link.queryItems = items }
+        if let url = link.url { NSWorkspace.shared.open(url) }
+    }
+
+    /// Brings a session found by search into the notch so it can be read and replied to.
+    func adopt(_ entry: SessionIndex.Entry) -> Agent {
+        let agent = store.upsert(source: .claude, sessionID: entry.id, name: entry.title)
+        agent.transcriptPath = entry.path
+        agent.cwd = entry.cwd
+        agent.hostBundleID = Self.claudeBundleID
+        agent.lastActivity = Date()
+        titled.insert(agent.id)
+        return agent
     }
 
     /// The turn is long over, so continue the session in the background instead.
