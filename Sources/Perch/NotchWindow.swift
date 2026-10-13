@@ -258,7 +258,7 @@ final class NotchUI {
     }
 
     /// Opening a row counts as reading it, so its badge clears here and in the agent's own app.
-    private func markSeen(_ id: String) {
+    func markSeen(_ id: String) {
         guard let agent = AgentStore.shared.find(id) else { return }
         if agent.source == .grok {
             GrokSource.shared.markRead(agent)

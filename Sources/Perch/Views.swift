@@ -1467,6 +1467,11 @@ private struct ChatView: View {
         .padding(.top, 2)
         // Reload when the agent says something new or changes state.
         .task(id: "\(agent.id)|\(agent.status.rawValue)|\(agent.lastMessage.count)|\(agent.tick)") { Threads.load(agent) }
+        // Having the chat open in front of you is reading it, however it came to be open and
+        // whenever the message arrived.
+        .onAppear { ui.markSeen(agent.id) }
+        .onChange(of: agent.unread) { ui.markSeen(agent.id) }
+        .onChange(of: agent.status) { ui.markSeen(agent.id) }
     }
 
     /// What is drawn, top to bottom: ordinary messages one by one, and each run of bot-to-bot
