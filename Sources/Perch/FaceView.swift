@@ -86,6 +86,26 @@ struct EyePose: Equatable {
         EyePose(step: 10, x: 0, y: -0.02, tilt: 0, w: 0.115, h: 0.27, gap: 0.31),
     ]
 
+    /// The same pose pulled in towards the middle just far enough that both eyes sit inside
+    /// the head, with a little margin from its edge.
+    var fitted: EyePose {
+        let limit: CGFloat = 0.42
+        let a = CGFloat(tilt * .pi / 180)
+        let reach = max(w, h) / 2
+        func worst(_ k: CGFloat) -> CGFloat {
+            [-1.0, 1.0].map { side -> CGFloat in
+                let cx = x * k + side * gap / 2 * cos(a), cy = y * k + side * gap / 2 * sin(a)
+                return (cx * cx + cy * cy).squareRoot() + reach
+            }.max() ?? 0
+        }
+        var k: CGFloat = 1
+        while k > 0, worst(k) > limit { k -= 0.05 }
+        var p = self
+        p.x = x * max(0, k)
+        p.y = y * max(0, k)
+        return p
+    }
+
     /// How long the move into each step takes. Repeated poses are the holds.
     var duration: Double {
         switch step {
@@ -129,7 +149,8 @@ struct GrokEyes: View {
         .onHover { over in withAnimation(.easeOut(duration: 0.18)) { hovered = over } }
     }
 
-    private func eyes(_ pose: EyePose) -> some View {
+    private func eyes(_ raw: EyePose) -> some View {
+        let pose = raw.fitted
         HStack(spacing: 0) {
             Capsule().fill(.white).frame(width: size * pose.w, height: size * pose.h)
             Spacer(minLength: 0)
