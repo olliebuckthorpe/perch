@@ -161,8 +161,9 @@ final class NotchUI {
         }
         // Step out of another agent's chat so the prompt is visible, unless a reply is half written there.
         if let open = selectedID, open != id, !isDrafting(open) { selectedID = nil }
-        // A session that has just finished opens as its full conversation, ready for a reply.
-        if case .followUp = pending.kind, selectedID == nil {
+        // Anything that needs you opens as that agent's full conversation, so the ask has its context.
+        _ = pending
+        if selectedID == nil {
             selectedID = id
             cardsOnly = false
         }

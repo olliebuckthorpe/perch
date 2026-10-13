@@ -715,7 +715,15 @@ private struct PendingCard: View {
 
     private func title(_ kind: PendingKind) -> String {
         switch kind {
-        case .permission(let tool, _): return tool == "Bash" ? "Run this command?" : "Allow \(tool)?"
+        case .permission(let tool, _):
+            switch tool {
+            case "Bash": return "Run this command?"
+            case "WebSearch": return "Search the web for this?"
+            case "WebFetch": return "Open this page?"
+            case "Edit", "Write", "MultiEdit", "NotebookEdit": return "Change this file?"
+            case "Read": return "Read this file?"
+            default: return "Use \(tool)?"
+            }
         case .question: return "Quick question"
         case .followUp: return "Anything else?"
         }
@@ -730,6 +738,10 @@ private struct PendingCard: View {
             HStack(spacing: 8) {
                 Button("Deny") { CodingSessions.shared.deny(agent) }.buttonStyle(ChipButton())
                 Button("Allow") { CodingSessions.shared.allow(agent) }.buttonStyle(ChipButton(fill: Palette.green))
+                // Never offered for shell commands, where each one deserves a look.
+                if let tool = agent.pending?.toolName, !["Bash", "shell", "exec_command"].contains(tool) {
+                    Button("Always in this chat") { CodingSessions.shared.allowAlways(agent) }.buttonStyle(ChipButton())
+                }
                 Spacer()
                 Button("In the app") { CodingSessions.shared.dismiss(agent) }.buttonStyle(LinkButton())
             }

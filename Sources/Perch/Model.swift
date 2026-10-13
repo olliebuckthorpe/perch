@@ -40,6 +40,8 @@ final class PendingRequest: Identifiable {
     let kind: PendingKind
     let createdAt = Date()
     var deadline: Date
+    /// The tool a permission request is about, as the agent names it.
+    var toolName: String?
     private var respond: ((Data) -> Void)?
 
     init(kind: PendingKind, deadline: Date, respond: @escaping (Data) -> Void) {

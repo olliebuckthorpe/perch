@@ -45,14 +45,15 @@ final class CodingSessions {
     }
 
     /// The session title and working directory, read from the end of a Claude Code transcript.
-    static func transcriptInfo(_ path: String, span: UInt64 = 400 << 10) -> (title: String?, cwd: String?) {
-        guard let h = FileHandle(forReadingAtPath: path) else { return (nil, nil) }
+    static func transcriptInfo(_ path: String, span: UInt64 = 400 << 10) -> (title: String?, cwd: String?, prompt: String?) {
+        guard let h = FileHandle(forReadingAtPath: path) else { return (nil, nil, nil) }
         defer { try? h.close() }
         let size = (try? h.seekToEnd()) ?? 0
         try? h.seek(toOffset: size > span ? size - span : 0)
-        guard let data = try? h.readToEnd() else { return (nil, nil) }
+        guard let data = try? h.readToEnd() else { return (nil, nil, nil) }
         var title: String?
         var cwd: String?
+        var prompt: String?
         for line in String(decoding: data, as: UTF8.self).split(separator: "\n").reversed() {
             if title == nil, line.contains("\"custom-title\"") || line.contains("\"agent-name\""),
                let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] {
@@ -62,9 +63,13 @@ final class CodingSessions {
                let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] {
                 cwd = o["cwd"] as? String
             }
+            if prompt == nil, line.contains("\"last-prompt\""),
+               let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] {
+                prompt = o["lastPrompt"] as? String
+            }
             if title != nil && cwd != nil { break }
         }
-        return (title, cwd)
+        return (title, cwd, prompt)
     }
 
     func start() {
@@ -105,9 +110,13 @@ final class CodingSessions {
         } else if source == .claude, let path = j["transcript_path"] as? String,
                   !titled.contains(agent.id) || event == "UserPromptSubmit" || event == "Stop" {
             // Claude Code names a session a little after it starts, so look again at turn boundaries.
-            if let title = Self.transcriptInfo(path).title {
+            let info = Self.transcriptInfo(path)
+            if let title = info.title {
                 agent.name = title
                 titled.insert(agent.id)
+            } else if let prompt = info.prompt, !agent.background || agent.name == Self.name(for: cwd, source: source) {
+                // No title yet (background chats never get one): what was asked says more than a folder name.
+                agent.name = oneLine(prompt, max: 44)
             }
         }
 
@@ -136,8 +145,16 @@ final class CodingSessions {
             let detail = Self.permissionDetail(tool: tool, input: input)
             agent.status = .needsYou
             agent.detail = "Wants to use \(Self.toolLabel(tool)): \(oneLine(detail, max: 80))"
+            if autoAllow[agent.id]?.contains(tool) == true {
+                // The user chose "Always" for this tool in this chat.
+                agent.status = .working
+                agent.detail = Self.activity(tool: tool, input: input)
+                req.respond((try? JSONSerialization.data(withJSONObject: Self.permissionReply(["behavior": "allow"]))) ?? Data())
+                return
+            }
             guard !hostIsFrontmost(agent) else { store.ping(agent, sound: false); req.respond(); return }
             hold(agent, req, kind: .permission(tool: Self.toolLabel(tool), detail: detail), seconds: 285)
+            agent.pending?.toolName = tool
 
         case ("PreToolUse", "ask"):
             let questions = Self.questions(from: input)
@@ -271,10 +288,22 @@ final class CodingSessions {
 
     func allow(_ agent: Agent) { decide(agent, ["behavior": "allow"]) }
 
+    /// Allow this request and every later one for the same tool in this chat, until Perch restarts.
+    func allowAlways(_ agent: Agent) {
+        if let tool = agent.pending?.toolName { autoAllow[agent.id, default: []].insert(tool) }
+        allow(agent)
+    }
+
+    private var autoAllow: [String: Set<String>] = [:]
+
+    private static func permissionReply(_ decision: [String: Any]) -> [String: Any] {
+        ["hookSpecificOutput": ["hookEventName": "PermissionRequest", "decision": decision]]
+    }
+
     func deny(_ agent: Agent) { decide(agent, ["behavior": "deny", "message": "Denied from the notch."]) }
 
     private func decide(_ agent: Agent, _ decision: [String: Any]) {
-        agent.pending?.finish(["hookSpecificOutput": ["hookEventName": "PermissionRequest", "decision": decision]])
+        agent.pending?.finish(Self.permissionReply(decision))
         agent.pending = nil
         agent.status = .working
         agent.detail = decision["behavior"] as? String == "allow" ? "Allowed, carrying on" : "Denied"
@@ -344,7 +373,7 @@ final class CodingSessions {
             agent.detail = "Could not find the claude command"
             return agent
         }
-        run(agent, exe: exe, args: ["-p", "--session-id", id, prompt], text: prompt)
+        run(agent, exe: exe, args: ["-p", "--permission-mode", "auto", "--session-id", id, prompt], text: prompt)
         return agent
     }
 
@@ -394,9 +423,11 @@ final class CodingSessions {
         }
         // A chat started here whose first run never got going has nothing to resume yet.
         let neverStarted = agent.background && agent.transcriptPath == nil
+        // Chats started from the notch run in auto mode, so they do not stop to ask at every step.
+        let auto = agent.background ? ["--permission-mode", "auto"] : []
         let args = agent.source == .codex
             ? ["exec", "resume", agent.sessionID, text, "--skip-git-repo-check"]
-            : neverStarted ? ["-p", "--session-id", agent.sessionID, text] : ["-p", "--resume", agent.sessionID, text]
+            : neverStarted ? ["-p"] + auto + ["--session-id", agent.sessionID, text] : ["-p"] + auto + ["--resume", agent.sessionID, text]
         run(agent, exe: exe, args: args, text: text)
     }
 
@@ -494,6 +525,14 @@ final class CodingSessions {
         if let c = input["command"] as? String ?? input["cmd"] as? String { return c }
         if let f = input["file_path"] as? String { return f }
         if let u = input["url"] as? String { return u }
+        if let q = input["query"] as? String { return q }
+        // Anything else: the simple fields, one per line, instead of raw JSON.
+        let lines = input.keys.sorted().compactMap { key -> String? in
+            if let s = input[key] as? String, !s.isEmpty { return "\(key): \(oneLine(s, max: 140))" }
+            if let n = input[key] as? NSNumber { return "\(key): \(n)" }
+            return nil
+        }
+        if !lines.isEmpty { return lines.prefix(6).joined(separator: "\n") }
         guard let data = try? JSONSerialization.data(withJSONObject: input, options: [.sortedKeys]),
               let s = String(data: data, encoding: .utf8) else { return "" }
         return String(s.prefix(300))
