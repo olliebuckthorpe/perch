@@ -54,6 +54,46 @@ extension Agent {
     var color: Color { avatarColor.flatMap { Palette.grok[$0] } ?? Palette.color(colorIndex) }
 }
 
+/// Codex's cloud: a soft, bumpy blob in a blue-to-violet wash with a white `>_` prompt on it.
+struct CodexMark: View {
+    private struct Cloud: Shape {
+        func path(in rect: CGRect) -> Path {
+            var p = Path()
+            let c = CGPoint(x: rect.midX, y: rect.midY)
+            let radius = min(rect.width, rect.height) / 2
+            for i in 0...120 {
+                let t = Double(i) / 120 * 2 * .pi
+                let r = radius * (0.89 + 0.11 * cos(7 * t + 0.4))
+                let pt = CGPoint(x: c.x + r * cos(t), y: c.y + r * sin(t))
+                if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+            }
+            p.closeSubpath()
+            return p
+        }
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let s = min(geo.size.width, geo.size.height)
+            ZStack {
+                Cloud().fill(LinearGradient(colors: [Color(red: 0.62, green: 0.72, blue: 1.0), Color(red: 0.33, green: 0.27, blue: 0.96)],
+                                            startPoint: .topLeading, endPoint: .bottomTrailing))
+                // The prompt: a chevron and an underscore, in white.
+                Path { p in
+                    p.move(to: CGPoint(x: s * 0.30, y: s * 0.37))
+                    p.addLine(to: CGPoint(x: s * 0.44, y: s * 0.50))
+                    p.addLine(to: CGPoint(x: s * 0.30, y: s * 0.63))
+                    p.move(to: CGPoint(x: s * 0.52, y: s * 0.64))
+                    p.addLine(to: CGPoint(x: s * 0.72, y: s * 0.64))
+                }
+                .stroke(.white, style: StrokeStyle(lineWidth: max(1.2, s * 0.085), lineCap: .round, lineJoin: .round))
+            }
+            .frame(width: s, height: s)
+            .position(x: geo.size.width / 2, y: geo.size.height / 2)
+        }
+    }
+}
+
 /// The Claude Code mascot, drawn as the chunky pixel creature it is: a wide orange body, two
 /// square eyes, stubby arms out to the sides and four little legs.
 struct Mascot: View {
@@ -143,6 +183,9 @@ struct FaceView: View {
         ZStack {
             if agent.source == .grok {
                 grokBody
+            } else if agent.source == .codex {
+                // Every Codex chat wears Codex's own look: the soft blue cloud with a terminal prompt.
+                CodexMark().frame(width: size, height: size)
             } else if agent.source == .claude {
                 // Every Claude chat wears the same little orange Claude Code creature.
                 Mascot(eyes: .black.opacity(0.85)).frame(width: size, height: size)
@@ -160,7 +203,7 @@ struct FaceView: View {
         .opacity(quiet ? 0.8 : 1)
         // Jumps while there is something waiting for the user: a question, a permission, or (for
         // a Claude chat) a reply they have not opened yet. It stops once the chat is opened.
-        .modifier(Bounce(active: agent.status == .needsYou || (agent.source == .claude && agent.status == .done),
+        .modifier(Bounce(active: agent.status == .needsYou || (agent.source != .grok && agent.status == .done),
                          height: max(2.5, size * 0.2)))
         .overlay(alignment: .topTrailing) { badge.offset(x: size * 0.16, y: -size * 0.12) }
     }
