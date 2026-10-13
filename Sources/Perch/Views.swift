@@ -1538,6 +1538,11 @@ private struct ChatView: View {
                 .onChange(of: messages.last?.id) {
                     withAnimation(.easeOut(duration: 0.22)) { settle(proxy) }
                 }
+                // Something in the chat was opened up (a file to read): bring it to the top.
+                .onChange(of: ui.scrollTarget?.n) {
+                    guard let id = ui.scrollTarget?.id else { return }
+                    withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .top) }
+                }
                 .onAppear {
                     // Go to the newest message as the chat appears, and again once it has been
                     // laid out, since the first attempt can land before the content has a size.
@@ -1736,7 +1741,7 @@ private struct ChatView: View {
                     }
                 }
             } else if let name = message.fileName, let path = message.filePath {
-                FileCard(name: name, path: path, agent: agent)
+                FileCard(name: name, path: path, agent: agent, messageID: message.id)
             } else if let email = message.email {
                 EmailCard(draft: email, agent: agent)
             } else if let choice = message.choice {
@@ -2232,6 +2237,7 @@ private struct FileCard: View {
     let name: String
     let path: String
     let agent: Agent
+    var messageID = ""
     @Environment(NotchUI.self) private var ui
     @State private var expanded = false
     @State private var text: String?
@@ -2284,9 +2290,14 @@ private struct FileCard: View {
 
     private func toggle() {
         expanded.toggle()
-        guard expanded, text == nil, !failed else { return }
+        guard expanded else { return }
+        // Start reading from the top of the file: the card moves up to the top of the chat,
+        // now and again once the text has arrived and the card has its full height.
+        ui.bringToTop(messageID)
+        guard text == nil, !failed else { return }
         GrokSource.shared.readAttachment(path) { loaded in
             if let loaded { text = loaded } else { failed = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { ui.bringToTop(messageID) }
         }
     }
 }

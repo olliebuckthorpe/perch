@@ -34,6 +34,11 @@ final class NotchUI {
     var searchIndex = 0
     /// Whether the open chat should take the keyboard. Only after a deliberate click, never on hover.
     private(set) var focusReply = false
+    /// A message the open chat should bring to the top, and a count so asking twice still works.
+    var scrollTarget: (id: String, n: Int)?
+
+    func bringToTop(_ id: String) { scrollTarget = (id, (scrollTarget?.n ?? 0) + 1) }
+
     /// The message a reply is aimed at, per chat (Grok bots only).
     var replyTo: [String: ChatMessage] = [:]
     /// A sideways swipe in progress over a message: which one, and how far it has been pulled.
