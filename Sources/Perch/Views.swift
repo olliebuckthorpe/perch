@@ -609,6 +609,23 @@ private struct ProfileAvatar: View {
         return Color(red: Double((v >> 16) & 0xFF) / 255, green: Double((v >> 8) & 0xFF) / 255, blue: Double(v & 0xFF) / 255)
     }
 
+    private static var solid: [ObjectIdentifier: Bool] = [:]
+
+    /// True when the image is painted right into its corners, i.e. a solid square, not a
+    /// shape on a transparent background.
+    private static func fillsItsSquare(_ image: NSImage) -> Bool {
+        let key = ObjectIdentifier(image)
+        if let known = solid[key] { return known }
+        var result = false
+        if let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+            let (w, h) = (rep.pixelsWide, rep.pixelsHigh)
+            let corners = [(1, 1), (w - 2, 1), (1, h - 2), (w - 2, h - 2)]
+            result = w > 4 && h > 4 && corners.allSatisfy { (rep.colorAt(x: $0.0, y: $0.1)?.alphaComponent ?? 0) > 0.95 }
+        }
+        solid[key] = result
+        return result
+    }
+
     private var icon: NSImage? {
         guard let path = profile.iconPath else { return nil }
         if let cached = Self.pictures.object(forKey: path as NSString) { return cached }
@@ -628,8 +645,12 @@ private struct ProfileAvatar: View {
     var body: some View {
         let initial = String(profile.name.prefix(1)).uppercased()
         ZStack {
-            if let icon {
-                // A chosen icon sits whole on a white disc, since logos are rarely round.
+            if let icon, Self.fillsItsSquare(icon) {
+                // A solid square icon (a block of brand colour) fills the whole circle.
+                Image(nsImage: icon).resizable().aspectRatio(contentMode: .fill)
+                    .frame(width: size, height: size).clipShape(Circle())
+            } else if let icon {
+                // A logo with transparent edges sits whole on a white disc instead.
                 Image(nsImage: icon).resizable().aspectRatio(contentMode: .fit)
                     .padding(size * 0.14)
                     .frame(width: size, height: size).background(.white, in: Circle()).clipShape(Circle())
