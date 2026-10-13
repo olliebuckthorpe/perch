@@ -31,7 +31,14 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 </dict>
 </plist>
 EOF
-codesign --force --sign - "$APP" >/dev/null 2>&1
+# Sign with the permanent local certificate when it exists, so macOS sees every build as the
+# same app and permissions (Accessibility, microphone) survive a rebuild. Ad-hoc otherwise.
+if security find-certificate -c "Perch Signing" >/dev/null 2>&1 && codesign --force --sign "Perch Signing" "$APP" >/dev/null 2>&1; then
+  echo "Signed with Perch Signing"
+else
+  codesign --force --sign - "$APP" >/dev/null 2>&1
+  echo "Signed ad hoc"
+fi
 echo "Built $APP"
 
 if [ "$1" = "--run" ]; then
