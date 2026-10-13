@@ -167,8 +167,18 @@ final class NotchUI {
             selectedID = id
             cardsOnly = false
         }
-        holdOpenUntil = Date().addingTimeInterval(4)
+        holdOpenUntil = Date().addingTimeInterval(1.5)
         expanded = true
+        // Behave like a notification: show for a few seconds, then tuck away unless the pointer
+        // has come up to it. The face in the notch keeps signalling until it is dealt with.
+        guard autoOpened else { return }
+        collapseWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.autoOpened, !self.hovering, !self.typing else { return }
+            self.collapse()
+        }
+        collapseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
     }
 
     func pendingChanged(_ count: Int) {
