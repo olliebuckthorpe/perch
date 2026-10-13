@@ -81,18 +81,48 @@ struct FaceView: View {
     var body: some View {
         let quiet = agent.status == .idle
         ZStack {
-            bodyShape.fill(agent.color)
-            VStack(spacing: size * 0.07) {
-                eyes
-                if size >= 24 { mouth }
+            if agent.source == .grok {
+                grokBody
+            } else {
+                bodyShape.fill(agent.color)
+                VStack(spacing: size * 0.07) {
+                    eyes
+                    if size >= 24 { mouth }
+                }
+                .offset(y: size >= 24 ? size * 0.02 : 0)
             }
-            .offset(y: size >= 24 ? size * 0.02 : 0)
         }
         .frame(width: size, height: size)
         .saturation(quiet ? 0.75 : 1)
         .opacity(quiet ? 0.8 : 1)
         .modifier(Bounce(active: agent.status == .needsYou))
         .overlay(alignment: .topTrailing) { badge.offset(x: size * 0.16, y: -size * 0.12) }
+    }
+
+    /// Grok Bot's own look: a round blob with two tilted highlight eyes, top right.
+    @ViewBuilder private var grokBody: some View {
+        let black = agent.avatarColor == "black"
+        Circle().fill(black ? Color.black : agent.color)
+            // A black blob needs an edge to show up against the island.
+            .overlay(Circle().strokeBorder(.white.opacity(black ? 0.32 : 0), lineWidth: max(1, size * 0.05)))
+        if agent.status == .working {
+            TimelineView(.periodic(from: .now, by: 1.1)) { context in
+                let step = Int(context.date.timeIntervalSinceReferenceDate / 1.1) % 4
+                grokEyes.offset(x: [-1.0, 0, 1.0, 0][step] * size * 0.05)
+                    .animation(.easeInOut(duration: 0.3), value: step)
+            }
+        } else {
+            grokEyes
+        }
+    }
+
+    private var grokEyes: some View {
+        ZStack {
+            Capsule().fill(.white).frame(width: size * 0.10, height: size * 0.24)
+                .rotationEffect(.degrees(-24)).offset(x: size * 0.05, y: -size * 0.16)
+            Capsule().fill(.white).frame(width: size * 0.09, height: size * 0.17)
+                .rotationEffect(.degrees(-24)).offset(x: size * 0.25, y: -size * 0.22)
+        }
     }
 
     private var bodyShape: AnyShape {
