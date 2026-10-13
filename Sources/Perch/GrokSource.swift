@@ -280,7 +280,7 @@ final class GrokSource {
         }
     }
 
-    func send(_ agent: Agent, text: String, files: [Attachment] = []) {
+    func send(_ agent: Agent, text: String, files: [Attachment] = [], replyTo: String? = nil) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !(text.isEmpty && files.isEmpty) else { return }
         let prompt = text.isEmpty ? "See the attached image." : text
@@ -290,6 +290,7 @@ final class GrokSource {
 
         func post(_ paths: [String]) {
             var body: [String: Any] = ["agentId": agent.sessionID, "prompt": prompt, "clientNonce": UUID().uuidString.lowercased()]
+            if let replyTo { body["replyToId"] = replyTo }
             if !paths.isEmpty {
                 body["attachmentPaths"] = paths
                 body["attachmentNames"] = files.map(\.name)

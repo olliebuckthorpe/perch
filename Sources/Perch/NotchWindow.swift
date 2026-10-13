@@ -34,6 +34,49 @@ final class NotchUI {
     var searchIndex = 0
     /// Whether the open chat should take the keyboard. Only after a deliberate click, never on hover.
     private(set) var focusReply = false
+    /// The message a reply is aimed at, per chat (Grok bots only).
+    var replyTo: [String: ChatMessage] = [:]
+    /// A sideways swipe in progress over a message: which one, and how far it has been pulled.
+    var swipe: (id: String, x: CGFloat)?
+    /// The message under the pointer, for the swipe to act on.
+    @ObservationIgnored var hoveredMessage: (agent: String, message: ChatMessage)?
+    @ObservationIgnored private var swipeSum = CGSize.zero
+    @ObservationIgnored private var swipeAxis: Bool?
+
+    /// Two fingers sideways over a message pulls it aside; past a point, letting go aims the
+    /// reply at it. Returns true when the gesture is being handled here, so the chat does not
+    /// scroll at the same time.
+    func scrolled(_ event: NSEvent) -> Bool {
+        guard event.hasPreciseScrollingDeltas, expanded else { return false }
+        if event.phase == .began {
+            swipeSum = .zero
+            swipeAxis = nil
+        }
+        guard let target = hoveredMessage else { return false }
+        if event.phase == .changed {
+            swipeSum.width += event.scrollingDeltaX
+            swipeSum.height += event.scrollingDeltaY
+            if swipeAxis == nil, abs(swipeSum.width) + abs(swipeSum.height) > 8 {
+                swipeAxis = abs(swipeSum.width) > abs(swipeSum.height) * 1.6
+            }
+            guard swipeAxis == true else { return false }
+            swipe = (target.message.id, max(-64, min(64, swipeSum.width * 0.7)))
+            return true
+        }
+        if event.phase == .ended || event.phase == .cancelled {
+            guard swipeAxis == true else { return false }
+            if event.phase == .ended, abs(swipeSum.width) * 0.7 > 40 {
+                replyTo[target.agent] = target.message
+                focusReply = true
+                controller?.panel.makeKey()
+            }
+            swipeAxis = nil
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { swipe = nil }
+            return true
+        }
+        // Momentum after the fingers lift belongs to whichever gesture it was.
+        return swipeAxis == true
+    }
     /// Writing the first message of a new chat.
     var composing = false
     /// True when the island opened itself for a prompt, so it shows only that prompt.
@@ -428,6 +471,9 @@ final class NotchController {
         }) { monitors.append(m) }
         if let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
             self?.ui.outsideClick()
+        }) { monitors.append(m) }
+        if let m = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: { [weak self] event in
+            self?.ui.scrolled(event) == true ? nil : event
         }) { monitors.append(m) }
         // A click on the island gives it the keyboard straight away, so the first click on a text
         // box starts typing instead of only waking the window up.

@@ -37,7 +37,7 @@ struct NotchContent: View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 HStack(spacing: 0) {
-                    if grokDial { UsageDial(plan: usage.grok, name: "Grok Bot", color: .white).padding(.leading, 10) }
+                    if grokDial { UsageDial(plan: usage.grok, name: "Grok Bot", color: .white, labelOnLeft: true).padding(.leading, 10) }
                     Ear(agents: left)
                 }
                 .frame(width: l + extra / 2, alignment: .trailing)
@@ -441,7 +441,39 @@ private struct UsageDial: View {
         }
         .frame(width: 14, height: 14)
         .reach(4, 9)
-        .help(describe)
+        .onHover { hovered = $0 }
+        // The figure appears beside the dial, on the outer side where there is room.
+        .overlay(alignment: labelOnLeft ? .trailing : .leading) {
+            if hovered {
+                Text(label).font(.system(size: 10.5, weight: .medium)).monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.9)).fixedSize()
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Color(white: 0.16), in: Capsule())
+                    .offset(x: labelOnLeft ? -20 : 20)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: hovered)
+    }
+
+    @State private var hovered = false
+    var labelOnLeft = false
+
+    /// "15% this week, resets Tue 02:16", or both windows for a plan that has two.
+    private var label: String {
+        func when(_ w: Usage.Window) -> String {
+            guard let resets = w.resets, resets > Date() else { return "" }
+            let f = DateFormatter()
+            f.dateFormat = resets.timeIntervalSinceNow < 20 * 3600 ? "HH:mm" : "EEE HH:mm"
+            return ", resets \(f.string(from: resets))"
+        }
+        // Kept short: there is not much room beside the notch.
+        if let s = plan.short, let w = plan.week {
+            return "5h \(Int(s.current.rounded()))%  ·  week \(Int(w.current.rounded()))%"
+        }
+        if let w = plan.week ?? plan.short { return "\(Int(w.current.rounded()))% used\(when(w))" }
+        return ""
     }
 
     private func ring(_ part: Double, width: CGFloat) -> some View {
@@ -1476,7 +1508,11 @@ private struct ChatView: View {
                         ForEach(items) { item in
                             Group {
                                 if item.peers.isEmpty, let message = item.message {
-                                    bubble(message)
+                                    if agent.source == .grok, !message.id.hasPrefix("local-"), message.id != "latest" {
+                                        bubble(message).modifier(SwipeToReply(agent: agent, message: message))
+                                    } else {
+                                        bubble(message)
+                                    }
                                 } else {
                                     PeerGroup(owner: agent.name, messages: item.peers)
                                 }
@@ -1828,6 +1864,22 @@ private struct ReplyField: View {
                 }
                 .padding(.top, 3)
             }
+        if let target = ui.replyTo[agent.id] {
+            // The message this reply is aimed at, with a way to drop it.
+            HStack(spacing: 6) {
+                Image(systemName: "arrowshape.turn.up.left.fill").font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.5))
+                Text(oneLine(target.text, max: 90)).font(.system(size: 11)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                Spacer(minLength: 0)
+                Button { ui.replyTo[agent.id] = nil } label: {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold)).foregroundStyle(.white.opacity(0.6))
+                        .frame(width: 15, height: 15).background(.white.opacity(0.12), in: Circle())
+                }
+                .buttonStyle(Press())
+            }
+            .padding(.bottom, 5)
+            .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.1)).frame(height: 1) }
+            .transition(.opacity.combined(with: .offset(y: 4)))
+        }
         HStack(alignment: .bottom, spacing: 6) {
             TextField(placeholder, text: draft, axis: .vertical)
                 .textFieldStyle(.plain).font(.system(size: 13)).lineLimit(1...4)
@@ -1886,6 +1938,9 @@ private struct ReplyField: View {
             guard autofocus, !busy else { return }
             DispatchQueue.main.async { focused = true }
         }
+        // Aiming a reply at a message puts the cursor in the box.
+        .onChange(of: ui.replyTo[agent.id]?.id) { _, id in if id != nil { focused = true } }
+        .animation(.easeOut(duration: 0.15), value: ui.replyTo[agent.id]?.id)
     }
 
     private func send() {
@@ -1896,7 +1951,9 @@ private struct ReplyField: View {
         ui.drafts[agent.id] = nil
         ui.attachments[agent.id] = nil
         if agent.source == .grok {
-            GrokSource.shared.send(agent, text: text, files: files)
+            let target = ui.replyTo[agent.id]?.id
+            ui.replyTo[agent.id] = nil
+            GrokSource.shared.send(agent, text: text, files: files, replyTo: target)
         } else {
             // Claude Code and Codex run on this Mac, so they can open the saved image themselves.
             let notes = files.map { "[Image attached, saved at \($0.path)]" }
@@ -2076,6 +2133,36 @@ private struct MessageBody: View {
         .padding(.horizontal, 9).padding(.vertical, 3)
         .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.white.opacity(0.1), lineWidth: 1))
+    }
+}
+
+/// Lets a message be pulled sideways with two fingers to reply to it, the way Grok Bot does.
+/// A reply arrow fades in as it is pulled, and turns solid once letting go will count.
+private struct SwipeToReply: ViewModifier {
+    let agent: Agent
+    let message: ChatMessage
+    @Environment(NotchUI.self) private var ui
+
+    func body(content: Content) -> some View {
+        let x = ui.swipe?.id == message.id ? ui.swipe!.x : 0
+        content
+            .offset(x: x)
+            .background(alignment: x >= 0 ? .leading : .trailing) {
+                Image(systemName: "arrowshape.turn.up.left.fill").font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(abs(x) > 40 ? 0.95 : 0.4))
+                    .opacity(min(1, abs(x) / 30))
+                    .scaleEffect(abs(x) > 40 ? 1.15 : 0.9)
+                    .animation(.easeOut(duration: 0.12), value: abs(x) > 40)
+                    .padding(.horizontal, 8)
+            }
+            .contentShape(Rectangle())
+            .onHover { over in
+                if over {
+                    ui.hoveredMessage = (agent.id, message)
+                } else if ui.hoveredMessage?.message.id == message.id {
+                    ui.hoveredMessage = nil
+                }
+            }
     }
 }
 

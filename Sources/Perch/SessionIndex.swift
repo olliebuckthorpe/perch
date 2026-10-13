@@ -26,7 +26,8 @@ final class SessionIndex {
             let fm = FileManager.default
             let cutoff = Date().addingTimeInterval(-14 * 86400)
             var files: [(String, Date)] = []
-            for project in (try? fm.contentsOfDirectory(atPath: root)) ?? [] {
+            // Perch's own helper runs (titles, the usage check) are not chats.
+            for project in (try? fm.contentsOfDirectory(atPath: root)) ?? [] where !project.hasSuffix("--perch") {
                 for file in (try? fm.contentsOfDirectory(atPath: "\(root)/\(project)")) ?? [] where file.hasSuffix(".jsonl") {
                     let path = "\(root)/\(project)/\(file)"
                     if let m = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date, m > cutoff {

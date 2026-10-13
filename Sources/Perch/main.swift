@@ -57,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller = NotchController(store: AgentStore.shared)
         AgentStore.shared.restore()
         CodingSessions.shared.start()
+        Usage.shared.start()
         if EdgeGuard.wanted { EdgeGuard.shared.start(prompt: false) }
         codex.start()
         GrokSource.shared.start()

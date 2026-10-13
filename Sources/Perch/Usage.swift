@@ -55,6 +55,39 @@ final class Usage {
         Self.save(plan, "usageClaude")
     }
 
+    /// Claude Code reports the plan's windows alongside every reply when it runs headless. Perch
+    /// asks its smallest model for one word every so often and reads that report. It uses the
+    /// `claude` command's own login, so Perch never touches the account's credentials.
+    func refreshClaude() {
+        guard let exe = Shell.find("claude") else { return }
+        let args = ["-p", "Reply with the single word ok", "--model", "haiku", "--output-format", "stream-json", "--verbose"]
+        Shell.run(exe, args, cwd: "\(Shell.home)/.perch", env: ["PERCH_SKIP": "1"]) { [weak self] _, output in
+            for line in output.split(separator: "\n") where line.contains("rate_limit_event") {
+                guard let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                      let info = o["rate_limit_info"] as? [String: Any],
+                      let windows = info["unifiedWindows"] as? [String: Any] else { continue }
+                func window(_ key: String) -> Window? {
+                    guard let d = windows[key] as? [String: Any], let part = (d["utilization"] as? NSNumber)?.doubleValue else { return nil }
+                    let resets = (d["resetsAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
+                    return Window(used: part * 100, resets: resets)
+                }
+                let plan = Plan(short: window("five_hour"), week: window("seven_day"), at: Date())
+                guard plan.short != nil || plan.week != nil else { continue }
+                self?.claude = plan
+                Self.save(plan, "usageClaude")
+            }
+        }
+    }
+
+    private var timer: Timer?
+
+    /// Now, then every twenty minutes.
+    func start() {
+        refreshClaude()
+        timer = Timer.scheduledTimer(withTimeInterval: 1200, repeats: true) { [weak self] _ in self?.refreshClaude() }
+        timer?.tolerance = 120
+    }
+
     /// Codex's `rate_limits` block: `primary` is the five hour window, `secondary` the week.
     func takeCodex(_ limits: [String: Any], at: Date) {
         guard at > codex.at else { return }
