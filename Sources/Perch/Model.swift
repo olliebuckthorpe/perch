@@ -206,7 +206,7 @@ final class AgentStore {
         lastPing[agent.id] = now
         attentionAgentID = agent.id
         attention += 1
-        if sound && Settings.sounds { NSSound(named: "Pop")?.play() }
+        if sound && Settings.sounds { Settings.playSound() }
     }
 
     /// Coding sessions go quiet without telling anyone. Drop the stale ones.
@@ -227,6 +227,21 @@ enum Settings {
     static var sounds: Bool {
         get { d.object(forKey: "sounds") as? Bool ?? true }
         set { d.set(newValue, forKey: "sounds") }
+    }
+
+    /// Which system sound a notification makes. The quieter, softer ones come first.
+    static let soundChoices = ["Tink", "Purr", "Bottle", "Glass", "Ping", "Pop", "Submarine"]
+
+    static var soundName: String {
+        get { d.string(forKey: "soundName") ?? "Tink" }
+        set { d.set(newValue, forKey: "soundName") }
+    }
+
+    /// Played at half volume: it is a nudge, not an alarm.
+    static func playSound() {
+        guard let sound = NSSound(named: soundName)?.copy() as? NSSound else { return }
+        sound.volume = 0.5
+        sound.play()
     }
 
     /// How long a finished session waits for a follow-up typed in the notch. 0 turns it off.

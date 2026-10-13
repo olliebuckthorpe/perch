@@ -2359,6 +2359,7 @@ private struct Footer: View {
     @Environment(AgentStore.self) private var store
     @Environment(NotchUI.self) private var ui
     @State private var sounds = Settings.sounds
+    @State private var soundName = Settings.soundName
     @State private var edgeGuard = EdgeGuard.wanted
     @State private var replyWindow = Settings.replyWindow
     @State private var loginItem = SMAppService.mainApp.status == .enabled
@@ -2382,6 +2383,9 @@ private struct Footer: View {
                 Button("Forget learned link choices (\(LinkRouter.shared.settledCount))") { LinkRouter.shared.forgetEverything() }
                 Divider()
                 Toggle("Sounds", isOn: $sounds)
+                Picker("Notification sound", selection: $soundName) {
+                    ForEach(Settings.soundChoices, id: \.self) { Text($0).tag($0) }
+                }
                 Toggle("Keep the menu bar hidden in full screen", isOn: $edgeGuard)
                 Picker("Wait for a reply when a session finishes", selection: $replyWindow) {
                     Text("Off").tag(0)
@@ -2398,6 +2402,11 @@ private struct Footer: View {
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         }
         .onChange(of: sounds) { _, on in Settings.sounds = on }
+        .onChange(of: soundName) { _, name in
+            Settings.soundName = name
+            // Hear it as you pick it.
+            Settings.playSound()
+        }
         .onChange(of: edgeGuard) { _, on in
             EdgeGuard.wanted = on
             if on { EdgeGuard.shared.start(prompt: true) } else { EdgeGuard.shared.stop() }
