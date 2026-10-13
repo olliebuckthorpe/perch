@@ -454,6 +454,13 @@ private struct ChatView: View {
                 .onChange(of: contentHeight) { proxy.scrollTo("end", anchor: .bottom) }
                 .onAppear { DispatchQueue.main.async { proxy.scrollTo("end", anchor: .bottom) } }
             }
+            if agent.status == .needsYou, agent.pending == nil {
+                // It asked for something, but the request itself is not open here (answered or
+                // timed out elsewhere, or Perch restarted while it was waiting).
+                Text("It asked for something, but that request is no longer open here. Open it in its own app to check, or tell it to carry on.")
+                    .font(.system(size: 11)).foregroundStyle(Palette.amber.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 6)
+            }
             if !agent.queued.isEmpty {
                 Text("Sent. It will read this at its next step.").font(.system(size: 10.5))
                     .foregroundStyle(.white.opacity(0.4)).padding(.horizontal, 6)
