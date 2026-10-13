@@ -1222,8 +1222,11 @@ private struct ChatView: View {
                     // Opened before its history arrived: fetch it now, and once more shortly after
                     // in case the first try was too early.
                     if agent.thread.isEmpty {
-                        Threads.load(agent)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { if agent.thread.isEmpty { Threads.load(agent) } }
+                        // Keep asking for a few seconds: just after launch the first tries can
+                        // land before Perch has finished connecting.
+                        for delay in [0.0, 1.0, 2.5, 5.0, 9.0] {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { if agent.thread.isEmpty { Threads.load(agent) } }
+                        }
                     }
                 }
             }

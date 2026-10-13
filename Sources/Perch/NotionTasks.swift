@@ -21,7 +21,8 @@ final class NotionTasks {
     /// "✅ Jonny & Ollie Tasks".
     private static let database = UserDefaults.standard.string(forKey: "notionDatabase") ?? "65dc48ca8b7c4f3db300cdf1e87dafd2"
     static let tokenPath = "\(Shell.home)/.perch/notion-token"
-    static let columns = ["My to-dos", "Upshow to-dos", "Waiting On"]
+    /// The board's columns, in the order Notion shows them.
+    static let columns = ["Upshow to-dos", "My to-dos", "Waiting On"]
 
     private(set) var tasks: [TaskItem] = []
     private(set) var problem: String?
