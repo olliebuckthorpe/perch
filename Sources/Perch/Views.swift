@@ -1370,11 +1370,15 @@ private struct AgentBubble: View {
                     Image(systemName: "face.smiling").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
                 }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                .padding(.leading, 5)
+                .frame(width: 24, height: 22).contentShape(Rectangle())
+                .padding(.leading, 2)
                 .opacity(hovered ? 1 : 0)
             }
             Spacer(minLength: 28)
         }
+        // The whole row counts as "on the message", including the gap between the bubble and
+        // the face, so the face does not vanish on the way over to it.
+        .contentShape(Rectangle())
         .onHover { hovered = $0 }
     }
 }
