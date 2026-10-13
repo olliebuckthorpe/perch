@@ -27,6 +27,13 @@ final class GrokSource {
             store.grokError = node == nil ? "Node was not found" : "The grokbot plugin was not found"
             return
         }
+        // Show the bots from last time straight away; the live list replaces them in a few seconds.
+        for row in UserDefaults.standard.array(forKey: "grokRoster") as? [[String: String]] ?? [] {
+            guard let id = row["id"], let name = row["name"] else { continue }
+            let agent = store.upsert(source: .grok, sessionID: id, name: name)
+            agent.avatarColor = row["color"]
+            agent.hostBundleID = Self.bundleID
+        }
         startBridge()
         refresh()
         // Safety net in case the event stream drops something.
@@ -184,6 +191,8 @@ final class GrokSource {
             if open, (raw["unreadCount"] as? Int ?? 0) > 0 { request("setAgentUnread", ["id": id, "isUnread": false]) }
         }
         for a in store.grokBots where !live.contains(a.id) { store.remove(a) }
+        UserDefaults.standard.set(store.grokBots.map { ["id": $0.sessionID, "name": $0.name, "color": $0.avatarColor ?? ""] },
+                                  forKey: "grokRoster")
     }
 
     // MARK: Conversation

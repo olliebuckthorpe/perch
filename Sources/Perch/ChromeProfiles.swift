@@ -6,7 +6,8 @@ struct ChromeProfile: Identifiable {
     let id: String        // Chrome's folder name for it, e.g. "Profile 3"
     let name: String
     let email: String
-    /// The Google account's display name, which Chrome puts in its Profiles menu next to the profile name.
+    /// The Google account's first name. Chrome's Profiles menu shows a signed-in profile as
+    /// "First (Profile name)", or just the name when the two are the same or it is not signed in.
     let account: String
     let lastUsed: Double
 
@@ -19,7 +20,7 @@ struct ChromeProfile: Identifiable {
         let order = profile["profiles_order"] as? [String] ?? []
         return cache.map { dir, info in
             ChromeProfile(id: dir, name: info["name"] as? String ?? dir, email: info["user_name"] as? String ?? "",
-                          account: info["gaia_name"] as? String ?? "",
+                          account: info["gaia_given_name"] as? String ?? "",
                           lastUsed: info["active_time"] as? Double ?? 0)
         }.sorted {
             // Chrome's own order when it has one, otherwise most recently used first.
@@ -80,15 +81,10 @@ struct ChromeProfile: Identifiable {
         // Chrome writes a signed-in profile as "Account Name (Profile Name)" and a local one as
         // just its name, so accept either shape.
         let titles = children(menu).map(title)
-        var matches = children(menu).filter { item in
-            let t = title(item)
-            return t == name || t.hasSuffix("(\(name))") || t.hasPrefix("\(name) (")
-        }
-        // Two profiles can share a name: tell them apart by the account, then by Chrome's order.
-        if matches.count > 1, !account.isEmpty {
-            let exact = matches.filter { title($0).contains(account) }
-            if !exact.isEmpty { matches = exact }
-        }
+        // The exact wording Chrome uses wins; looser matches are only a fallback.
+        let expected = account.isEmpty || account == name ? name : "\(account) (\(name))"
+        var matches = children(menu).filter { title($0) == expected }
+        if matches.isEmpty { matches = children(menu).filter { title($0) == name || title($0).hasSuffix("(\(name))") } }
         let twins = ChromeProfile.all().filter { $0.name == name && $0.account == account }
         let position = min(twins.firstIndex { $0.id == id } ?? 0, max(0, matches.count - 1))
         let pressed = matches.indices.contains(position)
