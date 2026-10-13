@@ -574,10 +574,7 @@ private struct RailRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            FaceView(agent: agent, size: star ? 14 : 16)
-                // A pinned bot sits in a white bubble so it reads as the one that is always there.
-                .padding(star ? 3 : 0)
-                .background(.white.opacity(star ? 1 : 0), in: Circle())
+            FaceView(agent: agent, size: 16)
                 .frame(width: 20, height: 20)
             Text(agent.name)
                 .font(.system(size: 11.5, weight: selected || agent.status > .done ? .semibold : .regular))

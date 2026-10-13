@@ -43,6 +43,7 @@ enum Palette {
         return grokIDs[Int(unit * Double(grokIDs.count))]
     }
 
+    static let claude = Color(red: 0.85, green: 0.47, blue: 0.34)
     static let amber = Color(red: 1.0, green: 0.72, blue: 0.2)
     static let green = Color(red: 0.3, green: 0.85, blue: 0.5)
     static let blue = Color(red: 0.4, green: 0.7, blue: 1.0)
@@ -51,6 +52,31 @@ enum Palette {
 
 extension Agent {
     var color: Color { avatarColor.flatMap { Palette.grok[$0] } ?? Palette.color(colorIndex) }
+}
+
+/// A hand-drawn-looking burst of rays, in the spirit of Claude's spark.
+struct Spark: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let c = CGPoint(x: rect.midX, y: rect.midY)
+        let radius = min(rect.width, rect.height) / 2
+        let rays = 11
+        // Rays of slightly different lengths, so it looks drawn, not stamped.
+        let lengths: [CGFloat] = [1.0, 0.86, 0.97, 0.9, 1.0, 0.84, 0.95, 0.9, 1.0, 0.88, 0.94]
+        let half = Double.pi / Double(rays) * 0.42
+        for i in 0..<rays {
+            let a = Double(i) / Double(rays) * 2 * .pi - .pi / 2
+            let tip = radius * lengths[i]
+            let base = radius * 0.2
+            p.move(to: CGPoint(x: c.x + base * cos(a - 1.1), y: c.y + base * sin(a - 1.1)))
+            p.addLine(to: CGPoint(x: c.x + tip * cos(a - half * 0.55), y: c.y + tip * sin(a - half * 0.55)))
+            p.addLine(to: CGPoint(x: c.x + tip * cos(a + half * 0.55), y: c.y + tip * sin(a + half * 0.55)))
+            p.addLine(to: CGPoint(x: c.x + base * cos(a + 1.1), y: c.y + base * sin(a + 1.1)))
+            p.closeSubpath()
+        }
+        p.addEllipse(in: CGRect(x: c.x - radius * 0.24, y: c.y - radius * 0.24, width: radius * 0.48, height: radius * 0.48))
+        return p
+    }
 }
 
 /// A scalloped circle. Claude Code sessions wear this one.
@@ -83,6 +109,9 @@ struct FaceView: View {
         ZStack {
             if agent.source == .grok {
                 grokBody
+            } else if agent.source == .claude {
+                // Every Claude chat wears the same orange spark, so it reads as Claude at a glance.
+                Spark().fill(Palette.claude)
             } else {
                 bodyShape.fill(agent.color)
                 VStack(spacing: size * 0.07) {
