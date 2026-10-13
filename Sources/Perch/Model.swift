@@ -85,6 +85,8 @@ final class Agent: Identifiable {
     var adopted = false
     /// Being set up to run inside the Claude desktop app, not as a background run.
     var desktopBound = false
+    /// A permission question that is being shown in the agent's own app, not held here.
+    var askElsewhere: String?
     /// Recent conversation, loaded when the agent's chat is opened.
     var thread: [ChatMessage] = []
     var transcriptPath: String?

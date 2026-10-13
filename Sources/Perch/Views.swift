@@ -125,7 +125,7 @@ private struct ExpandedBody: View {
     }
 
     @ViewBuilder private var sections: some View {
-        let sessions = store.sessions
+        let sessions = store.sessions.filter { !ui.isDismissed($0) }
         // Everything active, topped up with the most recent quiet ones.
         let shown = max(4, sessions.filter { $0.status != .idle }.count)
         Group {
@@ -295,7 +295,7 @@ private struct Rail: View {
 
     private var agents: [Agent] {
         var seen = Set<String>()
-        let sessions = store.sessions
+        let sessions = store.sessions.filter { !ui.isDismissed($0) }
         let active = sessions.filter { $0.status != .idle }
         let quiet = sessions.filter { $0.status == .idle }.prefix(max(0, 5 - active.count))
         // Pinned bots lead the rail; the rest only join when they have something.
@@ -303,7 +303,8 @@ private struct Rail: View {
         let bots = store.grokBots.filter(ui.inPill)
         // Whatever is open stays on the rail even if it has gone quiet.
         let open = ui.selectedID.flatMap { store.find($0) }.map { [$0] } ?? []
-        return (pinned + store.needing + active + quiet + bots + open).filter { seen.insert($0.id).inserted }
+        return (pinned + store.needing + active + quiet + bots + open)
+            .filter { seen.insert($0.id).inserted && !ui.isDismissed($0) }
     }
 
     var body: some View {
@@ -355,7 +356,15 @@ private struct RailRow: View {
                 .foregroundStyle(.white.opacity(agent.status == .idle && !selected ? 0.6 : 0.95))
                 .lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 0)
-            if ui.isDrafting(agent.id) {
+            if hovered && !star {
+                // Clears it from the notch. It returns by itself if it does something new.
+                Button { ui.dismiss(agent) } label: {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.6)).frame(width: 16, height: 16)
+                        .background(.white.opacity(0.12), in: Circle()).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).help("Remove from the notch")
+            } else if ui.isDrafting(agent.id) {
                 Image(systemName: "pencil").font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
             }
         }
@@ -554,9 +563,14 @@ private struct ChatView: View {
             if agent.status == .needsYou, agent.pending == nil {
                 // It asked for something, but the request itself is not open here (answered or
                 // timed out elsewhere, or Perch restarted while it was waiting).
-                Text("It asked for something, but that request is no longer open here. Open it in its own app to check, or tell it to carry on.")
-                    .font(.system(size: 11)).foregroundStyle(Palette.amber.opacity(0.9))
-                    .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 6)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(agent.askElsewhere.map { "Waiting for your answer in its own app. It wants to use \($0)" }
+                         ?? "It asked for something, but that request is not open here. Check it in its own app, or tell it to carry on.")
+                        .font(.system(size: 11)).foregroundStyle(Palette.amber.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Open it there") { open() }.buttonStyle(ChipButton())
+                }
+                .padding(.horizontal, 6)
             }
             if !agent.queued.isEmpty {
                 Text("Sent. It will read this at its next step.").font(.system(size: 10.5))

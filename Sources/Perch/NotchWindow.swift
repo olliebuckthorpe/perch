@@ -45,6 +45,27 @@ final class NotchUI {
         didSet { UserDefaults.standard.set(Array(pinned), forKey: "pinnedGrok") }
     }
 
+    /// Chats the user has cleared out of the notch, and when. One comes back by itself the
+    /// next time it does something.
+    var dismissed: [String: Double] = UserDefaults.standard.dictionary(forKey: "dismissed") as? [String: Double] ?? [:] {
+        didSet { UserDefaults.standard.set(dismissed, forKey: "dismissed") }
+    }
+
+    func isDismissed(_ agent: Agent) -> Bool {
+        guard let at = dismissed[agent.id] else { return false }
+        return agent.pending == nil && agent.status != .working && agent.status != .needsYou
+            && agent.lastActivity.timeIntervalSince1970 <= at
+    }
+
+    func dismiss(_ agent: Agent) {
+        dismissed[agent.id] = Date().timeIntervalSince1970
+        if dismissed.count > 300 { dismissed = dismissed.filter { Date().timeIntervalSince1970 - $0.value < 14 * 86400 } }
+        if selectedID == agent.id {
+            let store = AgentStore.shared
+            selectedID = (store.sessions + store.grokBots).first { !isDismissed($0) && $0.id != agent.id }?.id
+        }
+    }
+
     func inPill(_ agent: Agent) -> Bool {
         agent.status != .idle || agent.pending != nil || (agent.source == .grok && pinned.contains(agent.name))
     }

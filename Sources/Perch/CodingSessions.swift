@@ -152,7 +152,13 @@ final class CodingSessions {
                 req.respond((try? JSONSerialization.data(withJSONObject: Self.permissionReply(["behavior": "allow"]))) ?? Data())
                 return
             }
-            guard !hostIsFrontmost(agent) else { store.ping(agent, sound: false); req.respond(); return }
+            guard !hostIsFrontmost(agent) else {
+                // You are in its app, so the question is on screen there. Say what it is, do not hold it.
+                agent.askElsewhere = "\(Self.toolLabel(tool)): \(oneLine(detail, max: 120))"
+                store.ping(agent, sound: false)
+                req.respond()
+                return
+            }
             hold(agent, req, kind: .permission(tool: Self.toolLabel(tool), detail: detail), seconds: 285)
             agent.pending?.toolName = tool
 
@@ -196,6 +202,7 @@ final class CodingSessions {
         switch event {
         case "UserPromptSubmit":
             clearPending(agent)
+            agent.askElsewhere = nil
             agent.status = .working
             agent.detail = oneLine(j["prompt"] as? String ?? "Thinking")
         case "PreToolUse":
@@ -205,6 +212,7 @@ final class CodingSessions {
                 agent.detail = Self.activity(tool: tool, input: input)
             }
         case "PostToolUse":
+            agent.askElsewhere = nil
             if agent.pending == nil { agent.status = .working }
         case "Notification":
             let type = j["notification_type"] as? String ?? ""
@@ -328,7 +336,8 @@ final class CodingSessions {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         agent.addLocal(text)
-        if let waiter = agent.waiter {
+        // While a background run is going, a second turn through the desktop app would collide with it.
+        if let waiter = agent.waiter, !agent.sending {
             deliver(text, to: agent, through: waiter)
             return
         }
@@ -358,13 +367,12 @@ final class CodingSessions {
         agent.lastActivity = Date()
     }
 
-    /// Starts a new Claude Code session from the notch, inside the Claude desktop app.
+    /// Starts a new Claude Code session from the notch.
     ///
-    /// The desktop app has no way to be handed a prompt silently, so this goes in three steps:
-    /// create an empty session with the `claude` command (no model turn), have the desktop app
-    /// adopt it, then deliver the prompt through the listener the app's own process registers.
-    /// The chat then runs in the app like any other. If the app never picks it up, the prompt
-    /// runs in the background instead so it is not lost.
+    /// The first turn runs in the background through the `claude` command, in auto mode, so the
+    /// chat is a normal one: your prompt, then the answer. A few seconds in, once the session
+    /// exists and has a title, the Claude desktop app is asked to adopt it so it appears in the
+    /// sidebar straight away instead of only when the turn ends.
     @discardableResult
     func startChat(prompt: String, folder: String) -> Agent? {
         let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -372,54 +380,33 @@ final class CodingSessions {
         let id = UUID().uuidString.lowercased()
         let agent = store.upsert(source: .claude, sessionID: id, name: oneLine(prompt, max: 44))
         agent.cwd = folder
+        agent.background = true
         agent.addLocal(prompt)
+        titled.insert(agent.id)
         guard let exe = Shell.find("claude") else {
             agent.detail = "Could not find the claude command"
             return agent
         }
-        agent.desktopBound = true
-        agent.hostBundleID = Self.claudeBundleID
-        agent.status = .working
-        agent.detail = "Starting in Claude…"
-        agent.queued = [prompt]
-
-        let runInBackground = { [weak self, weak agent] in
-            guard let self, let agent, !agent.queued.isEmpty else { return }
-            let text = agent.queued.joined(separator: "\n\n")
-            agent.queued = []
-            agent.desktopBound = false
-            agent.background = true
-            let which = agent.transcriptPath == nil ? ["--session-id", id] : ["--resume", id]
-            self.run(agent, exe: exe, args: ["-p", "--permission-mode", "auto"] + which + [text], text: text)
-        }
-        // A proper title is written while the session is being created, so the chat arrives
-        // in the Claude app already named for what it is about.
         var title: String?
         makeTitle(for: prompt, exe: exe) { [weak agent] made in
             title = made
             if let made { agent?.name = made }
         }
-        titled.insert(agent.id)
-        Shell.run(exe, ["-p", "--session-id", id, "-n", oneLine(prompt, max: 44), "/cost"], cwd: folder,
-                  env: ["PERCH_HEADLESS": "1"]) { [weak self, weak agent] code, _ in
-            guard let self, let agent else { return }
-            guard code == 0, let url = URL(string: "claude://resume?session=\(id)") else { runInBackground(); return }
-            // Give the title a few more seconds if it is not back yet, then hand over regardless.
-            func handOver(_ triesLeft: Int) {
-                if title == nil, triesLeft > 0 {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { handOver(triesLeft - 1) }
-                    return
-                }
-                if let title { self.writeTitle(title, sessionID: id) }
-                agent.adopted = true
-                let quiet = NSWorkspace.OpenConfiguration()
-                quiet.activates = false
-                NSWorkspace.shared.open(url, configuration: quiet)
-                // The app's process normally reports in within about fifteen seconds.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 45) { runInBackground() }
+        run(agent, exe: exe, text: prompt,
+            args: ["-p", "--permission-mode", "auto", "--session-id", id, "-n", oneLine(prompt, max: 44), prompt])
+
+        // Hand it to the desktop app as soon as there is a session file and a title to show.
+        func handOver(_ triesLeft: Int) {
+            let ready = agent.transcriptPath != nil && (title != nil || triesLeft < 8)
+            guard ready || triesLeft == 0 else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { handOver(triesLeft - 1) }
+                return
             }
-            handOver(6)
+            guard agent.transcriptPath != nil, agent.sending else { return }
+            if let title { self.writeTitle(title, sessionID: id) }
+            self.adopt(agent)
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { handOver(20) }
         return agent
     }
 
@@ -503,10 +490,10 @@ final class CodingSessions {
         let args = agent.source == .codex
             ? ["exec", "resume", agent.sessionID, text, "--skip-git-repo-check"]
             : neverStarted ? ["-p"] + auto + ["--session-id", agent.sessionID, text] : ["-p"] + auto + ["--resume", agent.sessionID, text]
-        run(agent, exe: exe, args: args, text: text)
+        run(agent, exe: exe, text: text, args: args)
     }
 
-    private func run(_ agent: Agent, exe: String, args: [String], text: String) {
+    private func run(_ agent: Agent, exe: String, text: String, args: [String]) {
         agent.sending = true
         agent.status = .working
         agent.detail = oneLine(text)
@@ -531,7 +518,16 @@ final class CodingSessions {
                 AgentStore.shared.ping(agent)
                 Threads.load(agent)
             }
-            if code == 0 { self.adopt(agent) }
+            if code == 0 {
+                if agent.adopted, let url = URL(string: "claude://resume?session=\(agent.sessionID)") {
+                    // Already in the Claude app: nudge it to pick up what the background run added.
+                    let quiet = NSWorkspace.OpenConfiguration()
+                    quiet.activates = false
+                    NSWorkspace.shared.open(url, configuration: quiet)
+                } else {
+                    self.adopt(agent)
+                }
+            }
             // Anything typed while it was busy goes in as the next turn.
             if code == 0, !agent.queued.isEmpty {
                 let next = agent.queued.joined(separator: "\n\n")
