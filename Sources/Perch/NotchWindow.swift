@@ -241,6 +241,13 @@ final class NotchController {
         let strip = CGRect(x: frame.midX + openOffset - openWidth / 2, y: frame.maxY - ui.notch.height,
                            width: openWidth, height: ui.notch.height + 20)
         let onIsland = island.contains(mouse)
+        // In a full screen app, touching the top edge makes macOS slide the menu bar down.
+        // Over the island, hold the pointer just short of that edge so only the island opens.
+        if onIsland || strip.contains(mouse), let sc = screen, mouse.y >= sc.frame.maxY - 2,
+           let primary = NSScreen.screens.first {
+            CGWarpMouseCursorPosition(CGPoint(x: mouse.x, y: primary.frame.maxY - (sc.frame.maxY - 5)))
+            CGAssociateMouseAndMouseCursorPosition(1)
+        }
         if panel.ignoresMouseEvents == onIsland { panel.ignoresMouseEvents = !onIsland }
         ui.hover(onIsland || (!ui.expanded && strip.contains(mouse)))
     }
