@@ -85,6 +85,8 @@ final class Agent: Identifiable {
     var adopted = false
     /// Being set up to run inside the Claude desktop app, not as a background run.
     var desktopBound = false
+    /// Added or started by the user on purpose. Stays in the sidebar across restarts until dismissed.
+    var kept = false
     /// A permission question that is being shown in the agent's own app, not held here.
     var askElsewhere: String?
     /// Recent conversation, loaded when the agent's chat is opened.
@@ -135,6 +137,52 @@ final class AgentStore {
 
     func find(_ id: String) -> Agent? { agents.first { $0.id == id } }
 
+    // MARK: Remembering chats across restarts
+
+    private static let file = "\(Shell.home)/.perch/sessions.json"
+    @ObservationIgnored private var lastSaved = ""
+
+    /// Writes the coding sessions to disk if anything about them has changed.
+    func save() {
+        let rows: [[String: Any]] = agents.filter { $0.source != .grok }.map { a in
+            var row: [String: Any] = [
+                "source": a.source.rawValue, "id": a.sessionID, "name": a.name, "kept": a.kept,
+                "background": a.background, "adopted": a.adopted, "at": a.lastActivity.timeIntervalSince1970,
+            ]
+            row["cwd"] = a.cwd
+            row["transcript"] = a.transcriptPath
+            row["host"] = a.hostBundleID
+            return row
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8), text != lastSaved else { return }
+        lastSaved = text
+        try? data.write(to: URL(fileURLWithPath: Self.file), options: .atomic)
+    }
+
+    /// Brings back the chats from the last run. Kept ones always; others only if still recent.
+    func restore() {
+        guard let data = FileManager.default.contents(atPath: Self.file),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+        let now = Date()
+        for row in rows {
+            guard let raw = row["source"] as? String, let source = AgentSource(rawValue: raw),
+                  let id = row["id"] as? String, let name = row["name"] as? String else { continue }
+            let at = Date(timeIntervalSince1970: row["at"] as? Double ?? 0)
+            let kept = row["kept"] as? Bool ?? false
+            guard kept || now.timeIntervalSince(at) < 3 * 3600 else { continue }
+            let a = upsert(source: source, sessionID: id, name: name)
+            a.name = name
+            a.kept = kept
+            a.background = row["background"] as? Bool ?? false
+            a.adopted = row["adopted"] as? Bool ?? false
+            a.cwd = row["cwd"] as? String
+            a.transcriptPath = row["transcript"] as? String
+            a.hostBundleID = row["host"] as? String
+            a.lastActivity = at
+        }
+    }
+
     func upsert(source: AgentSource, sessionID: String, name: @autoclosure () -> String) -> Agent {
         if let a = find("\(source.rawValue):\(sessionID)") { return a }
         let a = Agent(source: source, sessionID: sessionID, name: name())
@@ -162,7 +210,7 @@ final class AgentStore {
     /// Coding sessions go quiet without telling anyone. Drop the stale ones.
     func prune() {
         let now = Date()
-        for a in agents where a.source != .grok && a.pending == nil {
+        for a in agents where a.source != .grok && a.pending == nil && !a.kept {
             let age = now.timeIntervalSince(a.lastActivity)
             // A session that died mid-turn never says so.
             if a.status == .working, age > 30 * 60 { a.status = .idle }

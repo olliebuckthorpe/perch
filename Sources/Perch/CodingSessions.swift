@@ -74,6 +74,10 @@ final class CodingSessions {
     }
 
     func start() {
+        for a in store.sessions {
+            titled.insert(a.id)
+            if a.kept { Threads.load(a) }
+        }
         seed()
         // Coming back to the agent's own app means you will answer there, so let go of anything held.
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -388,6 +392,7 @@ final class CodingSessions {
         let agent = store.upsert(source: .claude, sessionID: id, name: oneLine(prompt, max: 44))
         agent.cwd = folder
         agent.background = true
+        agent.kept = true
         agent.addLocal(prompt)
         titled.insert(agent.id)
         guard let exe = Shell.find("claude") else {
@@ -479,6 +484,7 @@ final class CodingSessions {
         agent.cwd = entry.cwd
         agent.hostBundleID = Self.claudeBundleID
         agent.lastActivity = Date()
+        agent.kept = true
         titled.insert(agent.id)
         return agent
     }

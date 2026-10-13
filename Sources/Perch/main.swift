@@ -35,12 +35,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                       reason: "Keeps the notch responsive")
         installEditMenu()
         controller = NotchController(store: AgentStore.shared)
+        AgentStore.shared.restore()
         CodingSessions.shared.start()
         if EdgeGuard.wanted { EdgeGuard.shared.start(prompt: false) }
         codex.start()
         GrokSource.shared.start()
 
         pruneTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in AgentStore.shared.prune() }
+        // A restart can come without warning, so the list is written out as it changes.
+        let saver = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in AgentStore.shared.save() }
+        saver.tolerance = 2
         pruneTimer?.tolerance = 60
     }
 

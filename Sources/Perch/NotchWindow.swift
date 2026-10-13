@@ -60,6 +60,7 @@ final class NotchUI {
     }
 
     func dismiss(_ agent: Agent) {
+        agent.kept = false
         dismissed[agent.id] = Date().timeIntervalSince1970
         if dismissed.count > 300 { dismissed = dismissed.filter { Date().timeIntervalSince1970 - $0.value < 14 * 86400 } }
         if selectedID == agent.id {
@@ -76,6 +77,8 @@ final class NotchUI {
     /// Moves `id` to sit just above `target`, given what is currently shown, top to bottom.
     func move(_ id: String, before target: String, in shown: [String]) {
         guard id != target, shown.contains(id) else { return }
+        // Arranging a chat is a sign it should stay.
+        AgentStore.shared.find(id)?.kept = true
         var list = shown.filter { $0 != id }
         list.insert(id, at: list.firstIndex(of: target) ?? list.count)
         order = list + order.filter { !list.contains($0) }.prefix(200)

@@ -241,6 +241,7 @@ enum SearchItem: Identifiable {
         case .agent(let agent):
             ui.query = ""
             ui.dismissed[agent.id] = nil
+            if agent.source != .grok { agent.kept = true }
             ui.select(agent.id)
         case .older(let entry):
             ui.query = ""
@@ -372,7 +373,9 @@ private struct Rail: View {
         var seen = Set<String>()
         let sessions = store.sessions.filter { !ui.isDismissed($0) }
         let active = sessions.filter { $0.status != .idle }
-        let quiet = sessions.filter { $0.status == .idle }.prefix(max(0, 5 - active.count))
+        // Chats the user added on purpose always show; other quiet ones only fill spare room.
+        let kept = sessions.filter { $0.status == .idle && $0.kept }
+        let quiet = kept + sessions.filter { $0.status == .idle && !$0.kept }.prefix(max(0, 5 - active.count - kept.count))
         // Pinned bots lead the rail; the rest only join when they have something.
         let pinned = store.grokBots.filter { ui.pinned.contains($0.name) }
         let bots = store.grokBots.filter(ui.inPill)
