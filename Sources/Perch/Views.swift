@@ -567,6 +567,7 @@ private struct ProfilesView: View {
     @Environment(NotchUI.self) private var ui
     @State private var profiles: [ChromeProfile] = []
     @State private var link: URL?
+    @State private var canJump = ChromeProfile.canJump
 
     private static let tints: [Color] = [Palette.blue, Palette.green, Palette.amber, Palette.red] + Palette.colors
 
@@ -589,6 +590,15 @@ private struct ProfilesView: View {
                     }
                 }
             }
+            if !canJump {
+                // Without this a click opens a fresh window instead of the one already open.
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("To go to the window a profile already has open, Perch needs the Accessibility permission. Until then a click opens a new window.")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).fixedSize(horizontal: false, vertical: true)
+                    Button("Allow in System Settings") { ChromeProfile.askToJump() }.buttonStyle(ChipButton())
+                }
+                .padding(.horizontal, 6).padding(.top, 4)
+            }
             if profiles.isEmpty {
                 Text("No Chrome profiles found.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
                     .padding(.horizontal, 6)
@@ -598,6 +608,7 @@ private struct ProfilesView: View {
         .onAppear {
             profiles = ChromeProfile.all()
             link = ChromeProfile.copiedLink
+            canJump = ChromeProfile.canJump
         }
     }
 }

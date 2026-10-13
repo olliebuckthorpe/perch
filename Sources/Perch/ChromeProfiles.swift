@@ -26,14 +26,56 @@ struct ChromeProfile: Identifiable {
         }
     }
 
-    /// Opens a window in this profile, on `url` if one is given.
+    /// Takes you to this profile: the window it already has open if there is one, otherwise a new
+    /// one. With a `url`, opens that link in the profile.
     func open(_ url: URL? = nil) {
+        if url == nil, jumpToExistingWindow() { return }
         var args = ["-na", "Google Chrome", "--args", "--profile-directory=\(id)"]
         if let url { args.append(url.absoluteString) }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         p.arguments = args
         try? p.run()
+    }
+
+    static var canJump: Bool { AXIsProcessTrusted() }
+
+    static func askToJump() {
+        _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+    }
+
+    /// Presses this profile's entry in Chrome's own Profiles menu, which is the one thing that
+    /// brings a profile's existing window forward. Driving another app's menu needs the
+    /// Accessibility permission; without it this returns false and a new window opens instead.
+    private func jumpToExistingWindow() -> Bool {
+        guard AXIsProcessTrusted(),
+              let chrome = NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").first
+        else { return false }
+        func children(_ element: AXUIElement) -> [AXUIElement] {
+            var value: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value)
+            return value as? [AXUIElement] ?? []
+        }
+        func title(_ element: AXUIElement) -> String {
+            var value: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &value)
+            return value as? String ?? ""
+        }
+        let app = AXUIElementCreateApplication(chrome.processIdentifier)
+        var bar: CFTypeRef?
+        AXUIElementCopyAttributeValue(app, kAXMenuBarAttribute as CFString, &bar)
+        guard let bar, CFGetTypeID(bar) == AXUIElementGetTypeID() else { return false }
+        let menuBar = bar as! AXUIElement
+        guard let profilesMenu = children(menuBar).first(where: { title($0) == "Profiles" }),
+              let menu = children(profilesMenu).first else { return false }
+        // Two profiles can share a name; Chrome lists them in the same order it gave us.
+        let twins = ChromeProfile.all().filter { $0.name == name }
+        let position = twins.firstIndex { $0.id == id } ?? 0
+        let matches = children(menu).filter { title($0) == name || title($0).hasPrefix("\(name) (") }
+        guard matches.indices.contains(position) else { return false }
+        guard AXUIElementPerformAction(matches[position], kAXPressAction as CFString) == .success else { return false }
+        chrome.activate()
+        return true
     }
 
     /// A web link sitting on the clipboard, if there is one.
