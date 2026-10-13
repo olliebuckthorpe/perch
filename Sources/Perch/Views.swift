@@ -15,7 +15,9 @@ struct NotchContent: View {
 
     var body: some View {
         let left = Array(store.grokBots.filter(ui.inPill).prefix(maxFaces))
-        let right = Array(store.sessions.filter(ui.inPill).prefix(maxFaces))
+        // Every chat that is in the sidebar sits in the notch too, idle ones included (they just
+        // sit still). Only chats the user has cleared are left out.
+        let right = Array(store.sessions.filter { !ui.isDismissed($0) }.prefix(maxFaces))
         let l = earWidth(left.count), r = earWidth(right.count)
         // Opened, the island is at least 340 wide; the extra is shared between both sides
         // so the gap always stays lined up with the hardware notch.
