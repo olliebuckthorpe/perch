@@ -680,7 +680,7 @@ private struct ChatView: View {
                 if case .followUp = pending.kind {
                     // Just finished: offer the usual nudges above the reply box.
                     HStack(spacing: 6) {
-                        ForEach(["Keep going", "Run the tests"], id: \.self) { quick in
+                        ForEach(["Keep going"], id: \.self) { quick in
                             Button(quick) { CodingSessions.shared.reply(agent, text: quick) }.buttonStyle(ChipButton())
                         }
                     }
@@ -1253,7 +1253,7 @@ private struct PendingCard: View {
                     .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
-                ForEach(["Keep going", "Run the tests"], id: \.self) { quick in
+                ForEach(["Keep going"], id: \.self) { quick in
                     Button(quick) { CodingSessions.shared.reply(agent, text: quick) }.buttonStyle(ChipButton())
                 }
                 Spacer()
