@@ -56,12 +56,24 @@ final class EdgeGuard {
         let thread = Thread {
             let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0)
             CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
-            CGEvent.tapEnable(tap: port, enable: true)
+            // Starts switched off: see `engage`.
+            CGEvent.tapEnable(tap: port, enable: false)
             CFRunLoopRun()
         }
         thread.name = "Perch edge guard"
         thread.qualityOfService = .userInteractive
         thread.start()
+    }
+
+    private var engaged = false
+
+    /// While the tap is on, every mouse movement on the Mac passes through Perch first, so if
+    /// Perch is busy or restarting the pointer stutters. It is therefore only switched on while
+    /// the pointer is up by the island, and off the rest of the time.
+    func engage(_ on: Bool) {
+        guard on != engaged else { return }
+        engaged = on
+        if let tap { CGEvent.tapEnable(tap: tap, enable: on) }
     }
 
     func stop() {
@@ -70,11 +82,12 @@ final class EdgeGuard {
         CGEvent.tapEnable(tap: port, enable: false)
         CFMachPortInvalidate(port)
         tap = nil
+        engaged = false
     }
 
     fileprivate func handle(_ type: CGEventType, _ event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            if let tap, engaged { CGEvent.tapEnable(tap: tap, enable: true) }
             return
         }
         lock.lock()

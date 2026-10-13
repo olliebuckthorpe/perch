@@ -503,6 +503,7 @@ final class NotchController {
         if let primary = NSScreen.screens.first {
             let span = ui.expanded ? island : strip
             EdgeGuard.shared.setZone(minX: span.minX, maxX: span.maxX, topY: primary.frame.maxY - frame.maxY)
+            EdgeGuard.shared.engage(mouse.x > span.minX - 60 && mouse.x < span.maxX + 60 && mouse.y > frame.maxY - 70)
         }
         if panel.ignoresMouseEvents == onIsland { panel.ignoresMouseEvents = !onIsland }
         ui.hover(onIsland || (!ui.expanded && strip.contains(mouse)))
