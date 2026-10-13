@@ -83,6 +83,8 @@ final class Agent: Identifiable {
     var background = false
     /// Handed over to the Claude desktop app, so it shows in its sidebar too.
     var adopted = false
+    /// Being set up to run inside the Claude desktop app, not as a background run.
+    var desktopBound = false
     /// Recent conversation, loaded when the agent's chat is opened.
     var thread: [ChatMessage] = []
     var transcriptPath: String?

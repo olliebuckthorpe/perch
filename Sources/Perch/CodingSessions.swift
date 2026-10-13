@@ -102,7 +102,7 @@ final class CodingSessions {
         if let path = j["transcript_path"] as? String { agent.transcriptPath = path }
         if !headless { agent.hostBundleID = hostBundle(source: source, headers: req.headers) }
         // Only Perch starts sessions this way, so this is one of its own chats, even after a restart.
-        if headless, source == .claude, !agent.adopted { agent.background = true }
+        if headless, source == .claude, !agent.adopted, !agent.desktopBound { agent.background = true }
         agent.lastActivity = Date()
         agent.ended = false
         if let title = j["session_title"] as? String, !title.isEmpty {
@@ -358,22 +358,50 @@ final class CodingSessions {
         agent.lastActivity = Date()
     }
 
-    /// Starts a new Claude Code session from the notch. It runs in the background through the
-    /// `claude` command and shows up as a chat here straight away.
+    /// Starts a new Claude Code session from the notch, inside the Claude desktop app.
+    ///
+    /// The desktop app has no way to be handed a prompt silently, so this goes in three steps:
+    /// create an empty session with the `claude` command (no model turn), have the desktop app
+    /// adopt it, then deliver the prompt through the listener the app's own process registers.
+    /// The chat then runs in the app like any other. If the app never picks it up, the prompt
+    /// runs in the background instead so it is not lost.
     @discardableResult
     func startChat(prompt: String, folder: String) -> Agent? {
         let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return nil }
         let id = UUID().uuidString.lowercased()
-        let agent = store.upsert(source: .claude, sessionID: id, name: oneLine(prompt, max: 40))
+        let agent = store.upsert(source: .claude, sessionID: id, name: oneLine(prompt, max: 44))
         agent.cwd = folder
-        agent.background = true
         agent.addLocal(prompt)
         guard let exe = Shell.find("claude") else {
             agent.detail = "Could not find the claude command"
             return agent
         }
-        run(agent, exe: exe, args: ["-p", "--permission-mode", "auto", "--session-id", id, prompt], text: prompt)
+        agent.desktopBound = true
+        agent.hostBundleID = Self.claudeBundleID
+        agent.status = .working
+        agent.detail = "Starting in Claude…"
+        agent.queued = [prompt]
+
+        let runInBackground = { [weak self, weak agent] in
+            guard let self, let agent, !agent.queued.isEmpty else { return }
+            let text = agent.queued.joined(separator: "\n\n")
+            agent.queued = []
+            agent.desktopBound = false
+            agent.background = true
+            let which = agent.transcriptPath == nil ? ["--session-id", id] : ["--resume", id]
+            self.run(agent, exe: exe, args: ["-p", "--permission-mode", "auto"] + which + [text], text: text)
+        }
+        Shell.run(exe, ["-p", "--session-id", id, "/cost"], cwd: folder, env: ["PERCH_HEADLESS": "1"]) { [weak agent] code, _ in
+            guard let agent else { return }
+            guard code == 0, let url = URL(string: "claude://resume?session=\(id)") else { runInBackground(); return }
+            agent.adopted = true
+            let quiet = NSWorkspace.OpenConfiguration()
+            quiet.activates = false
+            NSWorkspace.shared.open(url, configuration: quiet)
+            // The app's process normally reports in within about fifteen seconds.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 45) { runInBackground() }
+        }
         return agent
     }
 

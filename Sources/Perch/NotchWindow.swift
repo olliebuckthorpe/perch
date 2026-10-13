@@ -184,7 +184,8 @@ final class NotchUI {
     }
 
     func outsideClick() {
-        guard expanded, Date() >= holdOpenUntil else { return }
+        // A notification banner is not dismissed by carrying on working; it times out by itself.
+        guard expanded, !cardsOnly, Date() >= holdOpenUntil else { return }
         collapse()
     }
 }
