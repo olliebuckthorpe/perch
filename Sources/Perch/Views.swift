@@ -1664,13 +1664,7 @@ private struct ChatView: View {
     }
 
     /// The fill for the user's own bubbles in this chat.
-    private var mine: Color {
-        switch agent.source {
-        case .claude: return Color(red: 0.80, green: 0.42, blue: 0.29)
-        case .codex: return Color(red: 0.40, green: 0.36, blue: 0.93)
-        case .grok: return Color(white: 0.96)
-        }
-    }
+    private var mine: Color { agent.theme }
 
     @ViewBuilder private func bubble(_ message: ChatMessage) -> some View {
         let parts = Self.splitImages(message.text)
@@ -1846,7 +1840,7 @@ private struct ReplyField: View {
             .help(listening ? "Stop dictating" : "Dictate a reply")
             Button(action: send) {
                 Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
-                    .foregroundStyle(empty || busy ? .white.opacity(0.2) : agent.color)
+                    .foregroundStyle(empty || busy ? .white.opacity(0.2) : agent.theme)
             }
             .buttonStyle(Press())
             .disabled(empty || busy)
@@ -2600,5 +2594,17 @@ extension View {
     func reach(_ x: CGFloat, _ y: CGFloat) -> some View {
         padding(.horizontal, x).padding(.vertical, y).contentShape(Rectangle())
             .padding(.horizontal, -x).padding(.vertical, -y)
+    }
+}
+
+extension Agent {
+    /// The colour of a chat with this agent: Claude's orange, Codex's blue-violet, white for
+    /// Grok bots. Your bubbles and the send button both take it.
+    var theme: Color {
+        switch source {
+        case .claude: return Color(red: 0.80, green: 0.42, blue: 0.29)
+        case .codex: return Color(red: 0.40, green: 0.36, blue: 0.93)
+        case .grok: return Color(white: 0.96)
+        }
     }
 }
