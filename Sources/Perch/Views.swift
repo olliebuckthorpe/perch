@@ -445,10 +445,13 @@ private struct UsageDial: View {
         // The figure appears beside the dial, on the outer side where there is room.
         .overlay(alignment: labelOnLeft ? .trailing : .leading) {
             if hovered {
-                Text(label).font(.system(size: 10.5, weight: .medium)).monospacedDigit()
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(lines, id: \.self) { Text($0) }
+                }
+                    .font(.system(size: lines.count > 1 ? 9.5 : 10.5, weight: .medium)).monospacedDigit()
                     .foregroundStyle(.white.opacity(0.9)).fixedSize()
                     .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(Color(white: 0.16), in: Capsule())
+                    .background(Color(white: 0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .offset(x: labelOnLeft ? -20 : 20)
                     .transition(.opacity)
                     .allowsHitTesting(false)
@@ -460,20 +463,19 @@ private struct UsageDial: View {
     @State private var hovered = false
     var labelOnLeft = false
 
-    /// "15% this week, resets Tue 02:16", or both windows for a plan that has two.
-    private var label: String {
+    /// One line per window, each with its figure and when it resets.
+    private var lines: [String] {
         func when(_ w: Usage.Window) -> String {
             guard let resets = w.resets, resets > Date() else { return "" }
             let f = DateFormatter()
             f.dateFormat = resets.timeIntervalSinceNow < 20 * 3600 ? "HH:mm" : "EEE HH:mm"
             return ", resets \(f.string(from: resets))"
         }
-        // Kept short: there is not much room beside the notch.
         if let s = plan.short, let w = plan.week {
-            return "5h \(Int(s.current.rounded()))%  ·  week \(Int(w.current.rounded()))%"
+            return ["5h  \(Int(s.current.rounded()))%\(when(s))", "7d  \(Int(w.current.rounded()))%\(when(w))"]
         }
-        if let w = plan.week ?? plan.short { return "\(Int(w.current.rounded()))% used\(when(w))" }
-        return ""
+        if let w = plan.week ?? plan.short { return ["\(Int(w.current.rounded()))% used\(when(w))"] }
+        return []
     }
 
     private func ring(_ part: Double, width: CGFloat) -> some View {
