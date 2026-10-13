@@ -2007,8 +2007,10 @@ private struct AgentBubble: View {
                 .buttonStyle(Press(reach: 4))
                 .padding(.leading, 2)
                 .opacity(hovered || picking ? 1 : 0)
-                .overlay(alignment: .bottomLeading) {
-                    if picking { tray.offset(x: -6, y: -26).transition(.scale(scale: 0.4, anchor: .bottomLeading).combined(with: .opacity)) }
+                // The tray ends at the face and opens back over the message, so it can never
+                // run off the edge of the island however wide the message is.
+                .overlay(alignment: .bottomTrailing) {
+                    if picking { tray.offset(x: 14, y: -26).transition(.scale(scale: 0.4, anchor: .bottomTrailing).combined(with: .opacity)) }
                 }
             }
             Spacer(minLength: 28)
