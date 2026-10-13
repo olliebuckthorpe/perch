@@ -378,15 +378,26 @@ private struct Rail: View {
         let bots = store.grokBots.filter(ui.inPill)
         // Whatever is open stays on the rail even if it has gone quiet.
         let open = ui.selectedID.flatMap { store.find($0) }.map { [$0] } ?? []
-        return (pinned + store.needing + active + quiet + bots + open)
-            .filter { seen.insert($0.id).inserted && !ui.isDismissed($0) }
+        let rest = (store.needing + active + quiet + bots + open)
+            .filter { a in !pinned.contains { $0.id == a.id } }
+        // A dragged order wins; anything not yet placed keeps its usual position after those.
+        let rank = Dictionary(ui.order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        let arranged = rest.enumerated().sorted {
+            let (l, r) = (rank[$0.element.id] ?? Int.max, rank[$1.element.id] ?? Int.max)
+            return l != r ? l < r : $0.offset < $1.offset
+        }.map(\.element)
+        return (pinned + arranged).filter { seen.insert($0.id).inserted && !ui.isDismissed($0) }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             ForEach(agents) { agent in
-                RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing,
-                        star: agent.source == .grok && ui.pinned.contains(agent.name))
+                let star = agent.source == .grok && ui.pinned.contains(agent.name)
+                RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing, star: star) { dragged in
+                    // Pinned bots stay at the top; everything else can be dragged into any order.
+                    guard !star else { return }
+                    ui.move(dragged, before: agent.id, in: agents.map(\.id))
+                }
             }
             Spacer(minLength: 6)
             HStack(spacing: 4) {
@@ -416,8 +427,10 @@ private struct RailRow: View {
     let agent: Agent
     let selected: Bool
     let star: Bool
+    let onDrop: (String) -> Void
     @Environment(NotchUI.self) private var ui
     @State private var hovered = false
+    @State private var targeted = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -449,6 +462,16 @@ private struct RailRow: View {
         .onTapGesture { ui.select(agent.id) }
         .onHover { hovered = $0 }
         .help(agent.name)
+        // Drag a chat onto another to place it just above.
+        .overlay(alignment: .top) {
+            Rectangle().fill(Palette.blue).frame(height: 2).opacity(targeted && !star ? 1 : 0).offset(y: -1)
+        }
+        .draggable(agent.id)
+        .dropDestination(for: String.self) { items, _ in
+            guard let id = items.first else { return false }
+            onDrop(id)
+            return true
+        } isTargeted: { targeted = $0 }
     }
 }
 
@@ -680,11 +703,6 @@ private struct ChatView: View {
 
     private var header: some View {
         HStack(spacing: 7) {
-            Button { ui.browse() } label: {
-                Image(systemName: "list.bullet").font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
             FaceView(agent: agent, size: 18)
             Text(agent.name).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
             if agent.source != .grok {
