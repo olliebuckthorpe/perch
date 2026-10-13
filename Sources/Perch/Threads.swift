@@ -20,6 +20,9 @@ struct ChatMessage: Identifiable, Equatable {
     var reactions: [String] = []
     var email: EmailDraft?
     /// Set when this is one agent talking to another, not part of the conversation with the user.
+    /// A file the agent attached: its name, and where it lives on the agent's own computer.
+    var fileName: String?
+    var filePath: String?
     var peerName: String?
     var peerOutbound = false
 }

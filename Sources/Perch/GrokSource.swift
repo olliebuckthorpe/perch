@@ -218,6 +218,11 @@ final class GrokSource {
                                                body: d["body"] as? String ?? "", sendState: e["draftSendState"] as? String)
                         return ChatMessage(id: id, fromUser: false, text: draft.body, reactions: reactions, email: draft)
                     }
+                    if message["type"] as? String == "attachment", let url = message["url"] as? String {
+                        let path = url.hasPrefix("file://") ? String(url.dropFirst(7)) : url
+                        let name = message["file_name"] as? String ?? URL(fileURLWithPath: path).lastPathComponent
+                        return ChatMessage(id: id, fromUser: false, text: name, reactions: reactions, fileName: name, filePath: path)
+                    }
                     // Some other kind of card the notch cannot draw yet: say so, do not hide it.
                     guard let type = message["type"] as? String else { return nil }
                     return ChatMessage(id: id, fromUser: false, text: "_Sent a \(type.replacingOccurrences(of: "-", with: " ")). Open Grok Bot to see it._", reactions: reactions)
@@ -267,6 +272,19 @@ final class GrokSource {
                 return
             }
             post(paths)
+        }
+    }
+
+    private var attachmentText: [String: String] = [:]
+
+    /// The text of a file an agent attached, fetched from its box. `nil` if it is not a text file
+    /// or cannot be read.
+    func readAttachment(_ path: String, completion: @escaping (String?) -> Void) {
+        if let cached = attachmentText[path] { completion(cached); return }
+        request("readAttachmentText", ["path": path]) { [weak self] reply in
+            let text = (reply as? [String: Any])?["text"] as? String
+            if let text { self?.attachmentText[path] = text }
+            completion(text)
         }
     }
 

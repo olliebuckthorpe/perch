@@ -811,6 +811,8 @@ private struct ChatView: View {
                             .background(.white.opacity(0.17), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                 }
+            } else if let name = message.fileName, let path = message.filePath {
+                FileCard(name: name, path: path, agent: agent)
             } else if let email = message.email {
                 EmailCard(draft: email, agent: agent)
             } else {
@@ -1088,6 +1090,71 @@ private struct MessageBody: View {
         .padding(.horizontal, 9).padding(.vertical, 3)
         .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.white.opacity(0.1), lineWidth: 1))
+    }
+}
+
+/// A file an agent attached. Text files open right here, formatted; anything else points to
+/// the agent's own app.
+private struct FileCard: View {
+    let name: String
+    let path: String
+    let agent: Agent
+    @Environment(NotchUI.self) private var ui
+    @State private var expanded = false
+    @State private var text: String?
+    @State private var failed = false
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "doc.text").font(.system(size: 13)).foregroundStyle(.white.opacity(0.7))
+                Text(name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Spacer()
+                Text(expanded ? "Hide" : "Read").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.4))
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { toggle() }
+
+            if expanded {
+                Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
+                if let text {
+                    MessageBody(text: text)
+                    HStack(spacing: 6) {
+                        Button(copied ? "Copied" : "Copy all") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(text, forType: .string)
+                            copied = true
+                        }
+                        .buttonStyle(ChipButton())
+                        Spacer()
+                    }
+                } else if failed {
+                    Text("This one can only be opened in Grok Bot.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.55))
+                    Button("Open Grok Bot") {
+                        GrokSource.shared.open(agent)
+                        ui.collapse()
+                    }
+                    .buttonStyle(ChipButton())
+                } else {
+                    Text("Loading…").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
+    }
+
+    private func toggle() {
+        expanded.toggle()
+        guard expanded, text == nil, !failed else { return }
+        GrokSource.shared.readAttachment(path) { loaded in
+            if let loaded { text = loaded } else { failed = true }
+        }
     }
 }
 
