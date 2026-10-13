@@ -397,9 +397,9 @@ final class CodingSessions {
     /// Starts a new Claude Code session from the notch.
     ///
     /// The first turn runs in the background through the `claude` command, in auto mode, so the
-    /// chat is a normal one: your prompt, then the answer. A few seconds in, once the session
-    /// exists and has a title, the Claude desktop app is asked to adopt it so it appears in the
-    /// sidebar straight away instead of only when the turn ends.
+    /// chat is a normal one: your prompt, then the answer. When that turn is finished the Claude
+    /// desktop app is asked to adopt it. Not sooner: the app reads a chat once, at the moment it
+    /// adopts it, so handing it over mid-turn leaves the app without the reply.
     @discardableResult
     func startChat(prompt: String, folder: String) -> Agent? {
         let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -415,26 +415,12 @@ final class CodingSessions {
             agent.detail = "Could not find the claude command"
             return agent
         }
-        var title: String?
         makeTitle(for: prompt, exe: exe) { [weak agent] made in
-            title = made
             if let made { agent?.name = made }
         }
         run(agent, exe: exe, text: prompt,
             args: ["-p", "--permission-mode", "auto", "--session-id", id, "-n", oneLine(prompt, max: 44), prompt])
 
-        // Hand it to the desktop app as soon as there is a session file and a title to show.
-        func handOver(_ triesLeft: Int) {
-            let ready = agent.transcriptPath != nil && (title != nil || triesLeft < 8)
-            guard ready || triesLeft == 0 else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { handOver(triesLeft - 1) }
-                return
-            }
-            guard agent.transcriptPath != nil, agent.sending else { return }
-            if let title { self.writeTitle(title, sessionID: id) }
-            self.adopt(agent)
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { handOver(20) }
         return agent
     }
 
@@ -475,6 +461,8 @@ final class CodingSessions {
               let url = URL(string: "claude://resume?session=\(agent.sessionID)") else { return }
         agent.adopted = true
         agent.hostBundleID = Self.claudeBundleID
+        // The chat's name goes into the session first, so it arrives in the app already titled.
+        writeTitle(agent.name, sessionID: agent.sessionID)
         let quiet = NSWorkspace.OpenConfiguration()
         quiet.activates = false
         NSWorkspace.shared.open(url, configuration: quiet)
@@ -548,16 +536,7 @@ final class CodingSessions {
                 AgentStore.shared.ping(agent)
                 Threads.load(agent)
             }
-            if code == 0 {
-                if agent.adopted, let url = URL(string: "claude://resume?session=\(agent.sessionID)") {
-                    // Already in the Claude app: nudge it to pick up what the background run added.
-                    let quiet = NSWorkspace.OpenConfiguration()
-                    quiet.activates = false
-                    NSWorkspace.shared.open(url, configuration: quiet)
-                } else {
-                    self.adopt(agent)
-                }
-            }
+            if code == 0 { self.adopt(agent) }
             // Anything typed while it was busy goes in as the next turn.
             if code == 0, !agent.queued.isEmpty {
                 let next = agent.queued.joined(separator: "\n\n")
