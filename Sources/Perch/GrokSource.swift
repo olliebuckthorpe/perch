@@ -200,8 +200,19 @@ final class GrokSource {
                     guard let text = e["content"] as? String, !text.isEmpty else { return nil }
                     return ChatMessage(id: id, fromUser: e["role"] as? String == "user", text: text, reactions: reactions)
                 case "send-message":
-                    guard let text = (e["message"] as? [String: Any])?["content"] as? String, !text.isEmpty else { return nil }
-                    return ChatMessage(id: id, fromUser: false, text: text, reactions: reactions)
+                    let message = e["message"] as? [String: Any] ?? [:]
+                    if let text = message["content"] as? String, !text.isEmpty {
+                        return ChatMessage(id: id, fromUser: false, text: text, reactions: reactions)
+                    }
+                    if message["type"] as? String == "email-draft", let d = message["draft"] as? [String: Any] {
+                        let draft = EmailDraft(from: d["from"] as? String ?? "", to: d["to"] as? [String] ?? [],
+                                               cc: d["cc"] as? [String] ?? [], subject: d["subject"] as? String ?? "",
+                                               body: d["body"] as? String ?? "")
+                        return ChatMessage(id: id, fromUser: false, text: draft.body, reactions: reactions, email: draft)
+                    }
+                    // Some other kind of card the notch cannot draw yet: say so, do not hide it.
+                    guard let type = message["type"] as? String else { return nil }
+                    return ChatMessage(id: id, fromUser: false, text: "_Sent a \(type.replacingOccurrences(of: "-", with: " ")). Open Grok Bot to see it._", reactions: reactions)
                 default:
                     return nil
                 }

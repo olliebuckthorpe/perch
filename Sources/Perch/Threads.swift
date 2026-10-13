@@ -1,10 +1,20 @@
 import Foundation
 
+/// An email an agent has drafted for the user to check before it goes out.
+struct EmailDraft: Equatable {
+    var from = ""
+    var to: [String] = []
+    var cc: [String] = []
+    var subject = ""
+    var body = ""
+}
+
 struct ChatMessage: Identifiable, Equatable {
     let id: String
     let fromUser: Bool
     let text: String
     var reactions: [String] = []
+    var email: EmailDraft?
 }
 
 /// Loads the recent conversation for an agent, from wherever that kind of agent keeps it.

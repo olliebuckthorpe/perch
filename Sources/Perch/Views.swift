@@ -363,6 +363,8 @@ private struct ChatView: View {
                         .padding(.horizontal, 10).padding(.vertical, 6)
                         .background(.white.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
+            } else if let email = message.email {
+                EmailCard(draft: email, agent: agent)
             } else {
                 text.foregroundStyle(.white.opacity(0.88)).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -515,6 +517,62 @@ private struct ReplyField: View {
             // Claude Code and Codex run on this Mac, so they can open the saved image themselves.
             let notes = files.map { "[Image attached, saved at \($0.path)]" }
             CodingSessions.shared.reply(agent, text: ([text] + notes).filter { !$0.isEmpty }.joined(separator: "\n\n"))
+        }
+    }
+}
+
+/// A drafted email, laid out like the card Grok Bot shows. Sending stays in Grok Bot,
+/// which owns the mail connection; from here it can be read, copied, or sent back for changes.
+private struct EmailCard: View {
+    let draft: EmailDraft
+    let agent: Agent
+    @Environment(NotchUI.self) private var ui
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: "envelope.fill").font(.system(size: 10))
+                Text("Draft email").font(.system(size: 10.5, weight: .semibold))
+                Spacer()
+            }
+            .foregroundStyle(.white.opacity(0.55))
+            VStack(alignment: .leading, spacing: 2) {
+                field("To", draft.to.joined(separator: ", "))
+                if !draft.cc.isEmpty { field("Cc", draft.cc.joined(separator: ", ")) }
+                if !draft.from.isEmpty { field("From", draft.from) }
+            }
+            Text(draft.subject).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true)
+            Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
+            Text(draft.body).font(.system(size: 12.5)).lineSpacing(2).foregroundStyle(.white.opacity(0.9))
+                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Button(copied ? "Copied" : "Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(draft.body, forType: .string)
+                    copied = true
+                }
+                .buttonStyle(ChipButton())
+                Button("Send in Grok Bot") {
+                    GrokSource.shared.open(agent)
+                    ui.collapse()
+                }
+                .buttonStyle(ChipButton())
+                Spacer()
+            }
+            .padding(.top, 2)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
+    }
+
+    private func field(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(label).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4)).frame(width: 30, alignment: .leading)
+            Text(value).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.8)).lineLimit(2)
         }
     }
 }
