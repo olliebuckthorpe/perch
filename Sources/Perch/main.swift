@@ -84,6 +84,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let parts = command.split(separator: ":", maxSplits: 1).map(String.init)
         switch parts[0] {
         case "expand": ui.expand()
+        case "tasks":
+            ui.expand()
+            ui.showingTasks = true
         case "collapse": ui.collapse()
         case "select" where parts.count > 1: ui.show(parts[1])
         case "allow" where parts.count > 1:

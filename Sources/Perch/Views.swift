@@ -21,7 +21,7 @@ struct NotchContent: View {
         // so the gap always stays lined up with the hardware notch.
         // A chat needs more room than the roster.
         let chatting = ui.selectedID != nil || ui.composing
-        let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : 580) - (l + ui.notch.width + r)) : 0
+        let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : ui.showingTasks ? 760 : 600) - (l + ui.notch.width + r)) : 0
         let radius: CGFloat = ui.expanded ? 18 : 10
         let openWidth = max(l + ui.notch.width + r, 340)
         let shape = UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
@@ -94,7 +94,7 @@ private struct ExpandedBody: View {
                 NoticeView(agent: agent)
             } else {
                 // Faces down the left, one conversation (or the list) on the right.
-                HStack(alignment: .top, spacing: 8) {
+                HStack(alignment: .top, spacing: 12) {
                     Rail()
                     Rectangle().fill(.white.opacity(0.08)).frame(width: 1).frame(maxHeight: .infinity)
                     VStack(alignment: .leading, spacing: 6) { pane }
@@ -103,9 +103,9 @@ private struct ExpandedBody: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.top, 4)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .padding(.bottom, 14)
     }
 
     @ViewBuilder private var pane: some View {
@@ -413,43 +413,44 @@ private struct Rail: View {
                     ui.move(dragged, before: agent.id, in: agents.map(\.id))
                 }
             }
-            Spacer(minLength: 6)
-            HStack(spacing: 4) {
-                railButton("magnifyingglass", "Search all chats and bots", on: ui.browsing) { ui.browse() }
-                railButton("square.and.pencil", "New Claude Code chat", on: ui.composing && !ui.showingProfiles && !ui.showingTasks) {
-                    ui.showingProfiles = false
-                    ui.showingTasks = false
-                    ui.composing = true
-                }
-                railButton("checklist", "To-do list", on: ui.showingTasks) {
-                    ui.composing = false
-                    ui.showingProfiles = false
-                    ui.showingTasks = true
-                    ui.controller?.panel.makeKey()
-                }
-                railButton("person.2", "Jump to a Chrome profile", on: ui.showingProfiles || stripOpen) {
-                    ui.composing = false
-                    ui.showingTasks = false
-                    ui.showingProfiles = true
-                }
-                .onHover { overButton = $0; settleStrip() }
-                Spacer()
-                // Settings live here now that the old list footer is gone.
-                Footer()
+            Spacer(minLength: 10)
+            Rectangle().fill(.white.opacity(0.08)).frame(height: 1).padding(.horizontal, 5).padding(.bottom, 4)
+            // One labelled row each, instead of a strip of small icons.
+            NavRow(icon: "checklist", title: "To-dos", on: ui.showingTasks,
+                   badge: NotionTasks.shared.connected && !NotionTasks.shared.tasks.isEmpty ? "\(NotionTasks.shared.tasks.count)" : nil) {
+                ui.composing = false
+                ui.showingProfiles = false
+                ui.showingTasks = true
+                ui.controller?.panel.makeKey()
             }
-            // Floats above the buttons instead of pushing them, so nothing around it moves.
+            NavRow(icon: "person.2", title: "Chrome profiles", on: ui.showingProfiles || stripOpen) {
+                ui.composing = false
+                ui.showingTasks = false
+                ui.showingProfiles = true
+            }
+            .onHover { overButton = $0; settleStrip() }
+            // Floats above the row instead of pushing anything, so nothing around it moves.
             .overlay(alignment: .bottomLeading) {
                 if stripOpen {
                     ProfileStrip()
-                        .frame(width: 150)
+                        .frame(width: 160)
                         .background(.black, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                         .onHover { overStrip = $0; settleStrip() }
                         .offset(y: -28)
                         .transition(.opacity)
                 }
             }
+            NavRow(icon: "magnifyingglass", title: "Search", on: ui.browsing) { ui.browse() }
+            HStack(spacing: 0) {
+                NavRow(icon: "square.and.pencil", title: "New chat", on: ui.composing && !ui.showingProfiles && !ui.showingTasks) {
+                    ui.showingProfiles = false
+                    ui.showingTasks = false
+                    ui.composing = true
+                }
+                Footer().frame(width: 26)
+            }
         }
-        .frame(width: 150)
+        .frame(width: 160)
         .padding(.top, 2)
     }
 
@@ -474,6 +475,34 @@ private struct Rail: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain).help(help)
+    }
+}
+
+/// A destination at the foot of the sidebar: icon, name, and an optional count.
+private struct NavRow: View {
+    let icon: String
+    let title: String
+    let on: Bool
+    var badge: String?
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon).font(.system(size: 11)).frame(width: 18)
+            Text(title).font(.system(size: 11.5, weight: on ? .semibold : .regular)).lineLimit(1)
+            Spacer(minLength: 0)
+            if let badge {
+                Text(badge).font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.55))
+                    .padding(.horizontal, 5).padding(.vertical, 1).background(.white.opacity(0.1), in: Capsule())
+            }
+        }
+        .foregroundStyle(.white.opacity(on ? 0.95 : 0.6))
+        .padding(.horizontal, 6).padding(.vertical, 5)
+        .background(.white.opacity(on ? 0.14 : hovered ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: action)
+        .onHover { hovered = $0 }
     }
 }
 
@@ -654,25 +683,12 @@ private struct TasksView: View {
                     Text(problem).font(.system(size: 11)).foregroundStyle(Palette.amber.opacity(0.9))
                         .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 6)
                 }
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(NotionTasks.columns, id: \.self) { column in
-                            let rows = notion.tasks.filter { $0.column == column }
-                            if !rows.isEmpty {
-                                VStack(alignment: .leading, spacing: 0) {
-                                    Text(column).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
-                                        .padding(.horizontal, 6).padding(.bottom, 2)
-                                    ForEach(rows) { TaskRow(task: $0) }
-                                }
-                            }
-                        }
-                        if notion.loadedOnce, notion.tasks.isEmpty, notion.problem == nil {
-                            Text("Nothing on the list.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
-                                .padding(.horizontal, 6)
-                        }
+                // The board: one column per list, cards you can tick off or drag across.
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(NotionTasks.columns, id: \.self) { column in
+                        TaskColumn(title: column, cards: notion.tasks.filter { $0.column == column })
                     }
                 }
-                .frame(height: 330)
             }
         }
         .padding(.top, 2)
@@ -693,7 +709,39 @@ private struct TasksView: View {
     }
 }
 
-private struct TaskRow: View {
+/// One column of the board. Dropping a card on it moves the card there in Notion.
+private struct TaskColumn: View {
+    let title: String
+    let cards: [TaskItem]
+    @State private var targeted = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.75))
+                Text("\(cards.count)").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.35))
+                Spacer()
+            }
+            .padding(.horizontal, 4)
+            ScrollView {
+                VStack(spacing: 5) {
+                    ForEach(cards) { TaskCard(task: $0) }
+                }
+            }
+            .frame(height: 320)
+        }
+        .padding(7)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(.white.opacity(targeted ? 0.1 : 0.04), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .dropDestination(for: String.self) { ids, _ in
+            guard let id = ids.first else { return false }
+            NotionTasks.shared.move(id, to: title)
+            return true
+        } isTargeted: { targeted = $0 }
+    }
+}
+
+private struct TaskCard: View {
     let task: TaskItem
     @State private var hovered = false
     @State private var ticking = false
@@ -704,9 +752,9 @@ private struct TaskRow: View {
                                                    to: Calendar.current.startOfDay(for: due)).day ?? 0
         if days < 0 { return ("\(-days)d late", Palette.red) }
         if days == 0 { return ("Today", Palette.amber) }
-        if days == 1 { return ("Tomorrow", .white.opacity(0.5)) }
-        if days < 7 { return (due.formatted(.dateTime.weekday(.abbreviated)), .white.opacity(0.45)) }
-        return (due.formatted(.dateTime.day().month(.abbreviated)), .white.opacity(0.4))
+        if days == 1 { return ("Tomorrow", .white.opacity(0.55)) }
+        if days < 7 { return (due.formatted(.dateTime.weekday(.abbreviated)), .white.opacity(0.5)) }
+        return (due.formatted(.dateTime.day().month(.abbreviated)), .white.opacity(0.45))
     }
 
     private var priorityColor: Color? {
@@ -718,29 +766,37 @@ private struct TaskRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
-            Button {
-                ticking = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { NotionTasks.shared.complete(task) }
-            } label: {
-                Image(systemName: ticking ? "checkmark.circle.fill" : "circle").font(.system(size: 13))
-                    .foregroundStyle(ticking ? Palette.green : .white.opacity(hovered ? 0.7 : 0.4))
-                    .frame(width: 18, height: 18).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).help("Mark as done")
-            Text(task.name).font(.system(size: 12)).foregroundStyle(.white.opacity(ticking ? 0.4 : 0.92))
-                .strikethrough(ticking).lineLimit(2).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 4)
-            if let color = priorityColor { Circle().fill(color).frame(width: 6, height: 6) }
-            if let (text, color) = dueText {
-                Text(text).font(.system(size: 10.5)).foregroundStyle(color).lineLimit(1).layoutPriority(1)
+        VStack(alignment: .leading, spacing: 5) {
+            Text(task.name).font(.system(size: 11.5)).foregroundStyle(.white.opacity(ticking ? 0.4 : 0.92))
+                .strikethrough(ticking).lineLimit(4).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 5) {
+                if let (text, color) = dueText {
+                    Text(text).font(.system(size: 10, weight: .medium)).foregroundStyle(color)
+                }
+                if let color = priorityColor {
+                    Circle().fill(color).frame(width: 6, height: 6)
+                    Text(task.priority ?? "").font(.system(size: 10)).foregroundStyle(color.opacity(0.9))
+                }
+                Spacer(minLength: 0)
+                Button {
+                    ticking = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { NotionTasks.shared.complete(task) }
+                } label: {
+                    Image(systemName: ticking ? "checkmark.circle.fill" : "circle").font(.system(size: 13))
+                        .foregroundStyle(ticking ? Palette.green : .white.opacity(hovered ? 0.75 : 0.3))
+                        .frame(width: 18, height: 16).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).help("Mark as done")
             }
         }
-        .padding(.horizontal, 6).padding(.vertical, 4)
-        .background(.white.opacity(hovered ? 0.06 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 8).padding(.vertical, 7)
+        .background(.white.opacity(hovered ? 0.13 : 0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { NotionTasks.shared.open(task) }
         .onHover { hovered = $0 }
+        .draggable(task.id)
+        .help("Double click to open in Notion. Drag to another column to move it.")
     }
 }
 

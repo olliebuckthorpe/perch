@@ -352,7 +352,7 @@ final class NotchController {
     private var openWidth: CGFloat = 340
     private var openOffset: CGFloat = 0
     private var monitors: [Any] = []
-    private static let canvas = CGSize(width: 720, height: 680)
+    private static let canvas = CGSize(width: 860, height: 680)
 
     init(store: AgentStore) {
         panel = NotchPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],

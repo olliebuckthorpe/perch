@@ -125,6 +125,22 @@ final class NotionTasks {
         }
     }
 
+    /// Moves a card to another column on the board, as dragging it in Notion would.
+    func move(_ id: String, to column: String) {
+        guard let i = tasks.firstIndex(where: { $0.id == id }), tasks[i].column != column else { return }
+        tasks[i].column = column
+        let props: [String: Any] = [
+            "Column": ["select": ["name": column]],
+            "Status": ["select": ["name": column == "Waiting On" ? "Waiting" : "To do"]],
+        ]
+        call("PATCH", "pages/\(id)", ["properties": props]) { [weak self] _, error in
+            if let error {
+                self?.problem = "Could not move that: \(error)"
+                self?.refresh()
+            }
+        }
+    }
+
     func add(_ name: String, column: String = "My to-dos") {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
