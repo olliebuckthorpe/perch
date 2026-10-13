@@ -87,6 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "tasks":
             ui.expand()
             ui.showingTasks = true
+        case "peek" where parts.count > 1:
+            ui.expand()
+            ui.peek(parts[1])
         case "compose":
             ui.expand()
             ui.composing = true

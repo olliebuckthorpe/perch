@@ -134,8 +134,12 @@ final class GrokSource {
         }
         waiting[nextID] = completion
         nextID += 1
-        bridgeInput.write(data + Data([0x0A]))
+        // Off the main thread: if the bridge is busy its pipe can fill, and a write that has
+        // to wait must not be the interface that waits.
+        writes.async { try? bridgeInput.write(contentsOf: data + Data([0x0A])) }
     }
+
+    private let writes = DispatchQueue(label: "perch.grok.writes")
 
     // MARK: Roster
 

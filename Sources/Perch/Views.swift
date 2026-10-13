@@ -1293,9 +1293,16 @@ private struct NewChatView: View {
                     .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.white.opacity(0.35))
                     .lineLimit(1).truncationMode(.head)
             }
+            .padding(.top, 4)
+            // The same size as a conversation, with the message box at the bottom where it is
+            // in every other chat, so starting one does not make the island shrink.
+            Spacer(minLength: 0)
+            Text("Starts in the background in auto mode and shows up in the Claude app once it has replied.")
+                .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.3))
+                .fixedSize(horizontal: false, vertical: true)
             HStack(alignment: .bottom, spacing: 6) {
                 TextField("What do you want to work on?", text: draft, axis: .vertical)
-                    .textFieldStyle(.plain).font(.system(size: 12.5)).lineLimit(2...8)
+                    .textFieldStyle(.plain).font(.system(size: 12.5)).lineLimit(3...12)
                     .focused($focused)
                     .onSubmit { start(chosen) }
                 Button { Dictation.shared.toggle(for: "new") } label: {
@@ -1314,6 +1321,7 @@ private struct NewChatView: View {
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
+        .frame(height: 452, alignment: .top)
         .padding(.top, 2)
         .onAppear {
             SessionIndex.shared.refresh()
@@ -1497,7 +1505,18 @@ private struct ChatView: View {
     private static let thumbnails = NSCache<NSString, NSImage>()
 
     /// Pulls the "image attached" notes out of a message, so the pictures can be shown instead.
+    private static var split: [String: (text: String, paths: [String])] = [:]
+
     private static func splitImages(_ text: String) -> (text: String, paths: [String]) {
+        if let done = split[text] { return done }
+        let result = findImages(text)
+        if split.count > 400 { split.removeAll() }
+        split[text] = result
+        return result
+    }
+
+    private static func findImages(_ text: String) -> (text: String, paths: [String]) {
+        guard text.contains("[Image attached") else { return (text, []) }
         let range = NSRange(text.startIndex..., in: text)
         let paths = imageNote.matches(in: text, range: range).compactMap { m in
             Range(m.range(at: 1), in: text).map { String(text[$0]) }
@@ -1507,23 +1526,48 @@ private struct ChatView: View {
         return (cleaned.trimmingCharacters(in: .whitespacesAndNewlines), paths)
     }
 
-    private static func thumbnail(_ path: String) -> NSImage? {
-        if let cached = thumbnails.object(forKey: path as NSString) { return cached }
-        guard let image = NSImage(contentsOfFile: path) else { return nil }
-        thumbnails.setObject(image, forKey: path as NSString)
-        return image
+    /// A small copy of a picture, made off the main thread. Screenshots are several thousand
+    /// pixels across, and decoding them at full size in the middle of drawing a chat is what
+    /// made opening one hang.
+    fileprivate static func thumbnail(_ path: String, done: @escaping (NSImage?) -> Void) {
+        if let cached = thumbnails.object(forKey: path as NSString) { return done(cached) }
+        DispatchQueue.global(qos: .userInitiated).async {
+            var image: NSImage?
+            let options = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+                           kCGImageSourceThumbnailMaxPixelSize: 520] as CFDictionary
+            if let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+               let small = CGImageSourceCreateThumbnailAtIndex(source, 0, options) {
+                image = NSImage(cgImage: small, size: NSSize(width: small.width, height: small.height))
+            }
+            DispatchQueue.main.async {
+                if let image { thumbnails.setObject(image, forKey: path as NSString) }
+                done(image)
+            }
+        }
+    }
+
+    private struct Picture: View {
+        let path: String
+        @State private var image: NSImage?
+
+        var body: some View {
+            Group {
+                if let image {
+                    Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+                } else {
+                    Color.white.opacity(0.06).frame(width: 170, height: 110)
+                }
+            }
+            .frame(maxWidth: 230, maxHeight: 170)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .onTapGesture { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+            .help("Open the image")
+            .task(id: path) { ChatView.thumbnail(path) { image = $0 } }
+        }
     }
 
     @ViewBuilder private func pictures(_ paths: [String]) -> some View {
-        ForEach(paths, id: \.self) { path in
-            if let image = Self.thumbnail(path) {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 230, maxHeight: 170)
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .onTapGesture { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
-                    .help("Open the image")
-            }
-        }
+        ForEach(paths, id: \.self) { Picture(path: $0) }
     }
 
     /// The fill for the user's own bubbles in this chat.
@@ -1537,8 +1581,6 @@ private struct ChatView: View {
 
     @ViewBuilder private func bubble(_ message: ChatMessage) -> some View {
         let parts = Self.splitImages(message.text)
-        let text = Text(Self.markdown(parts.text)).font(.system(size: 12.5)).lineSpacing(2)
-            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         VStack(alignment: message.fromUser ? .trailing : .leading, spacing: 3) {
             if let peer = message.peerName {
                 PeerNote(owner: agent.name, peer: peer, outbound: message.peerOutbound, text: parts.text)
@@ -1549,7 +1591,9 @@ private struct ChatView: View {
                         Spacer(minLength: 50)
                         // Your side takes the colour of whoever you are talking to: Claude's orange,
                         // Codex's blue-violet, and plain white (with dark text) for Grok bots.
-                        text.foregroundStyle(agent.source == .grok ? Color.black.opacity(0.88) : .white)
+                        Text(Self.markdown(parts.text)).font(.system(size: 12.5)).lineSpacing(2)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            .foregroundStyle(agent.source == .grok ? Color.black.opacity(0.88) : .white)
                             .padding(.horizontal, 11).padding(.vertical, 7)
                             .background(mine, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                     }
@@ -1579,9 +1623,15 @@ private struct ChatView: View {
 
     /// Bold, code and links render; line breaks and lists stay as written.
     private static func markdown(_ s: String) -> AttributedString {
+        if let done = styled[s] { return done }
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+        let result = (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+        if styled.count > 400 { styled.removeAll() }
+        styled[s] = result
+        return result
     }
+
+    private static var styled: [String: AttributedString] = [:]
 
     private func open() {
         if agent.source == .grok { GrokSource.shared.open(agent) } else { CodingSessions.shared.open(agent) }

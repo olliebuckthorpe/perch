@@ -236,6 +236,13 @@ final class NotchUI {
         markSeen(id)
     }
 
+    /// Puts a chat on screen without taking the keyboard. For checking, not for use.
+    func peek(_ id: String) {
+        composing = false
+        browsing = false
+        selectedID = id
+    }
+
     func show(_ id: String) {
         cardsOnly = false
         composing = false
