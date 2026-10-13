@@ -79,6 +79,8 @@ final class Agent: Identifiable {
     var queued: [String] = []
     /// Started from the notch and run in the background, not open in any app.
     var background = false
+    /// Handed over to the Claude desktop app, so it shows in its sidebar too.
+    var adopted = false
     /// Recent conversation, loaded when the agent's chat is opened.
     var thread: [ChatMessage] = []
     var transcriptPath: String?

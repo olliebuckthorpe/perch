@@ -344,6 +344,19 @@ final class CodingSessions {
         return agent
     }
 
+    /// Asks the Claude desktop app to take on a chat that was started from the notch, so it
+    /// appears in the app's own list. Done between turns, never while the session is running,
+    /// and without pulling the app to the front.
+    private func adopt(_ agent: Agent) {
+        guard agent.background, !agent.adopted, agent.source == .claude,
+              let url = URL(string: "claude://resume?session=\(agent.sessionID)") else { return }
+        agent.adopted = true
+        agent.hostBundleID = Self.claudeBundleID
+        let quiet = NSWorkspace.OpenConfiguration()
+        quiet.activates = false
+        NSWorkspace.shared.open(url, configuration: quiet)
+    }
+
     /// Hands a new chat to the Claude desktop app, with the prompt and folder filled in.
     func newClaudeChat(prompt: String?) {
         var link = URLComponents(string: "claude://code/new")!
@@ -408,6 +421,7 @@ final class CodingSessions {
                 AgentStore.shared.ping(agent)
                 Threads.load(agent)
             }
+            if code == 0 { self.adopt(agent) }
             // Anything typed while it was busy goes in as the next turn.
             if code == 0, !agent.queued.isEmpty {
                 let next = agent.queued.joined(separator: "\n\n")
