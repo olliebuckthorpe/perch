@@ -52,6 +52,7 @@ struct NotchContent: View {
         .padding(.trailing, max(0, l - r))
         .animation(island, value: ui.expanded)
         .animation(island, value: ui.cardsOnly)
+        .animation(tabSwitch, value: ui.showingTasks)
         .animation(island, value: ui.selectedID)
         .animation(island, value: store.needing.count)
         .animation(island, value: l + r)
@@ -97,6 +98,8 @@ private struct ExpandedBody: View {
                 if ui.showingTasks {
                     // The board gets the full width; the island stays the same size either way.
                     TasksView()
+                        .transition(.asymmetric(insertion: .opacity.combined(with: .offset(x: 24)),
+                                                removal: .opacity.combined(with: .offset(x: 24))))
                 } else {
                     // Chats down the left, one conversation (or search) on the right.
                     HStack(alignment: .top, spacing: 12) {
@@ -106,6 +109,8 @@ private struct ExpandedBody: View {
                             .frame(maxWidth: .infinity, alignment: .topLeading)
                     }
                     .fixedSize(horizontal: false, vertical: true)
+                    .transition(.asymmetric(insertion: .opacity.combined(with: .offset(x: -24)),
+                                            removal: .opacity.combined(with: .offset(x: -24))))
                 }
             }
         }
@@ -376,6 +381,9 @@ private struct AgentRow: View {
     }
 }
 
+/// How the island moves between Chats and To-dos.
+private let tabSwitch = Animation.spring(response: 0.34, dampingFraction: 0.86)
+
 // MARK: Top bar
 
 /// What sits under the notch when the island is open: the two tabs on the left, and on the
@@ -384,21 +392,18 @@ private struct TopBar: View {
     @Environment(NotchUI.self) private var ui
     @State private var profiles: [ChromeProfile] = []
     @State private var hovered: String?
+    @Namespace private var pill
 
     var body: some View {
         HStack(spacing: 6) {
             tab("Chats", on: !ui.showingTasks) {
-                ui.showingTasks = false
+                withAnimation(tabSwitch) { ui.showingTasks = false }
             }
             tab("To-dos", count: NotionTasks.shared.connected ? NotionTasks.shared.tasks.count : nil, on: ui.showingTasks) {
                 ui.composing = false
-                ui.showingTasks = true
+                withAnimation(tabSwitch) { ui.showingTasks = true }
             }
             Spacer(minLength: 8)
-            if let name = profiles.first(where: { $0.id == hovered })?.label {
-                Text(name).font(.system(size: 11)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
-                    .transition(.opacity)
-            }
             ForEach(profiles) { profile in
                 ProfileAvatar(profile: profile, size: 22)
                     .scaleEffect(hovered == profile.id ? 1.14 : 1)
@@ -424,7 +429,13 @@ private struct TopBar: View {
         }
         .foregroundStyle(on ? .black.opacity(0.85) : .white.opacity(0.6))
         .padding(.horizontal, 12).padding(.vertical, 5)
-        .background(on ? Color.white.opacity(0.92) : Color.white.opacity(0.08), in: Capsule())
+        .background {
+            ZStack {
+                Capsule().fill(.white.opacity(0.08))
+                // The white highlight is one shape that slides from tab to tab.
+                if on { Capsule().fill(.white.opacity(0.92)).matchedGeometryEffect(id: "tab", in: pill) }
+            }
+        }
         .contentShape(Capsule())
         .onTapGesture(perform: action)
     }
@@ -777,7 +788,8 @@ private struct TaskColumn: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(.white.opacity(targeted ? 0.1 : 0.04), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        // Each column carries a wash of its Notion colour.
+        .background(tint.opacity(targeted ? 0.18 : 0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .dropDestination(for: String.self) { ids, _ in
             guard let id = ids.first else { return false }
             NotionTasks.shared.move(id, to: title)
@@ -810,6 +822,17 @@ private struct TaskCard: View {
         }
     }
 
+    /// The colour Notion uses for the card's area.
+    private var areaColor: Color? {
+        switch task.area {
+        case "Upshow": return Palette.colors[8]
+        case "Pipeline Engine": return Palette.blue
+        case "Personal": return Palette.colors[5]
+        case "Uni": return Palette.green
+        default: return nil
+        }
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 7) {
             Button {
@@ -825,10 +848,14 @@ private struct TaskCard: View {
                 Text(task.name).font(.system(size: 12)).foregroundStyle(.white.opacity(ticking ? 0.4 : 0.92))
                     .strikethrough(ticking).lineLimit(3).fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if dueText != nil || priorityColor != nil {
+                if dueText != nil || priorityColor != nil || areaColor != nil {
                     HStack(spacing: 5) {
                         if let (text, color) = dueText {
                             Text(text).font(.system(size: 10.5, weight: .medium)).foregroundStyle(color)
+                        }
+                        if let areaColor, let area = task.area {
+                            Text(area).font(.system(size: 10, weight: .medium)).foregroundStyle(areaColor)
+                                .padding(.horizontal, 5).padding(.vertical, 1).background(areaColor.opacity(0.15), in: Capsule())
                         }
                         if let color = priorityColor {
                             Text(task.priority ?? "").font(.system(size: 10, weight: .semibold)).foregroundStyle(color)
@@ -838,8 +865,13 @@ private struct TaskCard: View {
                 }
             }
         }
-        .padding(.horizontal, 8).padding(.vertical, 7)
-        .background(.white.opacity(hovered ? 0.13 : 0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.leading, 10).padding(.trailing, 8).padding(.vertical, 7)
+        .background(.black.opacity(hovered ? 0.2 : 0.42), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // A stripe down the left edge in the area's colour, so a column can be scanned by area.
+        .overlay(alignment: .leading) {
+            UnevenRoundedRectangle(topLeadingRadius: 8, bottomLeadingRadius: 8, style: .continuous)
+                .fill(areaColor ?? .white.opacity(0.15)).frame(width: 3)
+        }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { NotionTasks.shared.open(task) }
         .onHover { hovered = $0 }

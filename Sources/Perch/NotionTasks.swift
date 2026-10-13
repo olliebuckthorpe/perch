@@ -8,6 +8,8 @@ struct TaskItem: Identifiable, Equatable {
     var column: String
     var due: Date?
     var priority: String?
+    /// Which part of life or work it belongs to: Upshow, Pipeline Engine, Personal or Uni.
+    var area: String?
     var url: String?
 }
 
@@ -111,7 +113,8 @@ final class NotionTasks {
         guard !title.isEmpty, !title.hasPrefix("⬇") else { return nil }
         let start = (((props["Due date"] as? [String: Any])?["date"] as? [String: Any])?["start"] as? String).map { String($0.prefix(10)) }
         return TaskItem(id: id, name: title, column: select("Column") ?? "My to-dos",
-                        due: start.flatMap { day.date(from: $0) }, priority: select("Priority"), url: row["url"] as? String)
+                        due: start.flatMap { day.date(from: $0) }, priority: select("Priority"), area: select("Area"),
+                        url: row["url"] as? String)
     }
 
     /// Ticks a card off: moves it to Done on the board, exactly as dragging it there would.
