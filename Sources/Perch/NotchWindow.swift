@@ -262,8 +262,11 @@ final class NotchUI {
         guard let agent = AgentStore.shared.find(id) else { return }
         if agent.source == .grok {
             GrokSource.shared.markRead(agent)
-        } else if agent.status == .done, agent.pending == nil {
-            agent.status = .idle
+        } else if agent.status == .done {
+            // It may still be holding the door open for a follow-up, so the status stays; the
+            // hop and the green dot are what stop.
+            agent.seen = true
+            if agent.pending == nil { agent.status = .idle }
         }
     }
 

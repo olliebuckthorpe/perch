@@ -68,6 +68,8 @@ final class Agent: Identifiable {
     var lastMessage = ""
     var status: AgentStatus = .idle
     var unread = 0
+    /// The user has had this chat open since it last finished, so it stops asking for attention.
+    var seen = false
     var lastActivity = Date()
     var cwd: String?
     var hostBundleID: String?
@@ -204,6 +206,7 @@ final class AgentStore {
         let now = Date()
         if let last = lastPing[agent.id], now.timeIntervalSince(last) < 3, agent.pending == nil { return }
         lastPing[agent.id] = now
+        agent.seen = false
         attentionAgentID = agent.id
         attention += 1
         if sound && Settings.sounds { Settings.playSound() }

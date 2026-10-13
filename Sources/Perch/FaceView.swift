@@ -336,7 +336,7 @@ struct FaceView: View {
         .opacity(quiet ? 0.8 : 1)
         // Jumps while there is something waiting for the user: a question, a permission, or (for
         // a Claude chat) a reply they have not opened yet. It stops once the chat is opened.
-        .modifier(Bounce(active: agent.status == .needsYou || (agent.source != .grok && agent.status == .done),
+        .modifier(Bounce(active: agent.status == .needsYou || (agent.source != .grok && agent.status == .done && !agent.seen),
                          height: max(2.5, size * 0.2)))
         .overlay(alignment: .topTrailing) { badge.offset(x: size * 0.16, y: -size * 0.12) }
     }
@@ -424,7 +424,7 @@ struct FaceView: View {
                 Circle().fill(Palette.red).frame(width: d, height: d).overlay(Circle().stroke(.black, lineWidth: 1.5))
             }
         case .done:
-            if agent.source != .grok {
+            if agent.source != .grok, !agent.seen {
                 Circle().fill(Palette.green).frame(width: d, height: d).overlay(Circle().stroke(.black, lineWidth: 1.5))
             }
         default:

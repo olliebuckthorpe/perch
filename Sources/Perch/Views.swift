@@ -1486,6 +1486,7 @@ private struct ChatView: View {
         .onAppear { ui.markSeen(agent.id) }
         .onChange(of: agent.unread) { ui.markSeen(agent.id) }
         .onChange(of: agent.status) { ui.markSeen(agent.id) }
+        .onChange(of: agent.seen) { ui.markSeen(agent.id) }
     }
 
     /// What is drawn, top to bottom: ordinary messages one by one, and each run of bot-to-bot
