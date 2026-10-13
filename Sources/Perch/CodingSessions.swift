@@ -566,12 +566,37 @@ final class CodingSessions {
             NSWorkspace.shared.open(url)
             return
         }
+        if agent.source == .claude, let local = desktopSessionID(for: agent.sessionID),
+           let url = URL(string: "claude://code/continue?session=\(local)") {
+            // Straight to this exact chat in the Claude app, not just the app.
+            NSWorkspace.shared.open(url)
+            return
+        }
         guard let bundle = agent.hostBundleID,
               let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else { return }
         NSWorkspace.shared.openApplication(at: url, configuration: .init())
     }
 
     // MARK: Helpers
+
+    private var desktopIDs: [String: String] = [:]
+
+    /// The Claude desktop app keeps its own id for each chat. This finds it from the Claude Code
+    /// session id, by looking through the small records the app keeps for its sessions.
+    private func desktopSessionID(for cliID: String) -> String? {
+        if let known = desktopIDs[cliID] { return known }
+        let root = "\(Shell.home)/Library/Application Support/Claude/claude-code-sessions"
+        guard let walker = FileManager.default.enumerator(atPath: root) else { return nil }
+        for case let file as String in walker where file.hasSuffix(".json") {
+            guard let data = FileManager.default.contents(atPath: "\(root)/\(file)"), data.count < 2 << 20,
+                  let text = String(data: data, encoding: .utf8), text.contains(cliID),
+                  let row = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  row["cliSessionId"] as? String == cliID, let local = row["sessionId"] as? String else { continue }
+            desktopIDs[cliID] = local
+            return local
+        }
+        return nil
+    }
 
     private func hostBundle(source: AgentSource, headers: [String: String]) -> String? {
         if source == .claude, headers["x-perch-entrypoint"] == "claude-desktop" { return Self.claudeBundleID }

@@ -499,8 +499,14 @@ private struct RailRow: View {
         .background(.white.opacity(selected ? 0.14 : hovered ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contentShape(Rectangle())
         .onTapGesture { ui.select(agent.id) }
+        // A double click goes on to the chat in its own app. The first click has already
+        // selected it here, so a single click never has to wait to see if a second is coming.
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            if agent.source == .grok { GrokSource.shared.open(agent) } else { CodingSessions.shared.open(agent) }
+            ui.collapse()
+        })
         .onHover { hovered = $0 }
-        .help(agent.name)
+        .help("\(agent.name). Double click to open in its own app.")
         // Drag a chat onto another to place it just above.
         .overlay(alignment: .top) {
             Rectangle().fill(Palette.blue).frame(height: 2).opacity(targeted && !star ? 1 : 0).offset(y: -1)
