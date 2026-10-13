@@ -47,7 +47,9 @@ struct NotchContent: View {
         }
         .shadow(color: .black.opacity(ui.expanded ? 0.35 : 0), radius: 12, y: 5)
         // Faces sit either side of the notch, so the island is only as wide as it needs to be.
-        .offset(x: (r - l) / 2)
+        // Padding (not an offset) shifts it, so the clickable area moves with what is drawn.
+        .padding(.leading, max(0, r - l))
+        .padding(.trailing, max(0, l - r))
         .animation(island, value: ui.expanded)
         .animation(island, value: ui.cardsOnly)
         .animation(island, value: ui.selectedID)

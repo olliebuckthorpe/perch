@@ -2,6 +2,12 @@ import AppKit
 import SwiftUI
 import Observation
 
+/// The island is never the active window, and AppKit normally spends the first click on a
+/// window like that just focusing it. Taking the first click makes every click count.
+final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -208,7 +214,7 @@ final class NotchController {
         panel.ignoresMouseEvents = true
 
         ui.controller = self
-        let host = NSHostingView(rootView: NotchRoot().environment(store).environment(ui))
+        let host = FirstClickHostingView(rootView: NotchRoot().environment(store).environment(ui))
         host.sizingOptions = []
         // The canvas sits under the notch on purpose; without this the content is pushed below it.
         host.safeAreaRegions = []
