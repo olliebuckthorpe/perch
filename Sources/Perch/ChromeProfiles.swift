@@ -77,7 +77,15 @@ struct ChromeProfile: Identifiable {
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         try? p.run()
-        NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").first?.activate()
+        Self.bringChromeForward()
+    }
+
+    /// Brings Chrome to the front a beat after asking it to switch. Doing it at once shows
+    /// whichever profile was last in front, and only then moves to the right one.
+    private static func bringChromeForward() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").first?.activate()
+        }
     }
 
     static var canJump: Bool { AXIsProcessTrusted() }
@@ -126,7 +134,7 @@ struct ChromeProfile: Identifiable {
             && AXUIElementPerformAction(matches[position], kAXPressAction as CFString) == .success
         Self.log("jump to \(name) [\(id)]: menu = \(titles) | matched \(matches.map(title)) | pressed \(pressed)")
         guard pressed else { return false }
-        chrome.activate()
+        Self.bringChromeForward()
         return true
     }
 
