@@ -19,6 +19,9 @@ struct ChatMessage: Identifiable, Equatable {
     let text: String
     var reactions: [String] = []
     var email: EmailDraft?
+    /// Set when this is one agent talking to another, not part of the conversation with the user.
+    var peerName: String?
+    var peerOutbound = false
 }
 
 /// Loads the recent conversation for an agent, from wherever that kind of agent keeps it.

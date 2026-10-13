@@ -766,7 +766,9 @@ private struct ChatView: View {
         let text = Text(Self.markdown(parts.text)).font(.system(size: 12.5)).lineSpacing(2)
             .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         VStack(alignment: message.fromUser ? .trailing : .leading, spacing: 3) {
-            if message.fromUser {
+            if let peer = message.peerName {
+                PeerNote(owner: agent.name, peer: peer, outbound: message.peerOutbound, text: parts.text)
+            } else if message.fromUser {
                 pictures(parts.paths)
                 if !parts.text.isEmpty {
                     HStack {
@@ -1047,6 +1049,36 @@ private struct MessageBody: View {
         .padding(.horizontal, 9).padding(.vertical, 3)
         .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.white.opacity(0.1), lineWidth: 1))
+    }
+}
+
+/// One bot briefing another. Shown folded and set apart, so the conversation with the user
+/// stays readable; click to read the whole exchange.
+private struct PeerNote: View {
+    let owner: String
+    let peer: String
+    let outbound: Bool
+    let text: String
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                Image(systemName: outbound ? "arrow.turn.up.right" : "arrow.turn.down.left").font(.system(size: 9, weight: .semibold))
+                Text(outbound ? "\(owner) to \(peer)" : "\(peer) to \(owner)").font(.system(size: 10.5, weight: .semibold))
+                Spacer()
+                Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .semibold))
+            }
+            .foregroundStyle(.white.opacity(0.45))
+            Text(text).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.6))
+                .lineLimit(expanded ? nil : 2).fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .padding(.horizontal, 9).padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture { expanded.toggle() }
     }
 }
 

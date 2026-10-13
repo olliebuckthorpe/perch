@@ -198,6 +198,14 @@ final class GrokSource {
                 switch e["kind"] as? String {
                 case "message":
                     guard let text = e["content"] as? String, !text.isEmpty else { return nil }
+                    // Bots brief each other in the same transcript. Those are not the user speaking,
+                    // nor the bot speaking to the user, so they are marked as a side exchange.
+                    if let to = (e["toAgent"] as? [String: Any])?["name"] as? String {
+                        return ChatMessage(id: id, fromUser: false, text: text, reactions: reactions, peerName: to, peerOutbound: true)
+                    }
+                    if let from = (e["fromAgent"] as? [String: Any])?["name"] as? String {
+                        return ChatMessage(id: id, fromUser: false, text: text, reactions: reactions, peerName: from, peerOutbound: false)
+                    }
                     return ChatMessage(id: id, fromUser: e["role"] as? String == "user", text: text, reactions: reactions)
                 case "send-message":
                     let message = e["message"] as? [String: Any] ?? [:]
