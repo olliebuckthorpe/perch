@@ -173,7 +173,7 @@ final class NotchUI {
             self.collapse()
         }
         collapseWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: work)
     }
 
     func pendingChanged(_ count: Int) {
