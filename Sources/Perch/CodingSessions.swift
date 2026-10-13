@@ -375,9 +375,11 @@ final class CodingSessions {
             agent.detail = "Could not find the \(tool) command"
             return
         }
+        // A chat started here whose first run never got going has nothing to resume yet.
+        let neverStarted = agent.background && agent.transcriptPath == nil
         let args = agent.source == .codex
             ? ["exec", "resume", agent.sessionID, text, "--skip-git-repo-check"]
-            : ["-p", "--resume", agent.sessionID, text]
+            : neverStarted ? ["-p", "--session-id", agent.sessionID, text] : ["-p", "--resume", agent.sessionID, text]
         run(agent, exe: exe, args: args, text: text)
     }
 
