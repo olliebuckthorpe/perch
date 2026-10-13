@@ -96,6 +96,8 @@ final class CodingSessions {
         if let cwd { agent.cwd = cwd }
         if let path = j["transcript_path"] as? String { agent.transcriptPath = path }
         if !headless { agent.hostBundleID = hostBundle(source: source, headers: req.headers) }
+        // Only Perch starts sessions this way, so this is one of its own chats, even after a restart.
+        if headless, source == .claude, !agent.adopted { agent.background = true }
         agent.lastActivity = Date()
         agent.ended = false
         if let title = j["session_title"] as? String, !title.isEmpty {
@@ -220,6 +222,8 @@ final class CodingSessions {
                 agent.ended = true
             }
             if agent.status == .working || agent.status == .needsYou { agent.status = .idle }
+            // The background run has ended, so it is safe to hand the chat to the desktop app.
+            if headless { adopt(agent) }
         default:
             break
         }
