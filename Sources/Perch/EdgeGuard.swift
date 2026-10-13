@@ -85,6 +85,9 @@ final class EdgeGuard {
         p.y = top + 3
         event.location = p
         CGWarpMouseCursorPosition(p)
+        // A warp makes macOS ignore the mouse for a quarter of a second, which at the top edge
+        // happens on every movement and freezes the pointer. Re-associating cancels that pause.
+        CGAssociateMouseAndMouseCursorPosition(1)
     }
 }
 
