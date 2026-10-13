@@ -63,7 +63,8 @@ struct CodexMark: View {
             let radius = min(rect.width, rect.height) / 2
             for i in 0...120 {
                 let t = Double(i) / 120 * 2 * .pi
-                let r = radius * (0.89 + 0.11 * cos(7 * t + 0.4))
+                // Gentle, shallow bumps: a puffy cloud, not a cog.
+                let r = radius * (0.945 + 0.055 * cos(8 * t + 0.4))
                 let pt = CGPoint(x: c.x + r * cos(t), y: c.y + r * sin(t))
                 if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
             }
