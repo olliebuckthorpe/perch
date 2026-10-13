@@ -7,8 +7,10 @@ struct PendingLink: Identifiable {
     let site: String
     let sourceName: String?
     let sourceBundle: String?
-    /// Profiles in the order worth offering, best guess first.
+    /// The profiles, always in the same order, so 1 to 4 mean the same thing every time.
     let choices: [ChromeProfile]
+    /// The one Perch thinks is most likely, if it has anything to go on. Return picks it.
+    var suggested: String?
 }
 
 /// Decides where a clicked link opens. Perch is registered as the default browser purely to
@@ -62,12 +64,10 @@ final class LinkRouter {
         let picks = memory.recent[site] ?? []
         let fromApp = bundle.flatMap { memory.bySource[$0] } ?? [:]
         func score(_ p: ChromeProfile) -> Int { picks.filter { $0 == p.id }.count * 10 + (fromApp[p.id] ?? 0) }
-        let ordered = profiles.enumerated().sorted {
-            let (a, b) = (score($0.element), score($1.element))
-            return a != b ? a > b : $0.offset < $1.offset
-        }.map(\.element)
+        let best = profiles.max { score($0) < score($1) }
         NotchUI.shared.present(PendingLink(url: url, site: site, sourceName: source?.localizedName,
-                                           sourceBundle: bundle, choices: ordered))
+                                           sourceBundle: bundle, choices: profiles,
+                                           suggested: best.flatMap { score($0) > 0 ? $0.id : nil }))
     }
 
     /// The user picked a profile. Opens the link and remembers the choice.

@@ -618,19 +618,20 @@ private struct LinkPicker: View {
             }
             HStack(alignment: .top, spacing: 4) {
                 ForEach(Array(link.choices.enumerated()), id: \.element.id) { index, profile in
+                    let likely = profile.id == link.suggested
                     VStack(spacing: 4) {
                         ProfileAvatar(profile: profile, size: 34)
                             .scaleEffect(hovered == profile.id ? 1.1 : 1)
                             .animation(.easeOut(duration: 0.1), value: hovered)
-                        Text(profile.label).font(.system(size: 10.5, weight: index == 0 ? .semibold : .regular))
-                            .foregroundStyle(.white.opacity(index == 0 ? 0.95 : 0.65)).lineLimit(1).minimumScaleFactor(0.8)
+                        Text(profile.label).font(.system(size: 10.5, weight: likely ? .semibold : .regular))
+                            .foregroundStyle(.white.opacity(likely ? 0.95 : 0.65)).lineLimit(1).minimumScaleFactor(0.8)
                         Text("\(index + 1)").font(.system(size: 9.5, weight: .semibold, design: .rounded))
                             .foregroundStyle(.white.opacity(0.45))
                             .frame(width: 15, height: 15).background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
-                    .background(.white.opacity(hovered == profile.id ? 0.1 : index == 0 ? 0.05 : 0),
+                    .background(.white.opacity(hovered == profile.id ? 0.1 : likely ? 0.06 : 0),
                                 in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .contentShape(Rectangle())
                     .onHover { hovered = $0 ? profile.id : (hovered == profile.id ? nil : hovered) }
@@ -650,7 +651,7 @@ private struct LinkPicker: View {
                 if waiting > 0 {
                     Text("\(waiting) more waiting").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                 }
-                Text("Esc cancels").font(.system(size: 10)).foregroundStyle(.white.opacity(0.28))
+                Text(link.suggested == nil ? "Esc cancels" : "Return for the highlighted one").font(.system(size: 10)).foregroundStyle(.white.opacity(0.28))
             }
         }
         .padding(.horizontal, 4).padding(.top, 2)

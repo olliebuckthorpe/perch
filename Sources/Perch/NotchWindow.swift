@@ -396,15 +396,15 @@ final class NotchController {
                 self?.ui.collapse()
                 return nil
             }
-            // With a link picker up: 1 to 9 picks that profile, Return takes the first.
+            // With a link picker up: 1 to 9 picks that profile, Return takes the suggested one.
             if let ui = self?.ui, let link = ui.pendingLinks.first, !event.modifierFlags.contains(.command) {
                 let key = event.charactersIgnoringModifiers ?? ""
                 if let n = Int(key), n >= 1, n <= link.choices.count {
                     ui.resolveLink(link.choices[n - 1], always: false)
                     return nil
                 }
-                if event.keyCode == 36, let first = link.choices.first {
-                    ui.resolveLink(first, always: false)
+                if event.keyCode == 36, let pick = link.choices.first(where: { $0.id == link.suggested }) {
+                    ui.resolveLink(pick, always: false)
                     return nil
                 }
             }
