@@ -644,7 +644,7 @@ private struct ChatView: View {
                 ScrollView {
                     // Lazy, so only the messages on screen are laid out when the island opens.
                     LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(messages) { bubble($0) }
+                        ForEach(messages) { bubble($0).id($0.id) }
                         if agent.status == .working {
                             Text(agent.source == .grok ? "\(agent.name) is working…" : "Working…")
                                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
@@ -657,8 +657,8 @@ private struct ChatView: View {
                 // A fixed height keeps the island the same size every time it opens, so the
                 // opening animation has one target instead of jumping as the history loads.
                 .frame(height: 380)
-                .onChange(of: messages.last?.id) { proxy.scrollTo("end", anchor: .bottom) }
-                .onAppear { DispatchQueue.main.async { proxy.scrollTo("end", anchor: .bottom) } }
+                .onChange(of: messages.last?.id) { settle(proxy) }
+                .onAppear { DispatchQueue.main.async { settle(proxy) } }
             }
             if agent.status == .needsYou, agent.pending == nil {
                 // It asked for something, but the request itself is not open here (answered or
@@ -695,6 +695,17 @@ private struct ChatView: View {
         .padding(.top, 2)
         // Reload when the agent says something new or changes state.
         .task(id: "\(agent.id)|\(agent.status.rawValue)|\(agent.lastMessage.count)|\(agent.tick)") { Threads.load(agent) }
+    }
+
+    /// Where the chat comes to rest. If the agent spoke last, its message starts at the top of
+    /// the view, so you read it from the beginning (the same words the notification showed)
+    /// with the rest below. If you spoke last, it sits at the very bottom as usual.
+    private func settle(_ proxy: ScrollViewProxy) {
+        if let last = messages.last, !last.fromUser {
+            proxy.scrollTo(last.id, anchor: .top)
+        } else {
+            proxy.scrollTo("end", anchor: .bottom)
+        }
     }
 
     /// Until the history has loaded, at least show the latest thing the agent said.
