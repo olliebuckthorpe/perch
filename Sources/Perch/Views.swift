@@ -732,7 +732,7 @@ private struct TasksView: View {
                 // The board: one column per list, cards you can tick off or drag across.
                 HStack(alignment: .top, spacing: 8) {
                     ForEach(NotionTasks.columns, id: \.self) { column in
-                        TaskColumn(title: column, cards: notion.tasks.filter { $0.column == column })
+                        TaskColumn(title: column, cards: notion.cards(in: column))
                     }
                 }
             }
@@ -805,6 +805,7 @@ private struct TaskCard: View {
     let tint: Color
     @State private var hovered = false
     @State private var ticking = false
+    @State private var targeted = false
 
     private var dueText: (String, Color)? {
         guard let due = task.due else { return nil }
@@ -858,8 +859,17 @@ private struct TaskCard: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { NotionTasks.shared.open(task) }
         .onHover { hovered = $0 }
+        // Drop another card on this one to put it just above.
+        .overlay(alignment: .top) {
+            Capsule().fill(.white).frame(height: 2).opacity(targeted ? 0.9 : 0).offset(y: -3.5)
+        }
         .draggable(task.id)
-        .help("Double click to open in Notion. Drag to another column to move it.")
+        .dropDestination(for: String.self) { ids, _ in
+            guard let id = ids.first else { return false }
+            NotionTasks.shared.place(id, before: task)
+            return true
+        } isTargeted: { targeted = $0 }
+        .help("Drag to reorder or move column. Double click to open in Notion.")
     }
 }
 

@@ -140,6 +140,33 @@ final class NotionTasks {
         }
     }
 
+    /// The order the user has dragged cards into. Notion's API cannot read or set a board's
+    /// manual order, so this lives in Perch only: cards placed by hand come first, in that order,
+    /// and the rest follow in the board's usual order.
+    private(set) var order: [String] = UserDefaults.standard.stringArray(forKey: "taskOrder") ?? [] {
+        didSet { UserDefaults.standard.set(order, forKey: "taskOrder") }
+    }
+
+    func cards(in column: String) -> [TaskItem] {
+        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        return tasks.filter { $0.column == column }.enumerated().sorted {
+            let (a, b) = (rank[$0.element.id] ?? Int.max, rank[$1.element.id] ?? Int.max)
+            return a != b ? a < b : $0.offset < $1.offset
+        }.map(\.element)
+    }
+
+    /// Puts card `id` just above `target`, moving it to that card's column if it came from another.
+    func place(_ id: String, before target: TaskItem) {
+        guard id != target.id else { return }
+        move(id, to: target.column)
+        var column = cards(in: target.column).map(\.id).filter { $0 != id }
+        column.insert(id, at: column.firstIndex(of: target.id) ?? column.count)
+        // Everything above the dropped card is now placed too, so it holds its position.
+        let placed = Array(column.prefix((column.firstIndex(of: target.id) ?? 0) + 1))
+        let known = Set(tasks.map(\.id))
+        order = placed + order.filter { !placed.contains($0) && known.contains($0) }
+    }
+
     /// Moves a card to another column on the board, as dragging it in Notion would.
     func move(_ id: String, to column: String) {
         guard let i = tasks.firstIndex(where: { $0.id == id }), tasks[i].column != column else { return }
