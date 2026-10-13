@@ -66,6 +66,8 @@ enum Threads {
                   let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
             let id = o["uuid"] as? String ?? "line-\(i)"
             if let m = codex ? codexMessage(o) : claudeMessage(o, raw: line) {
+                // One message can be logged twice; show it once.
+                if m.user, out.suffix(4).contains(where: { $0.fromUser && $0.text == m.text }) { continue }
                 out.append(ChatMessage(id: id, fromUser: m.user, text: m.text))
             }
         }
@@ -74,9 +76,19 @@ enum Threads {
 
     private static func claudeMessage(_ o: [String: Any], raw: Substring) -> (user: Bool, text: String)? {
         // A reply sent from the notch reaches the session as hook feedback, not a normal prompt.
-        if raw.contains("replied from Perch"), let s = findString(o, containing: replyMarker),
-           let r = s.range(of: replyMarker) {
-            return (true, String(s[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines))
+        // The transcript records it several times over (queue bookkeeping, the delivery, the
+        // agent's own commands quoting it), so only take it from where it is actually delivered.
+        if raw.contains("replied from Perch") {
+            let kind = o["type"] as? String
+            let queued = kind == "attachment" && (o["attachment"] as? [String: Any])?["type"] as? String == "queued_command"
+            guard kind == "user" || queued, let s = findString(o, containing: replyMarker),
+                  let r = s.range(of: replyMarker) else { return nil }
+            var text = String(s[r.upperBound...])
+            for closing in ["</system-reminder>", "&lt;/system-reminder"] {
+                if let end = text.range(of: closing) { text = String(text[..<end.lowerBound]) }
+            }
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : (true, text)
         }
         guard let type = o["type"] as? String, type == "user" || type == "assistant",
               o["isSidechain"] as? Bool != true, o["isMeta"] as? Bool != true,
