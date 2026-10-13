@@ -110,6 +110,8 @@ enum Threads {
             for closing in ["</system-reminder>", "&lt;/system-reminder"] {
                 if let end = text.range(of: closing) { text = String(text[..<end.lowerBound]) }
             }
+            // Drop the note Perch adds to spell out a slash command, leaving what was typed.
+            if let note = text.range(of: CodingSessions.skillNote) { text = String(text[..<note.lowerBound]) }
             text = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : (true, text)
         }

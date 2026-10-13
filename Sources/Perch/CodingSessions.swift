@@ -74,6 +74,7 @@ final class CodingSessions {
     }
 
     func start() {
+        SkillIndex.shared.refresh()
         for a in store.sessions {
             titled.insert(a.id)
             if a.kept { Threads.load(a) }
@@ -369,7 +370,16 @@ final class CodingSessions {
     }
 
     /// Wakes the real session, so the reply and the answer both show up in its own chat.
+    static let skillNote = "\n\n(Sent from the notch"
+
     private func deliver(_ text: String, to agent: Agent, through waiter: HookRequest) {
+        // A relayed reply is not parsed for slash commands, so a `/skill` is spelled out as the
+        // tool call it stands for. The original line stays first, so the chat shows what was typed.
+        var text = text
+        if let cmd = SkillIndex.shared.command(in: text) {
+            text += "\(Self.skillNote), where slash commands cannot run directly. Invoke the Skill tool with skill \"\(cmd.name)\""
+                + (cmd.arguments.isEmpty ? "" : " and args \"\(cmd.arguments)\"") + ", exactly as if this slash command had been typed.)"
+        }
         waiter.respond(Data("The user replied from Perch, their notch app. Treat this as their next message:\n\n\(text)".utf8))
         if agent.waiter === waiter { agent.waiter = nil }
         clearPending(agent)

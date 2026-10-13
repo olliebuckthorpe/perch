@@ -901,7 +901,27 @@ private struct ReplyField: View {
         let files = ui.attachments[agent.id] ?? []
         let empty = draft.wrappedValue.isEmpty && files.isEmpty
         let listening = Dictation.shared.activeAgentID == agent.id
+        // Typing "/" offers your skills; click one, or press Tab for the first.
+        let typed = draft.wrappedValue
+        let offers = agent.source != .grok && typed.hasPrefix("/") && !typed.contains(" ")
+            ? Array(SkillIndex.shared.matching(typed).prefix(6)) : []
         VStack(alignment: .leading, spacing: 6) {
+            if !offers.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(offers) { skill in
+                        HStack(spacing: 6) {
+                            Text("/\(skill.id)").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white)
+                                .lineLimit(1).layoutPriority(1)
+                            Text(skill.summary).font(.system(size: 11)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 6).padding(.vertical, 4)
+                        .background(.white.opacity(skill.id == offers.first?.id ? 0.1 : 0), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .contentShape(Rectangle())
+                        .onTapGesture { ui.drafts[agent.id] = "/\(skill.id) " }
+                    }
+                }
+            }
             if !files.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(files) { file in
@@ -924,6 +944,11 @@ private struct ReplyField: View {
                 .textFieldStyle(.plain).font(.system(size: 12)).lineLimit(1...3)
                 .focused($focused)
                 .onSubmit { send() }
+                .onKeyPress(.tab) {
+                    guard let first = offers.first else { return .ignored }
+                    ui.drafts[agent.id] = "/\(first.id) "
+                    return .handled
+                }
                 .disabled(busy)
             Button { Dictation.shared.toggle(for: agent.id) } label: {
                 Image(systemName: listening ? "mic.fill" : "mic").font(.system(size: 13))
@@ -942,7 +967,12 @@ private struct ReplyField: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .onChange(of: focused) { _, on in if on { ui.focusedAgentID = agent.id } }
+        .onChange(of: focused) { _, on in
+            if on {
+                ui.focusedAgentID = agent.id
+                SkillIndex.shared.refresh()
+            }
+        }
         .onDrop(of: [.fileURL, .image], isTargeted: nil) { providers in
             for provider in providers {
                 _ = provider.loadDataRepresentation(forTypeIdentifier: "public.image") { data, _ in
