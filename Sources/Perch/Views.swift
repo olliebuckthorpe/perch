@@ -121,7 +121,7 @@ private struct ExpandedBody: View {
 
     @ViewBuilder private var roster: some View {
         SearchBar()
-        if ui.query.trimmingCharacters(in: .whitespaces).isEmpty { sections } else { SearchResults() }
+        SearchResults()
     }
 
     @ViewBuilder private var sections: some View {
@@ -167,6 +167,7 @@ private struct ExpandedBody: View {
 
 private struct SearchBar: View {
     @Environment(NotchUI.self) private var ui
+    @Environment(AgentStore.self) private var store
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -174,7 +175,19 @@ private struct SearchBar: View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
             TextField("Search chats and bots", text: $ui.query)
-                .textFieldStyle(.plain).font(.system(size: 12)).focused($focused)
+                .textFieldStyle(.plain).font(.system(size: 12.5)).focused($focused)
+                .onKeyPress(.downArrow) {
+                    ui.searchIndex = min(ui.searchIndex + 1, max(0, SearchItem.all(store, ui).count - 1))
+                    return .handled
+                }
+                .onKeyPress(.upArrow) {
+                    ui.searchIndex = max(ui.searchIndex - 1, 0)
+                    return .handled
+                }
+                .onSubmit {
+                    let items = SearchItem.all(store, ui)
+                    if items.indices.contains(ui.searchIndex) { items[ui.searchIndex].open(ui) }
+                }
             if !ui.query.isEmpty {
                 Button { ui.query = "" } label: {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
@@ -189,36 +202,98 @@ private struct SearchBar: View {
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onChange(of: focused) { _, on in if on { SessionIndex.shared.refresh() } }
+        .onChange(of: ui.query) { ui.searchIndex = 0 }
+        .onAppear {
+            SessionIndex.shared.refresh()
+            DispatchQueue.main.async { focused = true }
+        }
     }
 }
 
-/// Live agents first, then older Claude Code sessions by title, then the option to start fresh.
+/// One thing search can land on.
+enum SearchItem: Identifiable {
+    case agent(Agent)
+    case older(SessionIndex.Entry)
+    case newChat(String)
+
+    var id: String {
+        switch self {
+        case .agent(let a): return a.id
+        case .older(let e): return "older:\(e.id)"
+        case .newChat: return "new"
+        }
+    }
+
+    /// Everything matching the search, in the order shown: live chats and bots, older Claude
+    /// Code sessions by title, then the option to start fresh. With nothing typed, every live one.
+    static func all(_ store: AgentStore, _ ui: NotchUI) -> [SearchItem] {
+        let q = ui.query.trimmingCharacters(in: .whitespaces).lowercased()
+        let everyone = store.sessions + store.grokBots
+        guard !q.isEmpty else { return everyone.prefix(14).map { .agent($0) } }
+        let live = everyone.filter { $0.name.lowercased().contains(q) || $0.detail.lowercased().contains(q) }
+        let older = SessionIndex.shared.entries
+            .filter { $0.title.lowercased().contains(q) && store.find("claude:\($0.id)") == nil }
+        return live.prefix(8).map { .agent($0) } + older.prefix(6).map { .older($0) } + [.newChat(ui.query)]
+    }
+
+    func open(_ ui: NotchUI) {
+        switch self {
+        case .agent(let agent):
+            ui.query = ""
+            ui.dismissed[agent.id] = nil
+            ui.select(agent.id)
+        case .older(let entry):
+            ui.query = ""
+            ui.select(CodingSessions.shared.adopt(entry).id)
+        case .newChat(let prompt):
+            ui.drafts["new"] = prompt
+            ui.query = ""
+            ui.composing = true
+        }
+    }
+}
+
+/// The search results. Arrow keys move the highlight, Return opens it, and clicking works too.
 private struct SearchResults: View {
     @Environment(AgentStore.self) private var store
     @Environment(NotchUI.self) private var ui
 
     var body: some View {
-        let q = ui.query.trimmingCharacters(in: .whitespaces).lowercased()
-        let live = store.agents.filter { $0.name.lowercased().contains(q) || $0.detail.lowercased().contains(q) }
-        let older = SessionIndex.shared.entries
-            .filter { $0.title.lowercased().contains(q) && store.find("claude:\($0.id)") == nil }
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(live.prefix(7)) { AgentRow(agent: $0) }
-            ForEach(older.prefix(6)) { entry in
-                PlainRow(icon: "clock", title: entry.title, trailing: nil) {
-                    ui.query = ""
-                    ui.select(CodingSessions.shared.adopt(entry).id)
-                }
+        let items = SearchItem.all(store, ui)
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                row(item)
+                    .background(.white.opacity(index == ui.searchIndex ? 0.12 : 0),
+                                in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
-            if live.isEmpty && older.isEmpty {
+            if items.isEmpty {
                 Text("Nothing matches.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
                     .padding(.horizontal, 6).padding(.vertical, 5)
             }
-            PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(ui.query)", trailing: nil) {
-                ui.drafts["new"] = ui.query
-                ui.query = ""
-                ui.composing = true
+            Text("↑ ↓ to move, Return to open").font(.system(size: 10)).foregroundStyle(.white.opacity(0.28))
+                .padding(.horizontal, 6).padding(.top, 4)
+        }
+    }
+
+    @ViewBuilder private func row(_ item: SearchItem) -> some View {
+        switch item {
+        case .agent(let agent):
+            HStack(spacing: 7) {
+                FaceView(agent: agent, size: 18)
+                Text(agent.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                    .lineLimit(1).layoutPriority(1)
+                Text(agent.detail.isEmpty ? agent.source.label : agent.detail)
+                    .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+                Spacer(minLength: 4)
+                StatusChip(agent: agent).layoutPriority(1)
             }
+            .padding(.horizontal, 6).padding(.vertical, 5)
+            .contentShape(Rectangle())
+            .onTapGesture { item.open(ui) }
+        case .older(let entry):
+            PlainRow(icon: "clock", title: entry.title, trailing: nil) { item.open(ui) }
+        case .newChat(let prompt):
+            PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(prompt)", trailing: nil) { item.open(ui) }
         }
     }
 }

@@ -26,6 +26,8 @@ final class NotchUI {
     var query = ""
     /// Showing the full list in the right-hand pane instead of a chat.
     var browsing = false
+    /// Which search result the arrow keys are on.
+    var searchIndex = 0
     /// Whether the open chat should take the keyboard. Only after a deliberate click, never on hover.
     private(set) var focusReply = false
     /// Writing the first message of a new chat.
@@ -159,6 +161,9 @@ final class NotchUI {
         selectedID = nil
         composing = false
         browsing = true
+        searchIndex = 0
+        // Straight into typing: the search field takes the keyboard.
+        controller?.panel.makeKey()
     }
 
     /// Reopening with a reply half written puts the cursor straight back in it.
