@@ -253,18 +253,20 @@ final class NotchController {
     private var menuBarCheck = (at: Date.distantPast, hidden: false)
 
     /// True in a full screen space, where the menu bar is tucked away until the pointer hits the top.
+    /// The menu bar's own window still reports as on screen there, so look instead for the
+    /// overlay a full screen app keeps at the top to slide its title bar into.
     private func menuBarHidden() -> Bool {
         if Date().timeIntervalSince(menuBarCheck.at) < 0.4 { return menuBarCheck.hidden }
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
-        let width = screen?.frame.width ?? 0
-        let shown = list.contains { w in
-            guard w[kCGWindowLayer as String] as? Int == 24,
-                  w[kCGWindowOwnerName as String] as? String == "Window Server",
+        let width = Double(screen?.frame.width ?? 0)
+        let hidden = list.contains { w in
+            guard let layer = w[kCGWindowLayer as String] as? Int, (25...30).contains(layer),
+                  w[kCGWindowOwnerName as String] as? String != "Window Server",
                   let bounds = w[kCGWindowBounds as String] as? [String: Any] else { return false }
-            return bounds["Width"] as? Double == Double(width)
+            return bounds["Width"] as? Double == width && bounds["Y"] as? Double == 0
         }
-        menuBarCheck = (Date(), !shown)
-        return !shown
+        menuBarCheck = (Date(), hidden)
+        return hidden
     }
 
     private func trackMouse() {
@@ -277,13 +279,13 @@ final class NotchController {
         // With the menu bar hidden the trigger reaches a little below the notch band, so the
         // island opens before the pointer ever gets into the band.
         let hidden = menuBarHidden()
-        let reach: CGFloat = hidden ? 10 : 0
+        let reach: CGFloat = hidden ? 26 : 0
         let strip = CGRect(x: frame.midX + openOffset - openWidth / 2, y: frame.maxY - ui.notch.height - reach,
                            width: openWidth, height: ui.notch.height + reach + 20)
         let onIsland = island.contains(mouse)
         // In a full screen app, the pointer entering the top band makes macOS slide the menu bar
         // and the app's title bar down. Over the island, hold it just below the band instead.
-        let ceiling = frame.maxY - ui.notch.height - 3
+        let ceiling = frame.maxY - ui.notch.height - 8
         if hidden, onIsland || strip.contains(mouse), mouse.y > ceiling, let primary = NSScreen.screens.first {
             CGWarpMouseCursorPosition(CGPoint(x: mouse.x, y: primary.frame.maxY - ceiling))
             CGAssociateMouseAndMouseCursorPosition(1)
