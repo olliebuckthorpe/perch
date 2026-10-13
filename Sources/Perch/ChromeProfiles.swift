@@ -10,6 +10,10 @@ struct ChromeProfile: Identifiable {
     /// "First (Profile name)", or just the name when the two are the same or it is not signed in.
     let account: String
     let lastUsed: Double
+    /// The Google account picture Chrome keeps for the profile, when it has one.
+    let picturePath: String?
+    /// Chrome's own colour for the profile, as it shows in its profile switcher.
+    let argb: Int?
 
     static func all() -> [ChromeProfile] {
         let path = "\(Shell.home)/Library/Application Support/Google/Chrome/Local State"
@@ -18,10 +22,15 @@ struct ChromeProfile: Identifiable {
               let profile = root["profile"] as? [String: Any],
               let cache = profile["info_cache"] as? [String: [String: Any]] else { return [] }
         let order = profile["profiles_order"] as? [String] ?? []
+        let base = "\(Shell.home)/Library/Application Support/Google/Chrome"
         return cache.map { dir, info in
-            ChromeProfile(id: dir, name: info["name"] as? String ?? dir, email: info["user_name"] as? String ?? "",
-                          account: info["gaia_given_name"] as? String ?? "",
-                          lastUsed: info["active_time"] as? Double ?? 0)
+            let file = info["gaia_picture_file_name"] as? String ?? ""
+            let picture = "\(base)/\(dir)/\(file)"
+            return ChromeProfile(id: dir, name: info["name"] as? String ?? dir, email: info["user_name"] as? String ?? "",
+                                 account: info["gaia_given_name"] as? String ?? "",
+                                 lastUsed: info["active_time"] as? Double ?? 0,
+                                 picturePath: !file.isEmpty && FileManager.default.fileExists(atPath: picture) ? picture : nil,
+                                 argb: info["profile_highlight_color"] as? Int)
         }.sorted {
             // Chrome's own order when it has one, otherwise most recently used first.
             let (a, b) = (order.firstIndex(of: $0.id), order.firstIndex(of: $1.id))

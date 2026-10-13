@@ -370,6 +370,9 @@ private struct AgentRow: View {
 private struct Rail: View {
     @Environment(AgentStore.self) private var store
     @Environment(NotchUI.self) private var ui
+    @State private var stripOpen = false
+    @State private var overButton = false
+    @State private var overStrip = false
 
     private var agents: [Agent] {
         var seen = Set<String>()
@@ -405,21 +408,39 @@ private struct Rail: View {
                 }
             }
             Spacer(minLength: 6)
+            if stripOpen {
+                ProfileStrip()
+                    .onHover { overStrip = $0; settleStrip() }
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
             HStack(spacing: 4) {
                 railButton("magnifyingglass", "Search all chats and bots", on: ui.browsing) { ui.browse() }
                 railButton("square.and.pencil", "New Claude Code chat", on: ui.composing && !ui.showingProfiles) {
                     ui.showingProfiles = false
                     ui.composing = true
                 }
-                railButton("person.2", "Jump to a Chrome profile", on: ui.showingProfiles) {
+                railButton("person.2", "Jump to a Chrome profile", on: ui.showingProfiles || stripOpen) {
                     ui.composing = false
                     ui.showingProfiles = true
                 }
+                .onHover { overButton = $0; settleStrip() }
                 Spacer()
             }
         }
         .frame(width: 150)
         .padding(.top, 2)
+    }
+
+    /// Open while the pointer is on the button or the strip, with a short grace period so it
+    /// survives the trip from one to the other.
+    private func settleStrip() {
+        if overButton || overStrip {
+            withAnimation(.easeOut(duration: 0.14)) { stripOpen = true }
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                if !overButton && !overStrip { withAnimation(.easeOut(duration: 0.14)) { stripOpen = false } }
+            }
+        }
     }
 
     private func railButton(_ icon: String, _ help: String, on: Bool, action: @escaping () -> Void) -> some View {
@@ -562,6 +583,82 @@ private struct NoticeView: View {
 
 // MARK: Chrome profiles
 
+/// A profile as a circle: its Google picture ringed in Chrome's colour for it, with the profile's
+/// initial as a badge, or a plain coloured initial when it has no picture.
+private struct ProfileAvatar: View {
+    let profile: ChromeProfile
+    let size: CGFloat
+
+    private static let pictures = NSCache<NSString, NSImage>()
+
+    private var tint: Color {
+        guard let argb = profile.argb else { return Palette.blue }
+        let v = UInt32(truncatingIfNeeded: argb)
+        return Color(red: Double((v >> 16) & 0xFF) / 255, green: Double((v >> 8) & 0xFF) / 255, blue: Double(v & 0xFF) / 255)
+    }
+
+    private var picture: NSImage? {
+        guard let path = profile.picturePath else { return nil }
+        if let cached = Self.pictures.object(forKey: path as NSString) { return cached }
+        guard let image = NSImage(contentsOfFile: path) else { return nil }
+        Self.pictures.setObject(image, forKey: path as NSString)
+        return image
+    }
+
+    var body: some View {
+        let initial = String(profile.name.prefix(1)).uppercased()
+        ZStack {
+            if let picture {
+                Image(nsImage: picture).resizable().aspectRatio(contentMode: .fill)
+                    .frame(width: size, height: size).clipShape(Circle())
+                    .overlay(Circle().strokeBorder(tint, lineWidth: max(1.5, size * 0.09)))
+                    .overlay(alignment: .bottomTrailing) {
+                        Text(initial).font(.system(size: size * 0.36, weight: .bold)).foregroundStyle(.black.opacity(0.85))
+                            .frame(width: size * 0.48, height: size * 0.48).background(tint, in: Circle())
+                            .overlay(Circle().stroke(.black, lineWidth: 1)).offset(x: size * 0.12, y: size * 0.12)
+                    }
+            } else {
+                Text(initial).font(.system(size: size * 0.5, weight: .bold)).foregroundStyle(.black.opacity(0.8))
+                    .frame(width: size, height: size).background(tint, in: Circle())
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// The quick way in: hover the profiles button and the profiles fan out as circles. One click
+/// takes you to that profile's window.
+private struct ProfileStrip: View {
+    @Environment(NotchUI.self) private var ui
+    @State private var profiles: [ChromeProfile] = []
+    @State private var hovered: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(profiles.first { $0.id == hovered }.map { $0.email.isEmpty ? $0.name : "\($0.name) · \($0.email)" } ?? "Go to a Chrome profile")
+                .font(.system(size: 10.5)).foregroundStyle(.white.opacity(hovered == nil ? 0.4 : 0.8))
+                .lineLimit(1).truncationMode(.middle)
+            HStack(spacing: 5) {
+                ForEach(profiles) { profile in
+                    ProfileAvatar(profile: profile, size: 20)
+                        .scaleEffect(hovered == profile.id ? 1.18 : 1)
+                        .animation(.easeOut(duration: 0.12), value: hovered)
+                        .contentShape(Rectangle())
+                        .onHover { hovered = $0 ? profile.id : (hovered == profile.id ? nil : hovered) }
+                        .onTapGesture {
+                            profile.open()
+                            ui.collapse()
+                        }
+                }
+            }
+        }
+        .padding(.horizontal, 5).padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .onAppear { profiles = ChromeProfile.all() }
+    }
+}
+
 /// Jump to a Chrome profile, or open the link you just copied in the right one.
 private struct ProfilesView: View {
     @Environment(NotchUI.self) private var ui
@@ -622,9 +719,7 @@ private struct ProfileRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(String(profile.name.prefix(1)).uppercased())
-                .font(.system(size: 11, weight: .bold)).foregroundStyle(.black.opacity(0.8))
-                .frame(width: 22, height: 22).background(tint, in: Circle())
+            ProfileAvatar(profile: profile, size: 24)
             VStack(alignment: .leading, spacing: 0) {
                 Text(profile.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                 if !profile.email.isEmpty {
