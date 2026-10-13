@@ -1177,10 +1177,14 @@ private struct ProfileAvatar: View {
                 Image(nsImage: icon).resizable().aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size).clipShape(Circle())
             } else if let icon {
-                // A logo with transparent edges sits whole on a white disc instead.
+                // A logo with transparent edges sits whole on a disc instead: white, or black for
+                // the profiles whose logo reads better on dark. A black disc gets a thin edge
+                // so it still shows against the island.
+                let dark = (UserDefaults.standard.stringArray(forKey: "darkIconProfiles") ?? ["Profile 3"]).contains(profile.id)
                 Image(nsImage: icon).resizable().aspectRatio(contentMode: .fit)
                     .padding(size * 0.14)
-                    .frame(width: size, height: size).background(.white, in: Circle()).clipShape(Circle())
+                    .frame(width: size, height: size).background(dark ? Color.black : .white, in: Circle()).clipShape(Circle())
+                    .overlay(Circle().strokeBorder(.white.opacity(dark ? 0.28 : 0), lineWidth: 1))
             } else if let picture {
                 Image(nsImage: picture).resizable().aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size).clipShape(Circle())
