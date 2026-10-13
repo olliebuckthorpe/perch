@@ -158,7 +158,10 @@ struct FaceView: View {
         .frame(width: size, height: size)
         .saturation(quiet ? 0.75 : 1)
         .opacity(quiet ? 0.8 : 1)
-        .modifier(Bounce(active: agent.status == .needsYou))
+        // Jumps while there is something waiting for the user: a question, a permission, or (for
+        // a Claude chat) a reply they have not opened yet. It stops once the chat is opened.
+        .modifier(Bounce(active: agent.status == .needsYou || (agent.source == .claude && agent.status == .done),
+                         height: max(2.5, size * 0.2)))
         .overlay(alignment: .topTrailing) { badge.offset(x: size * 0.16, y: -size * 0.12) }
     }
 
@@ -273,12 +276,16 @@ struct FaceView: View {
 
 private struct Bounce: ViewModifier {
     let active: Bool
+    var height: CGFloat = 2.5
 
     func body(content: Content) -> some View {
         if active {
-            content.phaseAnimator([0.0, -2.5]) { view, y in
+            // Up quickly, down with a little settle, then a short rest before the next hop.
+            content.phaseAnimator([0.0, -height, 0.0, 0.0]) { view, y in
                 view.offset(y: y)
-            } animation: { _ in .easeInOut(duration: 0.42) }
+            } animation: { y in
+                y < 0 ? .easeOut(duration: 0.2) : .easeIn(duration: 0.24)
+            }
         } else {
             content
         }
