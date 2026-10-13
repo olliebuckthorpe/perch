@@ -1421,8 +1421,8 @@ private struct ChatView: View {
                     HStack {
                         Spacer(minLength: 50)
                         text.foregroundStyle(.white)
-                            .padding(.horizontal, 10).padding(.vertical, 6)
-                            .background(.white.opacity(0.17), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .padding(.horizontal, 11).padding(.vertical, 7)
+                            .background(Color(red: 0.15, green: 0.42, blue: 0.92), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                     }
                 }
             } else if let name = message.fileName, let path = message.filePath {
@@ -1552,7 +1552,7 @@ private struct ReplyField: View {
             }
         HStack(alignment: .bottom, spacing: 6) {
             TextField(placeholder, text: draft, axis: .vertical)
-                .textFieldStyle(.plain).font(.system(size: 12)).lineLimit(1...3)
+                .textFieldStyle(.plain).font(.system(size: 13)).lineLimit(1...4)
                 .focused($focused)
                 .onSubmit { send() }
                 .onKeyPress(.tab) {
@@ -1576,8 +1576,10 @@ private struct ReplyField: View {
             .disabled(empty || busy)
         }
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 11).padding(.vertical, 8)
+        .background(Color(white: 0.15), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
+            .stroke(.white.opacity(focused ? 0.38 : 0.2), lineWidth: 1))
         .onChange(of: focused) { _, on in
             if on {
                 ui.focusedAgentID = agent.id
@@ -1631,8 +1633,8 @@ private struct AgentBubble: View {
     var body: some View {
         HStack(spacing: 0) {
             MessageBody(text: text)
-                .padding(.horizontal, 10).padding(.vertical, 7)
-                .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.horizontal, 11).padding(.vertical, 8)
+                .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             // Only while the pointer is on the message: one small, dim face. Clicking it opens
             // a menu of reactions.
             if let react {
