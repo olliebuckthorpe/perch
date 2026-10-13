@@ -192,7 +192,7 @@ final class GrokSource {
         request("getAgentTranscriptTail", ["id": agent.sessionID, "limit": 80]) { [weak agent] reply in
             guard let agent else { return }
             let entries = reply as? [[String: Any]] ?? (reply as? [String: Any])?["entries"] as? [[String: Any]] ?? []
-            let messages: [ChatMessage] = entries.compactMap { e in
+            var messages: [ChatMessage] = entries.compactMap { e in
                 let id = e["id"] as? String ?? UUID().uuidString
                 let reactions = (e["reactions"] as? [[String: Any]] ?? []).compactMap { $0["emoji"] as? String }
                 switch e["kind"] as? String {
@@ -219,7 +219,6 @@ final class GrokSource {
             }
             guard !messages.isEmpty else { return }
             // Only the newest unsent draft is live; earlier ones were replaced by it.
-            var messages = messages
             if let newest = messages.lastIndex(where: { $0.email != nil }) {
                 for i in messages.indices where i < newest && messages[i].email?.sendState == nil {
                     messages[i].email?.superseded = true
