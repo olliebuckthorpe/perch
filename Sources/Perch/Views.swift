@@ -502,11 +502,17 @@ private struct Rail: View {
                 RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks, star: star) { dragged in
                     // Pinned bots stay at the top; everything else can be dragged into any order.
                     guard !star else { return }
-                    ui.move(dragged, before: agent.id, in: agents.map(\.id))
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                        ui.move(dragged, before: agent.id, in: agents.map(\.id))
+                    }
                 }
+                // A cleared chat slides out to the left and fades, and the rows below close up.
+                .transition(.asymmetric(insertion: .opacity,
+                                        removal: .opacity.combined(with: .offset(x: -28)).combined(with: .scale(scale: 0.94, anchor: .leading))))
             }
             Spacer(minLength: 0)
         }
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: agents.map(\.id))
         .frame(width: 176)
     }
 
@@ -583,7 +589,9 @@ private struct RailRow: View {
             Spacer(minLength: 0)
             if hovered && !star {
                 // Clears it from the notch. It returns by itself if it does something new.
-                Button { ui.dismiss(agent) } label: {
+                Button {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { ui.dismiss(agent) }
+                } label: {
                     Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
                         .foregroundStyle(.white.opacity(0.6)).frame(width: 16, height: 16)
                         .background(.white.opacity(0.12), in: Circle()).contentShape(Rectangle())
