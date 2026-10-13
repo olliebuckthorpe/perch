@@ -21,7 +21,7 @@ struct NotchContent: View {
         // so the gap always stays lined up with the hardware notch.
         // A chat needs more room than the roster.
         let chatting = ui.selectedID != nil || ui.composing
-        let extra = ui.expanded ? max(0, (chatting ? 420 : 340) - (l + ui.notch.width + r)) : 0
+        let extra = ui.expanded ? max(0, (ui.cardsOnly ? 340 : 470) - (l + ui.notch.width + r)) : 0
         let radius: CGFloat = ui.expanded ? 18 : 10
         let openWidth = max(l + ui.notch.width + r, 340)
         let shape = UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
@@ -88,20 +88,35 @@ private struct ExpandedBody: View {
         VStack(alignment: .leading, spacing: 6) {
             if ui.cardsOnly, let id = ui.noticeID, let agent = store.find(id) {
                 NoticeView(agent: agent)
-            } else if ui.composing {
-                NewChatView()
-            } else if let id = ui.selectedID, let agent = store.find(id) {
-                ChatView(agent: agent)
             } else {
-                let asks = store.needing.filter { if case .followUp = $0.pending!.kind { return false } else { return true } }
-                ForEach(asks) { PendingCard(agent: $0) }
-                // Opened by itself to ask something: show just the ask, not the whole roster.
-                if !(ui.cardsOnly && !asks.isEmpty) { roster }
+                // Faces down the left, one conversation (or the list) on the right.
+                HStack(alignment: .top, spacing: 8) {
+                    Rail()
+                    Rectangle().fill(.white.opacity(0.08)).frame(width: 1).frame(maxHeight: .infinity)
+                    VStack(alignment: .leading, spacing: 6) { pane }
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, 8)
         .padding(.top, 4)
         .padding(.bottom, 8)
+    }
+
+    @ViewBuilder private var pane: some View {
+        Group {
+            if ui.composing {
+                NewChatView()
+            } else if let id = ui.selectedID, let agent = store.find(id) {
+                ChatView(agent: agent).id(agent.id)
+            } else {
+                let asks = store.needing.filter { if case .followUp = $0.pending!.kind { return false } else { return true } }
+                ForEach(asks) { PendingCard(agent: $0) }
+                // Opened by itself to ask something: show just the ask, not the whole roster.
+                roster
+            }
+        }
     }
 
     @ViewBuilder private var roster: some View {
@@ -268,6 +283,55 @@ private struct AgentRow: View {
         .contentShape(Rectangle())
         .onTapGesture { ui.select(agent.id) }
         .onHover { hovered = $0 }
+    }
+}
+
+// MARK: Rail
+
+/// Every agent worth a glance, as a column of faces. Click one to switch conversation.
+private struct Rail: View {
+    @Environment(AgentStore.self) private var store
+    @Environment(NotchUI.self) private var ui
+
+    private var agents: [Agent] {
+        var seen = Set<String>()
+        let sessions = store.sessions
+        let active = sessions.filter { $0.status != .idle }
+        let quiet = sessions.filter { $0.status == .idle }.prefix(max(0, 5 - active.count))
+        let bots = store.grokBots.filter(ui.inPill)
+        // Whatever is open stays on the rail even if it has gone quiet.
+        let open = ui.selectedID.flatMap { store.find($0) }.map { [$0] } ?? []
+        return (store.needing + active + quiet + bots + open).filter { seen.insert($0.id).inserted }
+    }
+
+    var body: some View {
+        VStack(spacing: 7) {
+            ForEach(agents) { agent in
+                let selected = ui.selectedID == agent.id && !ui.composing
+                FaceView(agent: agent, size: 22)
+                    .padding(4)
+                    .background(.white.opacity(selected ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .contentShape(Rectangle())
+                    .onTapGesture { ui.select(agent.id) }
+                    .help(agent.name)
+            }
+            Spacer(minLength: 4)
+            railButton("magnifyingglass", "Search all chats and bots", on: ui.browsing) { ui.browse() }
+            railButton("square.and.pencil", "New Claude Code chat", on: ui.composing) { ui.composing = true }
+        }
+        .frame(width: 32)
+        .padding(.top, 2)
+    }
+
+    private func railButton(_ icon: String, _ help: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 12))
+                .foregroundStyle(.white.opacity(on ? 0.95 : 0.5))
+                .frame(width: 30, height: 24)
+                .background(.white.opacity(on ? 0.12 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).help(help)
     }
 }
 
@@ -473,12 +537,12 @@ private struct ChatView: View {
                             Button(quick) { CodingSessions.shared.reply(agent, text: quick) }.buttonStyle(ChipButton())
                         }
                     }
-                    ReplyField(agent: agent, autofocus: true)
+                    ReplyField(agent: agent, autofocus: ui.focusReply)
                 } else {
                     PendingCard(agent: agent)
                 }
             } else {
-                ReplyField(agent: agent, autofocus: true)
+                ReplyField(agent: agent, autofocus: ui.focusReply)
             }
         }
         .padding(.top, 2)
@@ -495,8 +559,8 @@ private struct ChatView: View {
 
     private var header: some View {
         HStack(spacing: 7) {
-            Button { ui.selectedID = nil } label: {
-                Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+            Button { ui.browse() } label: {
+                Image(systemName: "list.bullet").font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
             }
             .buttonStyle(.plain)

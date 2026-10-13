@@ -24,6 +24,10 @@ final class NotchUI {
     private(set) var expanded = false
     var selectedID: String?
     var query = ""
+    /// Showing the full list in the right-hand pane instead of a chat.
+    var browsing = false
+    /// Whether the open chat should take the keyboard. Only after a deliberate click, never on hover.
+    private(set) var focusReply = false
     /// Writing the first message of a new chat.
     var composing = false
     /// True when the island opened itself for a prompt, so it shows only that prompt.
@@ -103,7 +107,22 @@ final class NotchUI {
 
     func expand() {
         expanded = true
+        if selectedID == nil, !browsing, !composing {
+            // Open straight onto a conversation: whoever needs you, else the one you last had open.
+            let store = AgentStore.shared
+            let last = UserDefaults.standard.string(forKey: "lastChat").flatMap { store.find($0) }
+            let pick = store.needing.first ?? last ?? store.sessions.first ?? store.grokBots.first
+            selectedID = pick?.id
+            focusReply = false
+        }
         resumeDraft()
+    }
+
+    /// Back to the full list.
+    func browse() {
+        selectedID = nil
+        composing = false
+        browsing = true
     }
 
     /// Reopening with a reply half written puts the cursor straight back in it.
@@ -119,6 +138,8 @@ final class NotchUI {
         if !isDrafting("new") { composing = false }
         // Keep the row with an unsent reply selected, so it is right there on reopening.
         if let id = selectedID, !isDrafting(id) { selectedID = nil }
+        browsing = false
+        focusReply = false
         Dictation.shared.stop()
         autoOpened = false
         controller?.releaseKey()
@@ -126,16 +147,20 @@ final class NotchUI {
 
     func select(_ id: String) {
         composing = false
-        selectedID = selectedID == id ? nil : id
-        if selectedID != nil {
-            controller?.panel.makeKey()
-            markSeen(id)
-        }
+        browsing = false
+        selectedID = id
+        focusReply = true
+        UserDefaults.standard.set(id, forKey: "lastChat")
+        controller?.panel.makeKey()
+        markSeen(id)
     }
 
     func show(_ id: String) {
         cardsOnly = false
         composing = false
+        browsing = false
+        focusReply = true
+        UserDefaults.standard.set(id, forKey: "lastChat")
         expanded = true
         selectedID = id
         controller?.panel.makeKey()
