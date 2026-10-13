@@ -424,6 +424,8 @@ private struct Rail: View {
                 }
                 .onHover { overButton = $0; settleStrip() }
                 Spacer()
+                // Settings live here now that the old list footer is gone.
+                Footer()
             }
             // Floats above the buttons instead of pushing them, so nothing around it moves.
             .overlay(alignment: .bottomLeading) {
@@ -621,7 +623,7 @@ private struct LinkPicker: View {
                             .scaleEffect(hovered == profile.id ? 1.1 : 1)
                             .animation(.easeOut(duration: 0.1), value: hovered)
                         Text(profile.label).font(.system(size: 10.5, weight: index == 0 ? .semibold : .regular))
-                            .foregroundStyle(.white.opacity(index == 0 ? 0.95 : 0.65)).lineLimit(1)
+                            .foregroundStyle(.white.opacity(index == 0 ? 0.95 : 0.65)).lineLimit(1).minimumScaleFactor(0.8)
                         Text("\(index + 1)").font(.system(size: 9.5, weight: .semibold, design: .rounded))
                             .foregroundStyle(.white.opacity(0.45))
                             .frame(width: 15, height: 15).background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
@@ -1820,8 +1822,6 @@ private struct Footer: View {
 
     var body: some View {
         HStack {
-            Text("Perch").font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.25))
-            Spacer()
             Menu {
                 Menu("Always in the notch") {
                     ForEach(store.grokBots) { bot in
@@ -1853,7 +1853,6 @@ private struct Footer: View {
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         }
-        .padding(.horizontal, 6)
         .onChange(of: sounds) { _, on in Settings.sounds = on }
         .onChange(of: edgeGuard) { _, on in
             EdgeGuard.wanted = on
