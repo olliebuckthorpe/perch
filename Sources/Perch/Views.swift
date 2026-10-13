@@ -984,8 +984,9 @@ private struct ChatView: View {
             header
             Group {
                 ScrollView {
-                    // Lazy, so only the messages on screen are laid out when the island opens.
-                    LazyVStack(alignment: .leading, spacing: 10) {
+                    // Not lazy: every message has to exist for the view to be able to come to
+                    // rest on the newest one, and a chat is only a few dozen messages.
+                    VStack(alignment: .leading, spacing: 10) {
                         ForEach(items) { item in
                             Group {
                                 if item.peers.isEmpty, let message = item.message {
@@ -1011,7 +1012,15 @@ private struct ChatView: View {
                 .onChange(of: messages.last?.id) {
                     withAnimation(.easeOut(duration: 0.22)) { position = Self.restingID(messages) }
                 }
-                .onAppear { position = Self.restingID(messages) }
+                .onAppear {
+                    position = Self.restingID(messages)
+                    // Opened before its history arrived: fetch it now, and once more shortly after
+                    // in case the first try was too early.
+                    if agent.thread.isEmpty {
+                        Threads.load(agent)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { if agent.thread.isEmpty { Threads.load(agent) } }
+                    }
+                }
             }
             if agent.status == .needsYou, agent.pending == nil {
                 // It asked for something, but the request itself is not open here (answered or
@@ -1150,12 +1159,9 @@ private struct ChatView: View {
                 EmailCard(draft: email, agent: agent)
             } else {
                 // The agent's side: a quieter bubble on the left, yours brighter on the right.
-                HStack(spacing: 0) {
-                    MessageBody(text: parts.text)
-                        .padding(.horizontal, 10).padding(.vertical, 7)
-                        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    Spacer(minLength: 28)
-                }
+                AgentBubble(text: parts.text, react: agent.source == .grok && !message.id.hasPrefix("local-") ? { emoji in
+                    GrokSource.shared.react(emoji, to: message.id, in: agent)
+                } : nil)
             }
             if !message.reactions.isEmpty {
                 // Reactions the agent (or you) left on this message in Grok Bot.
@@ -1337,6 +1343,42 @@ private struct ReplyField: View {
             let notes = files.map { "[Image attached, saved at \($0.path)]" }
             CodingSessions.shared.reply(agent, text: ([text] + notes).filter { !$0.isEmpty }.joined(separator: "\n\n"))
         }
+    }
+}
+
+/// The agent's bubble. In a Grok bot's chat, hovering it offers a few reactions; clicking one
+/// leaves it on the message in Grok Bot (clicking it again takes it back).
+private struct AgentBubble: View {
+    let text: String
+    let react: ((String) -> Void)?
+    @State private var hovered = false
+
+    private static let quick = ["👍", "❤️", "😂", "🙏", "👀", "✅"]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            MessageBody(text: text)
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(alignment: .topTrailing) {
+                    if hovered, let react {
+                        HStack(spacing: 1) {
+                            ForEach(Self.quick, id: \.self) { emoji in
+                                Button { react(emoji) } label: {
+                                    Text(emoji).font(.system(size: 12)).frame(width: 22, height: 20).contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 3).padding(.vertical, 1)
+                        .background(Color(white: 0.16), in: Capsule())
+                        .overlay(Capsule().stroke(.white.opacity(0.15), lineWidth: 1))
+                        .offset(x: 6, y: -13)
+                    }
+                }
+            Spacer(minLength: 28)
+        }
+        .onHover { hovered = $0 }
     }
 }
 

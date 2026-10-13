@@ -117,7 +117,16 @@ final class GrokSource {
     }
 
     /// `completion` gets the host's reply, or nil if the call failed.
-    private func request(_ command: String, _ body: [String: Any] = [:], completion: @escaping (Any?) -> Void = { _ in }) {
+    private func request(_ command: String, _ body: [String: Any] = [:], attempt: Int = 0,
+                         completion: @escaping (Any?) -> Void = { _ in }) {
+        // The bridge takes a moment to start (and restarts if it drops). Wait for it instead of
+        // failing, so a chat opened in that window still loads.
+        if bridgeInput == nil, attempt < 8 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+                self?.request(command, body, attempt: attempt + 1, completion: completion)
+            }
+            return
+        }
         guard let bridgeInput,
               let data = try? JSONSerialization.data(withJSONObject: ["id": nextID, "command": command, "body": body]) else {
             completion(nil)
@@ -294,6 +303,21 @@ final class GrokSource {
             let text = (reply as? [String: Any])?["text"] as? String
             if let text { self?.attachmentText[path] = text }
             completion(text)
+        }
+    }
+
+    /// Adds (or, if it is already there, removes) the user's reaction on one of the bot's messages.
+    func react(_ emoji: String, to messageID: String, in agent: Agent) {
+        if let i = agent.thread.firstIndex(where: { $0.id == messageID }) {
+            // Show it straight away; the reload below brings back the host's version.
+            if let mine = agent.thread[i].reactions.firstIndex(of: emoji) {
+                agent.thread[i].reactions.remove(at: mine)
+            } else {
+                agent.thread[i].reactions.append(emoji)
+            }
+        }
+        request("reactToMessage", ["entryId": messageID, "emoji": emoji, "agentId": agent.sessionID]) { [weak self, weak agent] _ in
+            if let agent { self?.loadThread(agent) }
         }
     }
 
