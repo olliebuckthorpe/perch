@@ -762,10 +762,12 @@ private struct TaskColumn: View {
 
     /// The colour Notion gives this column on the board.
     private var tint: Color {
+        // Cool, quiet colours that white text reads well on. The warm orange and yellow Notion
+        // uses turn muddy and hard to read as tints on a black island.
         switch title {
-        case "Upshow to-dos": return Palette.colors[8]
-        case "My to-dos": return Palette.blue
-        case "Waiting On": return Palette.amber
+        case "Upshow to-dos": return Color(red: 0.25, green: 0.72, blue: 0.62)
+        case "My to-dos": return Color(red: 0.36, green: 0.58, blue: 0.98)
+        case "Waiting On": return Color(red: 0.62, green: 0.52, blue: 0.96)
         default: return .white.opacity(0.4)
         }
     }
@@ -809,8 +811,8 @@ private struct TaskCard: View {
         let days = Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: Date()),
                                                    to: Calendar.current.startOfDay(for: due)).day ?? 0
         if days < 0 { return ("\(-days)d late", Palette.red) }
-        if days == 0 { return ("Today", Palette.amber) }
-        if days == 1 { return ("Tomorrow", .white.opacity(0.55)) }
+        if days == 0 { return ("Today", .white) }
+        if days == 1 { return ("Tomorrow", .white.opacity(0.6)) }
         if days < 7 { return (due.formatted(.dateTime.weekday(.abbreviated)), .white.opacity(0.5)) }
         return (due.formatted(.dateTime.day().month(.abbreviated)), .white.opacity(0.45))
     }
@@ -818,7 +820,7 @@ private struct TaskCard: View {
     private var priorityColor: Color? {
         switch task.priority {
         case "Urgent": return Palette.red
-        case "High": return Palette.amber
+        case "High": return .white
         default: return nil
         }
     }
@@ -841,19 +843,18 @@ private struct TaskCard: View {
                 if dueText != nil || priorityColor != nil {
                     HStack(spacing: 5) {
                         if let (text, color) = dueText {
-                            Text(text).font(.system(size: 10.5, weight: .medium)).foregroundStyle(color)
+                            Text(text).font(.system(size: 10.5, weight: color == .white ? .semibold : .medium)).foregroundStyle(color)
                         }
-
                         if let color = priorityColor {
-                            Text(task.priority ?? "").font(.system(size: 10, weight: .semibold)).foregroundStyle(color)
-                                .padding(.horizontal, 5).padding(.vertical, 1).background(color.opacity(0.16), in: Capsule())
+                            Text(task.priority ?? "").font(.system(size: 10, weight: .semibold)).foregroundStyle(color.opacity(0.9))
+                                .padding(.horizontal, 5).padding(.vertical, 1).background(color.opacity(0.18), in: Capsule())
                         }
                     }
                 }
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 7)
-        .background(tint.opacity(hovered ? 0.26 : 0.17), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(tint.opacity(hovered ? 0.3 : 0.2), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { NotionTasks.shared.open(task) }
         .onHover { hovered = $0 }
