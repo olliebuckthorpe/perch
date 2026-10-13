@@ -392,17 +392,64 @@ final class CodingSessions {
             let which = agent.transcriptPath == nil ? ["--session-id", id] : ["--resume", id]
             self.run(agent, exe: exe, args: ["-p", "--permission-mode", "auto"] + which + [text], text: text)
         }
-        Shell.run(exe, ["-p", "--session-id", id, "/cost"], cwd: folder, env: ["PERCH_HEADLESS": "1"]) { [weak agent] code, _ in
-            guard let agent else { return }
+        // A proper title is written while the session is being created, so the chat arrives
+        // in the Claude app already named for what it is about.
+        var title: String?
+        makeTitle(for: prompt, exe: exe) { [weak agent] made in
+            title = made
+            if let made { agent?.name = made }
+        }
+        titled.insert(agent.id)
+        Shell.run(exe, ["-p", "--session-id", id, "-n", oneLine(prompt, max: 44), "/cost"], cwd: folder,
+                  env: ["PERCH_HEADLESS": "1"]) { [weak self, weak agent] code, _ in
+            guard let self, let agent else { return }
             guard code == 0, let url = URL(string: "claude://resume?session=\(id)") else { runInBackground(); return }
-            agent.adopted = true
-            let quiet = NSWorkspace.OpenConfiguration()
-            quiet.activates = false
-            NSWorkspace.shared.open(url, configuration: quiet)
-            // The app's process normally reports in within about fifteen seconds.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 45) { runInBackground() }
+            // Give the title a few more seconds if it is not back yet, then hand over regardless.
+            func handOver(_ triesLeft: Int) {
+                if title == nil, triesLeft > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { handOver(triesLeft - 1) }
+                    return
+                }
+                if let title { self.writeTitle(title, sessionID: id) }
+                agent.adopted = true
+                let quiet = NSWorkspace.OpenConfiguration()
+                quiet.activates = false
+                NSWorkspace.shared.open(url, configuration: quiet)
+                // The app's process normally reports in within about fifteen seconds.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 45) { runInBackground() }
+            }
+            handOver(6)
         }
         return agent
+    }
+
+    /// Asks a small, fast model for a short title for a chat that opens with `prompt`.
+    private func makeTitle(for prompt: String, exe: String, completion: @escaping (String?) -> Void) {
+        let ask = "Write a short title for a chat that starts with the request below. 3 to 6 words, sentence case, "
+            + "no quotes, no full stop. Reply with the title only.\n\nRequest: \(String(prompt.prefix(1200)))"
+        Shell.run(exe, ["-p", "--model", "haiku", ask], cwd: "\(Shell.home)/.perch", env: ["PERCH_SKIP": "1"]) { code, output in
+            let line = oneLine(output.trimmingCharacters(in: .whitespacesAndNewlines), max: 60)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'.“” "))
+            completion(code == 0 && line.count > 2 ? line : nil)
+        }
+    }
+
+    /// Records a title in the session the way Claude Code does, so every app that lists it agrees.
+    private func writeTitle(_ title: String, sessionID: String) {
+        let root = "\(Shell.home)/.claude/projects"
+        let fm = FileManager.default
+        guard let project = (try? fm.contentsOfDirectory(atPath: root))?
+                .first(where: { fm.fileExists(atPath: "\(root)/\($0)/\(sessionID).jsonl") }),
+              let handle = FileHandle(forWritingAtPath: "\(root)/\(project)/\(sessionID).jsonl") else { return }
+        defer { try? handle.close() }
+        let lines: [[String: Any]] = [
+            ["type": "custom-title", "customTitle": title, "sessionId": sessionID],
+            ["type": "agent-name", "agentName": title, "sessionId": sessionID],
+        ]
+        _ = try? handle.seekToEnd()
+        for line in lines {
+            if let data = try? JSONSerialization.data(withJSONObject: line) { handle.write(data + Data([0x0A])) }
+        }
     }
 
     /// Asks the Claude desktop app to take on a chat that was started from the notch, so it

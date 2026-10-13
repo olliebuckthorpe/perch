@@ -5,6 +5,9 @@
 # Fails open: if Perch is not running this exits 0 with no output, so the agent
 # behaves exactly as it would without the hook.
 
+# Perch's own helper runs (writing a chat title, for one) are not chats and stay out of the notch.
+[ -n "$PERCH_SKIP" ] && exit 0
+
 SOCK="$HOME/.perch/perch.sock"
 
 post() {
