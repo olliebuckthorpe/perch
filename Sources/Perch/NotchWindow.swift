@@ -26,6 +26,8 @@ final class NotchUI {
     var query = ""
     /// Showing the full list in the right-hand pane instead of a chat.
     var browsing = false
+    /// Showing the Chrome profile switcher in the right-hand pane.
+    var showingProfiles = false
     /// Which search result the arrow keys are on.
     var searchIndex = 0
     /// Whether the open chat should take the keyboard. Only after a deliberate click, never on hover.
@@ -176,6 +178,7 @@ final class NotchUI {
     func browse() {
         selectedID = nil
         composing = false
+        showingProfiles = false
         browsing = true
         searchIndex = 0
         // Straight into typing: the search field takes the keyboard.
@@ -196,6 +199,7 @@ final class NotchUI {
         // Keep the row with an unsent reply selected, so it is right there on reopening.
         if let id = selectedID, !isDrafting(id) { selectedID = nil }
         browsing = false
+        showingProfiles = false
         focusReply = false
         Dictation.shared.stop()
         autoOpened = false
@@ -205,6 +209,7 @@ final class NotchUI {
     func select(_ id: String) {
         composing = false
         browsing = false
+        showingProfiles = false
         selectedID = id
         focusReply = true
         UserDefaults.standard.set(id, forKey: "lastChat")
@@ -216,6 +221,7 @@ final class NotchUI {
         cardsOnly = false
         composing = false
         browsing = false
+        showingProfiles = false
         focusReply = true
         UserDefaults.standard.set(id, forKey: "lastChat")
         expanded = true

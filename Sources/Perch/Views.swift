@@ -106,7 +106,9 @@ private struct ExpandedBody: View {
 
     @ViewBuilder private var pane: some View {
         Group {
-            if ui.composing {
+            if ui.showingProfiles {
+                ProfilesView()
+            } else if ui.composing {
                 NewChatView()
             } else if let id = ui.selectedID, let agent = store.find(id) {
                 ChatView(agent: agent).id(agent.id)
@@ -396,7 +398,7 @@ private struct Rail: View {
         VStack(alignment: .leading, spacing: 1) {
             ForEach(agents) { agent in
                 let star = agent.source == .grok && ui.pinned.contains(agent.name)
-                RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing, star: star) { dragged in
+                RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles, star: star) { dragged in
                     // Pinned bots stay at the top; everything else can be dragged into any order.
                     guard !star else { return }
                     ui.move(dragged, before: agent.id, in: agents.map(\.id))
@@ -405,7 +407,14 @@ private struct Rail: View {
             Spacer(minLength: 6)
             HStack(spacing: 4) {
                 railButton("magnifyingglass", "Search all chats and bots", on: ui.browsing) { ui.browse() }
-                railButton("square.and.pencil", "New Claude Code chat", on: ui.composing) { ui.composing = true }
+                railButton("square.and.pencil", "New Claude Code chat", on: ui.composing && !ui.showingProfiles) {
+                    ui.showingProfiles = false
+                    ui.composing = true
+                }
+                railButton("person.2", "Jump to a Chrome profile", on: ui.showingProfiles) {
+                    ui.composing = false
+                    ui.showingProfiles = true
+                }
                 Spacer()
             }
         }
@@ -548,6 +557,79 @@ private struct NoticeView: View {
         .onTapGesture { ui.show(agent.id) }
         .onHover { hovered = $0 }
         .padding(.bottom, 2)
+    }
+}
+
+// MARK: Chrome profiles
+
+/// Jump to a Chrome profile, or open the link you just copied in the right one.
+private struct ProfilesView: View {
+    @Environment(NotchUI.self) private var ui
+    @State private var profiles: [ChromeProfile] = []
+    @State private var link: URL?
+
+    private static let tints: [Color] = [Palette.blue, Palette.green, Palette.amber, Palette.red] + Palette.colors
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Chrome profiles").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                .padding(.horizontal, 6)
+            if let link {
+                HStack(spacing: 5) {
+                    Image(systemName: "link").font(.system(size: 10))
+                    Text("Copied link: \(link.host ?? "")").font(.system(size: 11)).lineLimit(1)
+                }
+                .foregroundStyle(.white.opacity(0.5)).padding(.horizontal, 6)
+            }
+            VStack(spacing: 1) {
+                ForEach(Array(profiles.enumerated()), id: \.element.id) { index, profile in
+                    ProfileRow(profile: profile, tint: Self.tints[index % Self.tints.count], link: link) { url in
+                        profile.open(url)
+                        ui.collapse()
+                    }
+                }
+            }
+            if profiles.isEmpty {
+                Text("No Chrome profiles found.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
+                    .padding(.horizontal, 6)
+            }
+        }
+        .padding(.top, 2)
+        .onAppear {
+            profiles = ChromeProfile.all()
+            link = ChromeProfile.copiedLink
+        }
+    }
+}
+
+private struct ProfileRow: View {
+    let profile: ChromeProfile
+    let tint: Color
+    let link: URL?
+    let open: (URL?) -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(String(profile.name.prefix(1)).uppercased())
+                .font(.system(size: 11, weight: .bold)).foregroundStyle(.black.opacity(0.8))
+                .frame(width: 22, height: 22).background(tint, in: Circle())
+            VStack(alignment: .leading, spacing: 0) {
+                Text(profile.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                if !profile.email.isEmpty {
+                    Text(profile.email).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 4)
+            if let link {
+                Button("Open link here") { open(link) }.buttonStyle(ChipButton())
+            }
+        }
+        .padding(.horizontal, 6).padding(.vertical, 5)
+        .background(.white.opacity(hovered ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture { open(nil) }
+        .onHover { hovered = $0 }
     }
 }
 
