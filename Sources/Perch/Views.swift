@@ -109,6 +109,8 @@ private struct ExpandedBody: View {
                         Rectangle().fill(.white.opacity(0.08)).frame(width: 1).frame(maxHeight: .infinity)
                         VStack(alignment: .leading, spacing: 6) { pane }
                             .frame(maxWidth: .infinity, alignment: .topLeading)
+                            // Going to and from search eases across; chat to chat stays instant.
+                            .animation(.easeOut(duration: 0.2), value: ui.browsing)
                     }
                     .fixedSize(horizontal: false, vertical: true)
                     .transition(.asymmetric(insertion: .opacity.combined(with: .offset(x: -24)),
@@ -133,9 +135,15 @@ private struct ExpandedBody: View {
                 ChatView(agent: agent).id(agent.id)
             } else {
                 let asks = store.needing.filter { if case .followUp = $0.pending!.kind { return false } else { return true } }
-                ForEach(asks) { PendingCard(agent: $0) }
-                // Opened by itself to ask something: show just the ask, not the whole roster.
-                roster
+                // Search is the same size as a conversation, so the island holds still while the
+                // results rise into place over the chat fading out.
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(asks) { PendingCard(agent: $0) }
+                    roster
+                }
+                .frame(height: 452, alignment: .top)
+                .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 10)),
+                                        removal: .opacity))
             }
         }
     }
@@ -286,6 +294,8 @@ enum SearchItem: Identifiable {
 private struct SearchResults: View {
     @Environment(AgentStore.self) private var store
     @Environment(NotchUI.self) private var ui
+    /// Rows come in one after another the first time the list appears, not on every keystroke.
+    @State private var arrived = false
 
     var body: some View {
         let items = SearchItem.all(store, ui)
@@ -294,6 +304,8 @@ private struct SearchResults: View {
                 row(item)
                     .background(.white.opacity(index == ui.searchIndex ? 0.12 : 0),
                                 in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .opacity(arrived ? 1 : 0).offset(y: arrived ? 0 : 6)
+                    .animation(.easeOut(duration: 0.22).delay(min(Double(index), 8) * 0.025), value: arrived)
             }
             if items.isEmpty {
                 Text("Nothing matches.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
@@ -302,6 +314,8 @@ private struct SearchResults: View {
             Text("↑ ↓ to move, Return to open").font(.system(size: 10)).foregroundStyle(.white.opacity(0.28))
                 .padding(.horizontal, 6).padding(.top, 4)
         }
+        .animation(.easeOut(duration: 0.12), value: ui.searchIndex)
+        .onAppear { arrived = true }
     }
 
     @ViewBuilder private func row(_ item: SearchItem) -> some View {
