@@ -68,6 +68,19 @@ final class NotchUI {
         }
     }
 
+    /// The order the user has dragged the sidebar into. Chats not in it follow in their usual order.
+    var order: [String] = UserDefaults.standard.stringArray(forKey: "sidebarOrder") ?? [] {
+        didSet { UserDefaults.standard.set(order, forKey: "sidebarOrder") }
+    }
+
+    /// Moves `id` to sit just above `target`, given what is currently shown, top to bottom.
+    func move(_ id: String, before target: String, in shown: [String]) {
+        guard id != target, shown.contains(id) else { return }
+        var list = shown.filter { $0 != id }
+        list.insert(id, at: list.firstIndex(of: target) ?? list.count)
+        order = list + order.filter { !list.contains($0) }.prefix(200)
+    }
+
     func inPill(_ agent: Agent) -> Bool {
         agent.status != .idle || agent.pending != nil || (agent.source == .grok && pinned.contains(agent.name))
     }
