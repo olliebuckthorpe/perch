@@ -45,6 +45,9 @@ enum Threads {
         return loaded
     }
 
+    /// When each chat's transcript was last read, by the file's own modified time.
+    private static var read: [String: Date] = [:]
+
     static let replyMarker = "Treat this as their next message:\n\n"
 
     static func load(_ agent: Agent) {
@@ -53,6 +56,11 @@ enum Threads {
             GrokSource.shared.loadThread(agent)
         case .claude, .codex:
             guard let path = agent.transcriptPath else { return }
+            // Re-reading a transcript that has not changed since the last read is wasted work, and
+            // it is what made flicking between chats feel heavy.
+            let stamp = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+            if let stamp, read[agent.id] == stamp, !agent.thread.isEmpty { return }
+            read[agent.id] = stamp
             let codex = agent.source == .codex
             queue.async {
                 let messages = parse(path, codex: codex)

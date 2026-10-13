@@ -53,7 +53,6 @@ struct NotchContent: View {
         .animation(island, value: ui.expanded)
         .animation(island, value: ui.cardsOnly)
         .animation(tabSwitch, value: ui.showingTasks)
-        .animation(island, value: ui.selectedID)
         .animation(island, value: store.needing.count)
         .animation(island, value: l + r)
         .onChange(of: [openWidth, r - l], initial: true) {
@@ -1686,7 +1685,19 @@ private struct MessageBody: View {
         return t.contains("-") && t.allSatisfy { "|-: ".contains($0) }
     }
 
+    private static var parsed: [String: [Block]] = [:]
+
+    /// Splitting a message into prose and tables is done once per message and kept, so going
+    /// back to a chat costs nothing.
     private var blocks: [Block] {
+        if let done = Self.parsed[text] { return done }
+        let result = parse()
+        if Self.parsed.count > 400 { Self.parsed.removeAll() }
+        Self.parsed[text] = result
+        return result
+    }
+
+    private func parse() -> [Block] {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         var out: [Block] = []
         var prose: [String] = []
