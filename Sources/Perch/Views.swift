@@ -86,7 +86,9 @@ private struct ExpandedBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if ui.composing {
+            if ui.cardsOnly, let id = ui.noticeID, let agent = store.find(id) {
+                NoticeView(agent: agent)
+            } else if ui.composing {
                 NewChatView()
             } else if let id = ui.selectedID, let agent = store.find(id) {
                 ChatView(agent: agent)
@@ -266,6 +268,79 @@ private struct AgentRow: View {
         .contentShape(Rectangle())
         .onTapGesture { ui.select(agent.id) }
         .onHover { hovered = $0 }
+    }
+}
+
+// MARK: Notification banner
+
+/// The short version of whatever just happened. Click it for the full chat.
+private struct NoticeView: View {
+    let agent: Agent
+    @Environment(NotchUI.self) private var ui
+    @State private var hovered = false
+
+    private var headline: String {
+        guard let pending = agent.pending else {
+            switch agent.status {
+            case .done: return "Finished"
+            case .needsYou: return "Needs you"
+            case .unread: return agent.unread > 1 ? "\(agent.unread) new messages" : "New message"
+            default: return "Update"
+            }
+        }
+        switch pending.kind {
+        case .permission(let tool, _): return tool == "Bash" ? "Wants to run a command" : "Wants to use \(tool)"
+        case .question: return "Has a question"
+        case .followUp: return "Finished"
+        }
+    }
+
+    private var summary: String {
+        if let pending = agent.pending {
+            switch pending.kind {
+            case .permission(_, let detail): return oneLine(detail, max: 110)
+            case .question(let questions, _): return questions.first?.text ?? ""
+            case .followUp: break
+            }
+        }
+        return oneLine(agent.lastMessage.isEmpty ? agent.detail : agent.lastMessage, max: 130)
+    }
+
+    private var isPermission: Bool {
+        if case .permission = agent.pending?.kind { return true }
+        return false
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            FaceView(agent: agent, size: 20).padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(agent.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                    Text(headline).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).lineLimit(1).layoutPriority(1)
+                    Spacer(minLength: 0)
+                }
+                if !summary.isEmpty {
+                    Text(summary).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.75))
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+                if isPermission {
+                    HStack(spacing: 6) {
+                        Button("Deny") { CodingSessions.shared.deny(agent) }.buttonStyle(ChipButton())
+                        Button("Allow") { CodingSessions.shared.allow(agent) }.buttonStyle(ChipButton(fill: Palette.green))
+                        Spacer()
+                        Text("Click for the chat").font(.system(size: 10)).foregroundStyle(.white.opacity(0.3))
+                    }
+                    .padding(.top, 2)
+                }
+            }
+        }
+        .padding(8)
+        .background(.white.opacity(hovered ? 0.09 : 0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture { ui.show(agent.id) }
+        .onHover { hovered = $0 }
+        .padding(.bottom, 2)
     }
 }
 

@@ -152,29 +152,24 @@ final class NotchUI {
         }
     }
 
-    /// Something is being held for the user: open up so they notice.
+    /// The agent a self-opened summary banner is about.
+    private(set) var noticeID: String?
+
+    /// Something wants the user: drop down a short summary, like a notification. It shows for a
+    /// few seconds and tucks away unless the pointer has come up to it; clicking it opens the
+    /// full chat. The face in the notch keeps signalling until it is dealt with.
     func attention(_ store: AgentStore) {
-        guard let id = store.attentionAgentID, let pending = store.find(id)?.pending else { return }
-        if !expanded {
-            autoOpened = true
-            cardsOnly = true
-        }
-        // Step out of another agent's chat so the prompt is visible, unless a reply is half written there.
-        if let open = selectedID, open != id, !isDrafting(open) { selectedID = nil }
-        // Anything that needs you opens as that agent's full conversation, so the ask has its context.
-        _ = pending
-        if selectedID == nil {
-            selectedID = id
-            cardsOnly = false
-        }
+        guard let id = store.attentionAgentID, store.find(id) != nil else { return }
+        // Already open and in use: do not pull the view out from under the user.
+        if expanded && !autoOpened { return }
+        autoOpened = true
+        cardsOnly = true
+        noticeID = id
         holdOpenUntil = Date().addingTimeInterval(1.5)
         expanded = true
-        // Behave like a notification: show for a few seconds, then tuck away unless the pointer
-        // has come up to it. The face in the notch keeps signalling until it is dealt with.
-        guard autoOpened else { return }
         collapseWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.autoOpened, !self.hovering, !self.typing else { return }
+            guard let self, self.autoOpened || self.cardsOnly, !self.hovering, !self.typing else { return }
             self.collapse()
         }
         collapseWork = work
