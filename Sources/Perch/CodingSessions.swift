@@ -36,6 +36,7 @@ final class CodingSessions {
                 guard let title = info.title else { continue }
                 let agent = store.upsert(source: .claude, sessionID: String(file.dropLast(6)), name: title)
                 agent.cwd = info.cwd
+                agent.transcriptPath = path
                 agent.hostBundleID = Self.claudeBundleID
                 agent.lastActivity = mtime
                 titled.insert(agent.id)
@@ -94,6 +95,7 @@ final class CodingSessions {
 
         let agent = store.upsert(source: source, sessionID: sid, name: Self.name(for: cwd, source: source))
         if let cwd { agent.cwd = cwd }
+        if let path = j["transcript_path"] as? String { agent.transcriptPath = path }
         if !headless { agent.hostBundleID = hostBundle(source: source, headers: req.headers) }
         agent.lastActivity = Date()
         agent.ended = false
@@ -277,6 +279,7 @@ final class CodingSessions {
     func reply(_ agent: Agent, text: String) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        agent.addLocal(text)
         if let waiter = agent.waiter {
             // Wakes the real session, so the reply and the answer both show up in its own chat.
             waiter.respond(Data("The user replied from Perch, their notch app. Treat this as their next message:\n\n\(text)".utf8))

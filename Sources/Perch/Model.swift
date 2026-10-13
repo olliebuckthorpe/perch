@@ -75,6 +75,13 @@ final class Agent: Identifiable {
     var pending: PendingRequest?
     /// A background hook parked in an idle Claude Code session. Answering it wakes the session.
     var waiter: HookRequest?
+    /// Recent conversation, loaded when the agent's chat is opened.
+    var thread: [ChatMessage] = []
+    var transcriptPath: String?
+
+    func addLocal(_ text: String) {
+        thread.append(ChatMessage(id: "local-\(UUID().uuidString)", fromUser: true, text: text))
+    }
     var ended = false
     var sending = false
 

@@ -67,6 +67,7 @@ final class CodexWatcher {
                                  name: CodingSessions.name(for: m.cwd, source: .codex))
         if let n = names[m.id] { agent.name = n }
         agent.cwd = m.cwd
+        agent.transcriptPath = path
         if agent.hostBundleID == nil { agent.hostBundleID = CodingSessions.codexBundleID }
         agent.lastActivity = mtime
         guard agent.pending == nil else { return }

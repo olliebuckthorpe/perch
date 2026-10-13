@@ -145,6 +145,8 @@ final class NotchUI {
             autoOpened = true
             cardsOnly = true
         }
+        // Step out of another agent's chat so the prompt is visible, unless a reply is half written there.
+        if let open = selectedID, open != id, !isDrafting(open) { selectedID = nil }
         holdOpenUntil = Date().addingTimeInterval(4)
         expanded = true
     }

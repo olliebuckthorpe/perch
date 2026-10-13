@@ -19,7 +19,9 @@ struct NotchContent: View {
         let l = earWidth(left.count), r = earWidth(right.count)
         // Opened, the island is at least 340 wide; the extra is shared between both sides
         // so the gap always stays lined up with the hardware notch.
-        let extra = ui.expanded ? max(0, 340 - (l + ui.notch.width + r)) : 0
+        // A chat needs more room than the roster.
+        let chatting = ui.selectedID != nil
+        let extra = ui.expanded ? max(0, (chatting ? 420 : 340) - (l + ui.notch.width + r)) : 0
         let radius: CGFloat = ui.expanded ? 18 : 10
         let openWidth = max(l + ui.notch.width + r, 340)
         let shape = UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
@@ -82,9 +84,13 @@ private struct ExpandedBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(store.needing) { PendingCard(agent: $0) }
-            // Opened by itself to ask something: show just the ask, not the whole roster.
-            if !(ui.cardsOnly && !store.needing.isEmpty) { roster }
+            if let id = ui.selectedID, let agent = store.find(id) {
+                ChatView(agent: agent)
+            } else {
+                ForEach(store.needing) { PendingCard(agent: $0) }
+                // Opened by itself to ask something: show just the ask, not the whole roster.
+                if !(ui.cardsOnly && !store.needing.isEmpty) { roster }
+            }
         }
         .padding(.horizontal, 8)
         .padding(.top, 4)
@@ -152,46 +158,111 @@ private struct AgentRow: View {
     @State private var hovered = false
 
     var body: some View {
-        let selected = ui.selectedID == agent.id
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 7) {
-                FaceView(agent: agent, size: 18)
-                Text(agent.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                    .lineLimit(1).layoutPriority(1)
-                Text(agent.detail.isEmpty ? "Idle" : agent.detail)
-                    .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5))
-                    .lineLimit(1).truncationMode(.tail)
-                Spacer(minLength: 4)
-                StatusChip(agent: agent).layoutPriority(1)
+        HStack(spacing: 7) {
+            FaceView(agent: agent, size: 18)
+            Text(agent.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                .lineLimit(1).layoutPriority(1)
+            Text(agent.detail.isEmpty ? "Idle" : agent.detail)
+                .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5))
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 4)
+            if ui.isDrafting(agent.id) {
+                Image(systemName: "pencil").font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
             }
-            .contentShape(Rectangle())
-            .onTapGesture { ui.select(agent.id) }
-
-            if selected {
-                if !agent.lastMessage.isEmpty {
-                    Text(agent.lastMessage.trimmingCharacters(in: .whitespacesAndNewlines))
-                        .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.82))
-                        .lineLimit(5).fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if agent.pending == nil { ReplyField(agent: agent, autofocus: true) }
-                HStack {
-                    Spacer()
-                    Button(openLabel) { open() }.buttonStyle(ChipButton())
-                }
-            }
+            StatusChip(agent: agent).layoutPriority(1)
         }
         .padding(.horizontal, 6).padding(.vertical, 5)
-        .background(.white.opacity(selected ? 0.09 : hovered ? 0.05 : 0), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(.white.opacity(hovered ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture { ui.select(agent.id) }
         .onHover { hovered = $0 }
     }
+}
 
-    private var openLabel: String {
-        switch agent.source {
-        case .grok: return "Open Grok Bot"
-        case .codex: return "Open Codex"
-        case .claude: return agent.hostBundleID == CodingSessions.claudeBundleID ? "Open Claude" : "Open terminal"
+// MARK: Chat
+
+/// One agent's conversation: recent messages in full, and a reply box.
+private struct ChatView: View {
+    let agent: Agent
+    @Environment(NotchUI.self) private var ui
+    @State private var contentHeight: CGFloat = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            header
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(messages) { bubble($0) }
+                        Color.clear.frame(height: 1).id("end")
+                    }
+                    .padding(.horizontal, 6)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { contentHeight = $0 }
+                }
+                .defaultScrollAnchor(.bottom)
+                .frame(height: min(max(contentHeight, 30), 400))
+                .onChange(of: messages.last?.id) { proxy.scrollTo("end", anchor: .bottom) }
+            }
+            if agent.pending != nil {
+                PendingCard(agent: agent)
+            } else {
+                ReplyField(agent: agent, autofocus: true)
+            }
         }
+        .padding(.top, 2)
+        // Reload when the agent says something new or changes state.
+        .task(id: "\(agent.id)|\(agent.status.rawValue)|\(agent.lastMessage.count)") { Threads.load(agent) }
+    }
+
+    /// Until the history has loaded, at least show the latest thing the agent said.
+    private var messages: [ChatMessage] {
+        if !agent.thread.isEmpty { return agent.thread }
+        let latest = agent.lastMessage.isEmpty ? agent.detail : agent.lastMessage
+        return latest.isEmpty ? [] : [ChatMessage(id: "latest", fromUser: false, text: latest)]
+    }
+
+    private var header: some View {
+        HStack(spacing: 7) {
+            Button { ui.selectedID = nil } label: {
+                Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            FaceView(agent: agent, size: 18)
+            Text(agent.name).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+            if agent.source != .grok {
+                Text(agent.source.label).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+            }
+            Spacer(minLength: 4)
+            StatusChip(agent: agent)
+            Button(action: open) {
+                Image(systemName: "arrow.up.forward.app").font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("Open in its own app")
+        }
+        .padding(.horizontal, 2)
+    }
+
+    @ViewBuilder private func bubble(_ message: ChatMessage) -> some View {
+        let text = Text(Self.markdown(message.text)).font(.system(size: 12.5)).lineSpacing(2)
+            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        if message.fromUser {
+            HStack {
+                Spacer(minLength: 50)
+                text.foregroundStyle(.white)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(.white.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        } else {
+            text.foregroundStyle(.white.opacity(0.88)).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Bold, code and links render; line breaks and lists stay as written.
+    private static func markdown(_ s: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
     }
 
     private func open() {

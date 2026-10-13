@@ -122,6 +122,7 @@ final class GrokSource {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let node, let cli, !(text.isEmpty && files.isEmpty) else { return }
         agent.sending = true
+        agent.addLocal(text.isEmpty ? "(image)" : text)
         agent.status = .working
         agent.detail = text.isEmpty ? "You sent an image" : "You: \(oneLine(text))"
         guard files.isEmpty else {
@@ -195,6 +196,28 @@ final class GrokSource {
             } else {
                 self.sendChunk(data, offset: next, uploadID: uploadID, name: name, agent: agent, completion: completion)
             }
+        }
+    }
+
+    func loadThread(_ agent: Agent) {
+        call(["agents", "tail", agent.sessionID, "-n", "40", "--json"]) { [weak agent] code, output in
+            guard code == 0, let agent,
+                  let root = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any],
+                  let entries = root["entries"] as? [[String: Any]] else { return }
+            let messages: [ChatMessage] = entries.compactMap { e in
+                let id = e["id"] as? String ?? UUID().uuidString
+                switch e["kind"] as? String {
+                case "message":
+                    guard let text = e["content"] as? String, !text.isEmpty else { return nil }
+                    return ChatMessage(id: id, fromUser: e["role"] as? String == "user", text: text)
+                case "send-message":
+                    guard let text = (e["message"] as? [String: Any])?["content"] as? String, !text.isEmpty else { return nil }
+                    return ChatMessage(id: id, fromUser: false, text: text)
+                default:
+                    return nil
+                }
+            }
+            if !messages.isEmpty { agent.thread = messages }
         }
     }
 
