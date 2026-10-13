@@ -5,6 +5,9 @@ import Observation
 final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// AppKit would otherwise nudge the window down to keep it clear of the menu bar.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
 /// View state for the island: open or closed, which row is selected, and reply drafts.
@@ -155,12 +158,13 @@ final class NotchController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
-        // Above the menu bar even when it slides down over a full screen app.
-        panel.level = .popUpMenu
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         panel.isMovable = false
         panel.hidesOnDeactivate = false
         panel.isFloatingPanel = true
+        // Set after isFloatingPanel, which resets the level. Above the menu bar, even when it
+        // slides down over a full screen app.
+        panel.level = .popUpMenu
         panel.becomesKeyOnlyIfNeeded = true
         panel.animationBehavior = .none
         panel.ignoresMouseEvents = true
