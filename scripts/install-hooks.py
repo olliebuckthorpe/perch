@@ -70,6 +70,15 @@ def update(path, source, uninstall):
     elif uninstall:
         return
     strip(config)
+    # Claude Code hands its status line how much of the plan is used. Perch listens there, and
+    # leaves alone a status line the user has set up for themselves.
+    if source == "claude":
+        line = config.get("statusLine")
+        ours = isinstance(line, dict) and MARK in line.get("command", "")
+        if uninstall and ours:
+            config.pop("statusLine", None)
+        elif not uninstall and (line is None or ours):
+            config["statusLine"] = {"type": "command", "command": f"{HOOK} claude status"}
     if not uninstall:
         hooks = config.setdefault("hooks", {})
         for event, groups in wanted(source).items():

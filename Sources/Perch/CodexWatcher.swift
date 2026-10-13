@@ -14,9 +14,27 @@ final class CodexWatcher {
 
     func start() {
         guard FileManager.default.fileExists(atPath: root) else { return }
+        lastUsage()
         scan()
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.scan() }
         timer?.tolerance = 1
+    }
+
+    /// Usage from the most recent session of the last few days, so there is something to show
+    /// before Codex is next used.
+    private func lastUsage() {
+        let fm = FileManager.default
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy/MM/dd"
+        for back in 0..<7 {
+            let dir = "\(root)/\(fmt.string(from: Date().addingTimeInterval(Double(-back) * 86400)))"
+            guard let newest = (try? fm.contentsOfDirectory(atPath: dir))?.filter({ $0.hasSuffix(".jsonl") }).sorted().last else { continue }
+            let path = "\(dir)/\(newest)"
+            if let tail = readTail(path), let mtime = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date {
+                takeUsage(tail, at: mtime)
+            }
+            return
+        }
     }
 
     private func scan() {
@@ -39,8 +57,9 @@ final class CodexWatcher {
 
     private func update(path: String, mtime: Date) {
         if meta[path] == nil { meta[path] = readMeta(path) }
-        guard let m = meta[path], m.user else { return }
         guard let tail = readTail(path) else { return }
+        takeUsage(tail, at: mtime)
+        guard let m = meta[path], m.user else { return }
 
         var lifecycle: String?
         var lastMessage: String?
@@ -90,6 +109,23 @@ final class CodexWatcher {
             // No lifecycle marker in the tail: a long turn that is still writing.
             if fresh, agent.status != .needsYou { agent.status = .working }
         }
+    }
+
+    /// Every turn records how much of the plan is used. The newest record is the one to show.
+    private func takeUsage(_ tail: String, at: Date) {
+        for line in tail.split(separator: "\n").reversed() where line.contains("\"rate_limits\"") {
+            guard let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  let limits = Self.find("rate_limits", in: o) else { continue }
+            Usage.shared.takeCodex(limits, at: at)
+            return
+        }
+    }
+
+    private static func find(_ key: String, in value: Any) -> [String: Any]? {
+        guard let d = value as? [String: Any] else { return nil }
+        if let hit = d[key] as? [String: Any] { return hit }
+        for v in d.values { if let hit = find(key, in: v) { return hit } }
+        return nil
     }
 
     private func readMeta(_ path: String) -> (id: String, cwd: String?, user: Bool)? {

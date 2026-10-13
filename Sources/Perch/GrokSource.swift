@@ -271,8 +271,7 @@ final class GrokSource {
             }
             // A message just sent from the notch stays put until the host's copy of it arrives.
             messages = Threads.keepingLocalIDs(messages, from: agent.thread)
-            let recent = Set(messages.filter(\.fromUser).suffix(6).map(\.text))
-            let unsent = agent.thread.filter { $0.id.hasPrefix("local-") && !recent.contains($0.text) }
+            let unsent = Threads.unsent(in: agent.thread, loaded: messages)
             let merged = messages + unsent
             if merged != agent.thread { agent.thread = merged }
         }

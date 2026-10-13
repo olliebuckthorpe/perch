@@ -52,9 +52,27 @@ enum Threads {
         for local in current where local.id.hasPrefix("local-") {
             if let i = loaded.lastIndex(where: { $0.fromUser && $0.text == local.text && !$0.id.hasPrefix("local-") }) {
                 loaded[i].id = local.id
+                matched.insert(local.id)
             }
         }
         return loaded
+    }
+
+    /// Notch-sent messages that the agent's own record has since caught up with.
+    private static var matched = Set<String>()
+
+    /// Messages typed in the notch that the agent's record does not have yet. One that has
+    /// been matched once is never counted again: without that, a message came back as "not
+    /// sent yet" as soon as it scrolled out of the recent history, and was drawn again on
+    /// every refresh.
+    static func unsent(in current: [ChatMessage], loaded: [ChatMessage]) -> [ChatMessage] {
+        let ids = Set(loaded.map(\.id))
+        let texts = Set(loaded.filter(\.fromUser).map(\.text))
+        var seen = Set<String>()
+        return current.filter {
+            $0.id.hasPrefix("local-") && !ids.contains($0.id) && !matched.contains($0.id)
+                && !texts.contains($0.text) && seen.insert($0.id).inserted
+        }
     }
 
     /// When each chat's transcript was last read, by the file's own modified time.
@@ -80,8 +98,7 @@ enum Threads {
                     guard let agent, !messages.isEmpty else { return }
                     let messages = keepingLocalIDs(messages, from: agent.thread)
                     // Keep anything just sent from the notch that the file has not caught up with.
-                    let known = Set(messages.filter(\.fromUser).map(\.text))
-                    let unsent = agent.thread.filter { $0.id.hasPrefix("local-") && !known.contains($0.text) }
+                    let unsent = unsent(in: agent.thread, loaded: messages)
                     var thread = messages + unsent
                     // The transcript can trail the session by a moment, so make sure the answer
                     // the session just gave is there even if the file has not caught up.

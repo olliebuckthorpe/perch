@@ -97,6 +97,12 @@ final class CodingSessions {
 
     func handle(_ req: HookRequest) {
         let j = req.json
+        // Claude Code's status line: not a session event, just how much of the plan is used.
+        if req.headers["x-perch-mode"] == "status" {
+            Usage.shared.takeClaude(j)
+            req.respond()
+            return
+        }
         guard let sid = j["session_id"] as? String, let event = j["hook_event_name"] as? String else {
             req.respond()
             return

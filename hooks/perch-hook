@@ -47,6 +47,7 @@ fi
 case "$MODE" in
   permission|ask) MAX=300 ;;
   stop) MAX=590 ;;
+  status) MAX=1 ;;
   *) MAX=2 ;;
 esac
 

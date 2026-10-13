@@ -407,6 +407,59 @@ private struct AgentRow: View {
 /// How the island moves between Chats and To-dos.
 private let tabSwitch = Animation.spring(response: 0.34, dampingFraction: 0.86)
 
+// MARK: Usage
+
+/// Two small dials, one per subscription. The outer ring is the five hour window, the inner
+/// one the week. Hover for the numbers and when each resets.
+private struct UsageRings: View {
+    var body: some View {
+        let usage = Usage.shared
+        HStack(spacing: 7) {
+            if usage.claude.short != nil || usage.claude.week != nil {
+                dial(usage.claude, name: "Claude", color: Color(red: 0.85, green: 0.47, blue: 0.34))
+            }
+            if usage.codex.short != nil || usage.codex.week != nil {
+                dial(usage.codex, name: "Codex", color: Color(red: 0.50, green: 0.47, blue: 0.98))
+            }
+        }
+    }
+
+    private func dial(_ plan: Usage.Plan, name: String, color: Color) -> some View {
+        let short = (plan.short?.current ?? 0) / 100, week = (plan.week?.current ?? 0) / 100
+        return ZStack {
+            ring(short, color: color, width: 2.6).frame(width: 20, height: 20)
+            ring(week, color: color.opacity(0.75), width: 2.2).frame(width: 11.5, height: 11.5)
+        }
+        .frame(width: 22, height: 22)
+        .reach(2, 8)
+        .help(describe(plan, name: name))
+    }
+
+    private func ring(_ part: Double, color: Color, width: CGFloat) -> some View {
+        ZStack {
+            Circle().stroke(.white.opacity(0.12), lineWidth: width)
+            Circle().trim(from: 0, to: max(0.001, min(1, part)))
+                .stroke(part > 0.9 ? Palette.red : color, style: StrokeStyle(lineWidth: width, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.easeOut(duration: 0.4), value: part)
+        }
+    }
+
+    private func describe(_ plan: Usage.Plan, name: String) -> String {
+        func line(_ label: String, _ w: Usage.Window?) -> String? {
+            guard let w else { return nil }
+            var s = "\(label): \(Int(w.current.rounded()))% used"
+            if let resets = w.resets, resets > Date() {
+                let f = DateFormatter()
+                f.dateFormat = resets.timeIntervalSinceNow < 20 * 3600 ? "HH:mm" : "EEE HH:mm"
+                s += ", resets \(f.string(from: resets))"
+            }
+            return s
+        }
+        return ([name] + [line("5 hours", plan.short), line("Week", plan.week)].compactMap { $0 }).joined(separator: "\n")
+    }
+}
+
 // MARK: Top bar
 
 /// What sits under the notch when the island is open: the two tabs on the left, and on the
@@ -427,6 +480,7 @@ private struct TopBar: View {
                 withAnimation(tabSwitch) { ui.showingTasks = true }
             }
             Spacer(minLength: 8)
+            UsageRings().padding(.trailing, 6)
             ForEach(profiles) { profile in
                 ProfileAvatar(profile: profile, size: 22)
                     .scaleEffect(hovered == profile.id ? 1.14 : 1)
