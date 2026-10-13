@@ -21,7 +21,7 @@ struct NotchContent: View {
         // so the gap always stays lined up with the hardware notch.
         // A chat needs more room than the roster.
         let chatting = ui.selectedID != nil || ui.composing
-        let extra = ui.expanded ? max(0, (ui.cardsOnly ? 340 : 580) - (l + ui.notch.width + r)) : 0
+        let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : 580) - (l + ui.notch.width + r)) : 0
         let radius: CGFloat = ui.expanded ? 18 : 10
         let openWidth = max(l + ui.notch.width + r, 340)
         let shape = UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
@@ -86,7 +86,11 @@ private struct ExpandedBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if ui.cardsOnly, let id = ui.noticeID, let agent = store.find(id) {
+            if let link = ui.pendingLinks.first {
+                LinkPicker(link: link, waiting: ui.pendingLinks.count - 1).id(link.id)
+            } else if let opened = ui.justOpened {
+                LinkOpenedNote(site: opened.site, profile: opened.profile)
+            } else if ui.cardsOnly, let id = ui.noticeID, let agent = store.find(id) {
                 NoticeView(agent: agent)
             } else {
                 // Faces down the left, one conversation (or the list) on the right.
@@ -590,6 +594,90 @@ private struct NoticeView: View {
         .onTapGesture { ui.show(agent.id) }
         .onHover { hovered = $0 }
         .padding(.bottom, 2)
+    }
+}
+
+// MARK: Link picker
+
+/// "Where should this open?" The profiles as big circles, best guess first. Click one or press
+/// its number.
+private struct LinkPicker: View {
+    let link: PendingLink
+    let waiting: Int
+    @Environment(NotchUI.self) private var ui
+    @State private var always = false
+    @State private var hovered: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Open \(link.site) in").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text(detail).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45)).lineLimit(1).truncationMode(.middle)
+            }
+            HStack(alignment: .top, spacing: 4) {
+                ForEach(Array(link.choices.enumerated()), id: \.element.id) { index, profile in
+                    VStack(spacing: 4) {
+                        ProfileAvatar(profile: profile, size: 34)
+                            .scaleEffect(hovered == profile.id ? 1.1 : 1)
+                            .animation(.easeOut(duration: 0.1), value: hovered)
+                        Text(profile.label).font(.system(size: 10.5, weight: index == 0 ? .semibold : .regular))
+                            .foregroundStyle(.white.opacity(index == 0 ? 0.95 : 0.65)).lineLimit(1)
+                        Text("\(index + 1)").font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.45))
+                            .frame(width: 15, height: 15).background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .background(.white.opacity(hovered == profile.id ? 0.1 : index == 0 ? 0.05 : 0),
+                                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .contentShape(Rectangle())
+                    .onHover { hovered = $0 ? profile.id : (hovered == profile.id ? nil : hovered) }
+                    .onTapGesture { ui.resolveLink(profile, always: always) }
+                }
+            }
+            HStack(spacing: 6) {
+                if LinkRouter.shared.canSettle(link.site) {
+                    Toggle(isOn: $always) {
+                        Text("Always for this site").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.6))
+                    }
+                    .toggleStyle(.checkbox).controlSize(.small)
+                } else {
+                    Text("This site is always asked about").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.35))
+                }
+                Spacer()
+                if waiting > 0 {
+                    Text("\(waiting) more waiting").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
+                }
+                Text("Esc cancels").font(.system(size: 10)).foregroundStyle(.white.opacity(0.28))
+            }
+        }
+        .padding(.horizontal, 4).padding(.top, 2)
+    }
+
+    private var detail: String {
+        let path = link.url.path.count > 1 ? link.url.path : ""
+        let from = link.sourceName.map { "from \($0)" } ?? ""
+        return [path, from].filter { !$0.isEmpty }.joined(separator: "  ·  ")
+    }
+}
+
+/// A link Perch opened without asking, shown for a moment so a wrong guess can be corrected.
+private struct LinkOpenedNote: View {
+    let site: String
+    let profile: ChromeProfile
+    @Environment(NotchUI.self) private var ui
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProfileAvatar(profile: profile, size: 22)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Opened in \(profile.label)").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                Text(site).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+            }
+            Spacer()
+            Button("Wrong one") { ui.reconsider() }.buttonStyle(ChipButton())
+        }
+        .padding(.horizontal, 4).padding(.vertical, 2)
     }
 }
 
@@ -1743,6 +1831,13 @@ private struct Footer: View {
                     }
                 }
                 Toggle("Launch at login", isOn: $loginItem)
+                Divider()
+                Button(LinkRouter.isDefault ? "Perch is choosing where links open" : "Let Perch choose where links open…") {
+                    LinkRouter.makeDefault()
+                }
+                .disabled(LinkRouter.isDefault)
+                Button("Forget learned link choices (\(LinkRouter.shared.settledCount))") { LinkRouter.shared.forgetEverything() }
+                Divider()
                 Toggle("Sounds", isOn: $sounds)
                 Toggle("Keep the menu bar hidden in full screen", isOn: $edgeGuard)
                 Picker("Wait for a reply when a session finishes", selection: $replyWindow) {

@@ -7,6 +7,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pruneTimer: Timer?
     private var awake: NSObjectProtocol?
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Links arrive as Apple events. Taking them this way also says which app sent each one.
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(openLink(_:reply:)),
+                                                     forEventClass: AEEventClass(kInternetEventClass),
+                                                     andEventID: AEEventID(kAEGetURL))
+    }
+
+    @objc private func openLink(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
+        guard let text = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
+              let url = URL(string: text), url.scheme == "http" || url.scheme == "https" else { return }
+        let pid = event.attributeDescriptor(forKeyword: keySenderPIDAttr)?.int32Value
+        let source = pid.flatMap { NSRunningApplication(processIdentifier: $0) }
+        // A link clicked before the island exists (Perch launched by the click) waits a moment.
+        if controller == nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { LinkRouter.shared.handle(url, from: source) }
+        } else {
+            LinkRouter.shared.handle(url, from: source)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let bundle = Bundle.main.bundleIdentifier,
            NSRunningApplication.runningApplications(withBundleIdentifier: bundle).count > 1 {

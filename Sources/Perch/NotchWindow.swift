@@ -149,7 +149,7 @@ final class NotchUI {
     private func scheduleCollapse(after delay: TimeInterval) {
         collapseWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.hovering, !self.typing, !self.autoOpened else { return }
+            guard let self, !self.hovering, !self.typing, !self.autoOpened, self.pendingLinks.isEmpty else { return }
             // The settings menu is open: its window sits outside the island, so wait for it.
             if RunLoop.current.currentMode == .eventTracking {
                 self.scheduleCollapse(after: 0.5)
@@ -194,6 +194,8 @@ final class NotchUI {
         guard expanded else { return }
         expanded = false
         cardsOnly = false
+        pendingLinks = []
+        justOpened = nil
         query = ""
         if !isDrafting("new") { composing = false }
         // Keep the row with an unsent reply selected, so it is right there on reopening.
@@ -240,6 +242,58 @@ final class NotchUI {
         }
     }
 
+    /// Links waiting for a profile to be chosen, oldest first.
+    private(set) var pendingLinks: [PendingLink] = []
+    /// A link that was just opened without asking, shown briefly so it can be changed.
+    private(set) var justOpened: (url: URL, site: String, profile: ChromeProfile)?
+    @ObservationIgnored private var announceWork: DispatchWorkItem?
+
+    /// A link was clicked and Perch does not know where it goes: ask, and wait for the answer.
+    func present(_ link: PendingLink) {
+        pendingLinks.append(link)
+        justOpened = nil
+        autoOpened = true
+        cardsOnly = true
+        noticeID = nil
+        holdOpenUntil = Date().addingTimeInterval(1)
+        collapseWork?.cancel()
+        expanded = true
+        // The user has just clicked a link, so number keys go to the picker.
+        controller?.panel.makeKey()
+    }
+
+    func resolveLink(_ profile: ChromeProfile, always: Bool) {
+        guard let link = pendingLinks.first else { return }
+        pendingLinks.removeFirst()
+        LinkRouter.shared.open(link, in: profile, always: always)
+        if pendingLinks.isEmpty { collapse() }
+    }
+
+    /// Says where a link went when Perch chose by itself, with a way to change it.
+    func announce(url: URL, site: String, openedIn profile: ChromeProfile) {
+        guard pendingLinks.isEmpty, !expanded || autoOpened else { return }
+        justOpened = (url, site, profile)
+        autoOpened = true
+        cardsOnly = true
+        noticeID = nil
+        expanded = true
+        announceWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.justOpened != nil, !self.hovering else { return }
+            self.collapse()
+        }
+        announceWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: work)
+    }
+
+    /// The automatic choice was wrong: forget it and ask.
+    func reconsider() {
+        guard let last = justOpened else { return }
+        LinkRouter.shared.forget(last.site)
+        justOpened = nil
+        present(PendingLink(url: last.url, site: last.site, sourceName: nil, sourceBundle: nil, choices: ChromeProfile.shown()))
+    }
+
     /// The agent a self-opened summary banner is about.
     private(set) var noticeID: String?
 
@@ -248,6 +302,8 @@ final class NotchUI {
     /// full chat. The face in the notch keeps signalling until it is dealt with.
     func attention(_ store: AgentStore) {
         guard let id = store.attentionAgentID, store.find(id) != nil else { return }
+        // A link picker is waiting on an answer; do not replace it with a notification.
+        guard pendingLinks.isEmpty else { return }
         // Already open and in use: do not pull the view out from under the user.
         if expanded && !autoOpened { return }
         autoOpened = true
@@ -273,7 +329,8 @@ final class NotchUI {
 
     func outsideClick() {
         // A notification banner is not dismissed by carrying on working; it times out by itself.
-        guard expanded, !cardsOnly, Date() >= holdOpenUntil else { return }
+        // Clicking away from a link picker cancels it; a plain notification just times out.
+        guard expanded, !cardsOnly || !pendingLinks.isEmpty, Date() >= holdOpenUntil else { return }
         collapse()
     }
 }
@@ -338,6 +395,18 @@ final class NotchController {
             if event.keyCode == 53 {
                 self?.ui.collapse()
                 return nil
+            }
+            // With a link picker up: 1 to 9 picks that profile, Return takes the first.
+            if let ui = self?.ui, let link = ui.pendingLinks.first, !event.modifierFlags.contains(.command) {
+                let key = event.charactersIgnoringModifiers ?? ""
+                if let n = Int(key), n >= 1, n <= link.choices.count {
+                    ui.resolveLink(link.choices[n - 1], always: false)
+                    return nil
+                }
+                if event.keyCode == 36, let first = link.choices.first {
+                    ui.resolveLink(first, always: false)
+                    return nil
+                }
             }
             if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v",
                self?.ui.pasteImages() == true {
