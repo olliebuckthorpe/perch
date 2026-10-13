@@ -19,7 +19,10 @@ final class NotchUI {
     var selectedID: String?
     /// True when the island opened itself for a prompt, so it shows only that prompt.
     private(set) var cardsOnly = false
-    var drafts: [String: String] = [:]
+    /// Half-written replies, kept across closing the island and across restarts.
+    var drafts: [String: String] = UserDefaults.standard.dictionary(forKey: "drafts") as? [String: String] ?? [:] {
+        didSet { UserDefaults.standard.set(drafts.filter { !$0.value.isEmpty }, forKey: "drafts") }
+    }
     var attachments: [String: [Attachment]] = [:]
     /// The agent whose reply field has the cursor, so a pasted image knows where to go.
     @ObservationIgnored var focusedAgentID: String?
@@ -42,10 +45,8 @@ final class NotchUI {
 
     func isDrafting(_ id: String) -> Bool { !(drafts[id] ?? "").isEmpty || !(attachments[id] ?? []).isEmpty }
 
-    private var typing: Bool {
-        (controller?.panel.isKeyWindow ?? false)
-            && (drafts.values.contains { !$0.isEmpty } || attachments.values.contains { !$0.isEmpty })
-    }
+    /// Once a row is open the island has keyboard focus, and it stays until Esc or a click elsewhere.
+    private var typing: Bool { controller?.panel.isKeyWindow ?? false }
 
     /// Cmd+V with an image on the clipboard attaches it to the reply being written.
     func pasteImages() -> Bool {
@@ -66,7 +67,7 @@ final class NotchUI {
             // A short pause so brushing past the menu bar does not open it.
             let work = DispatchWorkItem { [weak self] in
                 guard let self, self.hovering else { return }
-                self.expanded = true
+                self.expand()
             }
             expandWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
@@ -91,13 +92,22 @@ final class NotchUI {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    func expand() { expanded = true }
+    func expand() {
+        expanded = true
+        resumeDraft()
+    }
+
+    /// Reopening with a reply half written puts the cursor straight back in it.
+    private func resumeDraft() {
+        if let id = selectedID, isDrafting(id) { controller?.panel.makeKey() }
+    }
 
     func collapse() {
         guard expanded else { return }
         expanded = false
         cardsOnly = false
-        selectedID = nil
+        // Keep the row with an unsent reply selected, so it is right there on reopening.
+        if let id = selectedID, !isDrafting(id) { selectedID = nil }
         autoOpened = false
         controller?.releaseKey()
     }
