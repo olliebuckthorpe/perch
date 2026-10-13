@@ -35,5 +35,7 @@ codesign --force --sign - "$APP" >/dev/null 2>&1
 echo "Built $APP"
 
 if [ "$1" = "--run" ]; then
-  open "$APP"
+  # Launch Services sometimes refuses a relaunch straight after the old copy quits.
+  sleep 1
+  open "$APP" 2>/dev/null || { sleep 2; open "$APP"; }
 fi

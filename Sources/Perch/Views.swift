@@ -20,7 +20,7 @@ struct NotchContent: View {
         // Opened, the island is at least 340 wide; the extra is shared between both sides
         // so the gap always stays lined up with the hardware notch.
         // A chat needs more room than the roster.
-        let chatting = ui.selectedID != nil
+        let chatting = ui.selectedID != nil || ui.composing
         let extra = ui.expanded ? max(0, (chatting ? 420 : 340) - (l + ui.notch.width + r)) : 0
         let radius: CGFloat = ui.expanded ? 18 : 10
         let openWidth = max(l + ui.notch.width + r, 340)
@@ -84,7 +84,9 @@ private struct ExpandedBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let id = ui.selectedID, let agent = store.find(id) {
+            if ui.composing {
+                NewChatView()
+            } else if let id = ui.selectedID, let agent = store.find(id) {
                 ChatView(agent: agent)
             } else {
                 let asks = store.needing.filter { if case .followUp = $0.pending!.kind { return false } else { return true } }
@@ -160,10 +162,7 @@ private struct SearchBar: View {
                 }
                 .buttonStyle(.plain)
             }
-            Button {
-                CodingSessions.shared.newClaudeChat(prompt: nil)
-                ui.collapse()
-            } label: {
+            Button { ui.composing = true } label: {
                 Image(systemName: "square.and.pencil").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
             }
             .buttonStyle(.plain).help("New Claude Code chat")
@@ -196,9 +195,10 @@ private struct SearchResults: View {
                 Text("Nothing matches.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
                     .padding(.horizontal, 6).padding(.vertical, 5)
             }
-            PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(ui.query)", trailing: "Opens Claude") {
-                CodingSessions.shared.newClaudeChat(prompt: ui.query)
-                ui.collapse()
+            PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(ui.query)", trailing: nil) {
+                ui.drafts["new"] = ui.query
+                ui.query = ""
+                ui.composing = true
             }
         }
     }
@@ -264,6 +264,86 @@ private struct AgentRow: View {
         .contentShape(Rectangle())
         .onTapGesture { ui.select(agent.id) }
         .onHover { hovered = $0 }
+    }
+}
+
+// MARK: New chat
+
+/// Write the first message of a new Claude Code session and it starts right here.
+private struct NewChatView: View {
+    @Environment(AgentStore.self) private var store
+    @Environment(NotchUI.self) private var ui
+    @State private var folder = ""
+    @FocusState private var focused: Bool
+
+    /// Places recent sessions were working in, most recent first.
+    private var folders: [String] {
+        var seen = Set<String>()
+        let live = store.sessions.filter { $0.source == .claude }.compactMap(\.cwd)
+        let older = SessionIndex.shared.entries.compactMap(\.cwd)
+        return (live + older + ["\(Shell.home)/Dev"]).filter { seen.insert($0).inserted }.prefix(8).map { $0 }
+    }
+
+    var body: some View {
+        let draft = Binding(get: { ui.drafts["new"] ?? "" }, set: { ui.drafts["new"] = $0 })
+        let chosen = folder.isEmpty ? (folders.first ?? Shell.home) : folder
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Button { ui.composing = false } label: {
+                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Text("New Claude Code chat").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                Spacer()
+                Menu {
+                    ForEach(folders, id: \.self) { path in
+                        Button(path.replacingOccurrences(of: Shell.home, with: "~")) { folder = path }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder").font(.system(size: 10))
+                        Text(URL(fileURLWithPath: chosen).lastPathComponent).font(.system(size: 11))
+                    }
+                    .foregroundStyle(.white.opacity(0.6))
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            }
+            HStack(alignment: .bottom, spacing: 6) {
+                TextField("What do you want to work on?", text: draft, axis: .vertical)
+                    .textFieldStyle(.plain).font(.system(size: 12.5)).lineLimit(2...8)
+                    .focused($focused)
+                    .onSubmit { start(chosen) }
+                Button { Dictation.shared.toggle(for: "new") } label: {
+                    let listening = Dictation.shared.activeAgentID == "new"
+                    Image(systemName: listening ? "mic.fill" : "mic").font(.system(size: 13))
+                        .foregroundStyle(listening ? Palette.red : .white.opacity(0.45))
+                        .frame(width: 18, height: 18).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Button { start(chosen) } label: {
+                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 16))
+                        .foregroundStyle(draft.wrappedValue.isEmpty ? .white.opacity(0.2) : Palette.blue)
+                }
+                .buttonStyle(.plain).disabled(draft.wrappedValue.isEmpty)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .padding(.top, 2)
+        .onAppear {
+            SessionIndex.shared.refresh()
+            ui.controller?.panel.makeKey()
+            DispatchQueue.main.async { focused = true }
+        }
+    }
+
+    private func start(_ folder: String) {
+        let prompt = ui.drafts["new"] ?? ""
+        guard let agent = CodingSessions.shared.startChat(prompt: prompt, folder: folder) else { return }
+        Dictation.shared.stop()
+        ui.drafts["new"] = nil
+        ui.select(agent.id)
     }
 }
 

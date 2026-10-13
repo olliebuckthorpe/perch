@@ -325,6 +325,25 @@ final class CodingSessions {
         agent.lastActivity = Date()
     }
 
+    /// Starts a new Claude Code session from the notch. It runs in the background through the
+    /// `claude` command and shows up as a chat here straight away.
+    @discardableResult
+    func startChat(prompt: String, folder: String) -> Agent? {
+        let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { return nil }
+        let id = UUID().uuidString.lowercased()
+        let agent = store.upsert(source: .claude, sessionID: id, name: oneLine(prompt, max: 40))
+        agent.cwd = folder
+        agent.background = true
+        agent.addLocal(prompt)
+        guard let exe = Shell.find("claude") else {
+            agent.detail = "Could not find the claude command"
+            return agent
+        }
+        run(agent, exe: exe, args: ["-p", "--session-id", id, prompt], text: prompt)
+        return agent
+    }
+
     /// Hands a new chat to the Claude desktop app, with the prompt and folder filled in.
     func newClaudeChat(prompt: String?) {
         var link = URLComponents(string: "claude://code/new")!
@@ -359,28 +378,49 @@ final class CodingSessions {
         let args = agent.source == .codex
             ? ["exec", "resume", agent.sessionID, text, "--skip-git-repo-check"]
             : ["-p", "--resume", agent.sessionID, text]
+        run(agent, exe: exe, args: args, text: text)
+    }
+
+    private func run(_ agent: Agent, exe: String, args: [String], text: String) {
         agent.sending = true
         agent.status = .working
         agent.detail = oneLine(text)
         agent.lastActivity = Date()
-        Shell.run(exe, args, cwd: agent.cwd, env: ["PERCH_HEADLESS": "1"]) { [weak agent] code, output in
-            guard let agent else { return }
+        Shell.run(exe, args, cwd: agent.cwd, env: ["PERCH_HEADLESS": "1"]) { [weak self, weak agent] code, output in
+            guard let self, let agent else { return }
             agent.sending = false
             agent.lastActivity = Date()
             let reply = output.trimmingCharacters(in: .whitespacesAndNewlines)
             if code != 0 {
                 agent.status = .done
-                agent.detail = "Could not reach this session. Open it and send one message first."
+                // The usual cause by far: the terminal `claude` has its own sign-in, separate from the app.
+                let why = reply.isEmpty || reply.contains("authenticate")
+                    ? "Could not run this. The claude command is probably not signed in: run claude in a terminal, log in, then try again."
+                    : oneLine(reply, max: 200)
+                agent.detail = why
+                agent.thread.append(ChatMessage(id: "error-\(UUID().uuidString)", fromUser: false, text: "_\(why)_"))
             } else if agent.source == .claude, !reply.isEmpty {
                 agent.lastMessage = reply
                 agent.status = .done
                 agent.detail = oneLine(reply)
                 AgentStore.shared.ping(agent)
+                Threads.load(agent)
+            }
+            // Anything typed while it was busy goes in as the next turn.
+            if code == 0, !agent.queued.isEmpty {
+                let next = agent.queued.joined(separator: "\n\n")
+                agent.queued = []
+                self.resume(agent, text: next)
             }
         }
     }
 
     func open(_ agent: Agent) {
+        if agent.background, let url = URL(string: "claude://resume?session=\(agent.sessionID)") {
+            // A chat started in the notch: ask Claude to bring it in.
+            NSWorkspace.shared.open(url)
+            return
+        }
         guard let bundle = agent.hostBundleID,
               let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else { return }
         NSWorkspace.shared.openApplication(at: url, configuration: .init())

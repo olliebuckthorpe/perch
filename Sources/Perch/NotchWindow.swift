@@ -18,6 +18,8 @@ final class NotchUI {
     private(set) var expanded = false
     var selectedID: String?
     var query = ""
+    /// Writing the first message of a new chat.
+    var composing = false
     /// True when the island opened itself for a prompt, so it shows only that prompt.
     private(set) var cardsOnly = false
     /// Half-written replies, kept across closing the island and across restarts.
@@ -108,6 +110,7 @@ final class NotchUI {
         expanded = false
         cardsOnly = false
         query = ""
+        if !isDrafting("new") { composing = false }
         // Keep the row with an unsent reply selected, so it is right there on reopening.
         if let id = selectedID, !isDrafting(id) { selectedID = nil }
         Dictation.shared.stop()
@@ -116,6 +119,7 @@ final class NotchUI {
     }
 
     func select(_ id: String) {
+        composing = false
         selectedID = selectedID == id ? nil : id
         if selectedID != nil {
             controller?.panel.makeKey()
@@ -125,6 +129,7 @@ final class NotchUI {
 
     func show(_ id: String) {
         cardsOnly = false
+        composing = false
         expanded = true
         selectedID = id
         controller?.panel.makeKey()

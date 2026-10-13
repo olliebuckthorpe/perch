@@ -77,6 +77,8 @@ final class Agent: Identifiable {
     var waiter: HookRequest?
     /// Replies sent while there was no way in. Delivered at the next opening.
     var queued: [String] = []
+    /// Started from the notch and run in the background, not open in any app.
+    var background = false
     /// Recent conversation, loaded when the agent's chat is opened.
     var thread: [ChatMessage] = []
     var transcriptPath: String?
