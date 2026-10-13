@@ -97,6 +97,21 @@ final class NotchUI {
         if inside {
             collapseWork?.cancel()
             autoOpened = false
+            if expanded, cardsOnly, let id = noticeID {
+                // Coming up to a notification opens it into the full conversation, after a beat
+                // so a pointer just passing through does not trigger it.
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self, self.hovering, self.cardsOnly, self.noticeID == id else { return }
+                    self.cardsOnly = false
+                    self.composing = false
+                    self.browsing = false
+                    self.selectedID = id
+                    self.focusReply = false
+                }
+                expandWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+                return
+            }
             guard !expanded else { return }
             // A short pause so brushing past the menu bar does not open it.
             let work = DispatchWorkItem { [weak self] in
