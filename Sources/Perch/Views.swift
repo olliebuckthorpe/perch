@@ -1759,6 +1759,13 @@ private struct ReplyField: View {
         .background(Color(white: 0.15), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
             .stroke(.white.opacity(focused ? 0.38 : 0.2), lineWidth: 1))
+        // The text line itself is thin. A click anywhere in the box starts typing.
+        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .simultaneousGesture(TapGesture().onEnded {
+            guard !busy else { return }
+            ui.controller?.panel.makeKey()
+            focused = true
+        })
         .onChange(of: focused) { _, on in
             if on {
                 ui.focusedAgentID = agent.id

@@ -426,6 +426,12 @@ final class NotchController {
         if let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
             self?.ui.outsideClick()
         }) { monitors.append(m) }
+        // A click on the island gives it the keyboard straight away, so the first click on a text
+        // box starts typing instead of only waking the window up.
+        if let m = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] event in
+            if let self, self.ui.expanded, event.window === self.panel, !self.panel.isKeyWindow { self.panel.makeKey() }
+            return event
+        }) { monitors.append(m) }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             if event.keyCode == 53 {
                 self?.ui.collapse()
