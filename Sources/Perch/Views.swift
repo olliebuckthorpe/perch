@@ -21,7 +21,7 @@ struct NotchContent: View {
         // so the gap always stays lined up with the hardware notch.
         // A chat needs more room than the roster.
         let chatting = ui.selectedID != nil || ui.composing
-        let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : ui.showingTasks ? 760 : 600) - (l + ui.notch.width + r)) : 0
+        let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : 680) - (l + ui.notch.width + r)) : 0
         let radius: CGFloat = ui.expanded ? 18 : 10
         let openWidth = max(l + ui.notch.width + r, 340)
         let shape = UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
@@ -85,7 +85,7 @@ private struct ExpandedBody: View {
     @State private var showQuiet = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             if let link = ui.pendingLinks.first {
                 LinkPicker(link: link, waiting: ui.pendingLinks.count - 1).id(link.id)
             } else if let opened = ui.justOpened {
@@ -93,14 +93,20 @@ private struct ExpandedBody: View {
             } else if ui.cardsOnly, let id = ui.noticeID, let agent = store.find(id) {
                 NoticeView(agent: agent)
             } else {
-                // Faces down the left, one conversation (or the list) on the right.
-                HStack(alignment: .top, spacing: 12) {
-                    Rail()
-                    Rectangle().fill(.white.opacity(0.08)).frame(width: 1).frame(maxHeight: .infinity)
-                    VStack(alignment: .leading, spacing: 6) { pane }
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                TopBar()
+                if ui.showingTasks {
+                    // The board gets the full width; the island stays the same size either way.
+                    TasksView()
+                } else {
+                    // Chats down the left, one conversation (or search) on the right.
+                    HStack(alignment: .top, spacing: 12) {
+                        Rail()
+                        Rectangle().fill(.white.opacity(0.08)).frame(width: 1).frame(maxHeight: .infinity)
+                        VStack(alignment: .leading, spacing: 6) { pane }
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
                 }
-                .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, 14)
@@ -370,6 +376,60 @@ private struct AgentRow: View {
     }
 }
 
+// MARK: Top bar
+
+/// What sits under the notch when the island is open: the two tabs on the left, and on the
+/// right the Chrome profiles (one click each) and settings.
+private struct TopBar: View {
+    @Environment(NotchUI.self) private var ui
+    @State private var profiles: [ChromeProfile] = []
+    @State private var hovered: String?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            tab("Chats", on: !ui.showingTasks) {
+                ui.showingTasks = false
+            }
+            tab("To-dos", count: NotionTasks.shared.connected ? NotionTasks.shared.tasks.count : nil, on: ui.showingTasks) {
+                ui.composing = false
+                ui.showingTasks = true
+            }
+            Spacer(minLength: 8)
+            if let name = profiles.first(where: { $0.id == hovered })?.label {
+                Text(name).font(.system(size: 11)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                    .transition(.opacity)
+            }
+            ForEach(profiles) { profile in
+                ProfileAvatar(profile: profile, size: 22)
+                    .scaleEffect(hovered == profile.id ? 1.14 : 1)
+                    .animation(.easeOut(duration: 0.1), value: hovered)
+                    .contentShape(Rectangle())
+                    .onHover { hovered = $0 ? profile.id : (hovered == profile.id ? nil : hovered) }
+                    .onTapGesture {
+                        profile.open()
+                        ui.collapse()
+                    }
+            }
+            Footer().frame(width: 24).padding(.leading, 2)
+        }
+        .onAppear { profiles = ChromeProfile.shown() }
+    }
+
+    private func tab(_ title: String, count: Int? = nil, on: Bool, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 5) {
+            Text(title).font(.system(size: 12, weight: .semibold))
+            if let count, count > 0 {
+                Text("\(count)").font(.system(size: 10.5, weight: .semibold)).opacity(0.6)
+            }
+        }
+        .foregroundStyle(on ? .black.opacity(0.85) : .white.opacity(0.6))
+        .padding(.horizontal, 12).padding(.vertical, 5)
+        .background(on ? Color.white.opacity(0.92) : Color.white.opacity(0.08), in: Capsule())
+        .contentShape(Capsule())
+        .onTapGesture(perform: action)
+    }
+}
+
 // MARK: Rail
 
 /// Every agent worth a glance, as a column of faces. Click one to switch conversation.
@@ -405,6 +465,27 @@ private struct Rail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
+            // Search, with the new chat button on the same line.
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.system(size: 10.5))
+                Text("Search").font(.system(size: 11.5))
+                Spacer(minLength: 0)
+                Button {
+                    ui.showingProfiles = false
+                    ui.composing = true
+                } label: {
+                    Image(systemName: "square.and.pencil").font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(ui.composing ? 0.95 : 0.6))
+                        .frame(width: 22, height: 18).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).help("New Claude Code chat")
+            }
+            .foregroundStyle(.white.opacity(ui.browsing ? 0.9 : 0.5))
+            .padding(.leading, 8).padding(.trailing, 4).padding(.vertical, 5)
+            .background(.white.opacity(ui.browsing ? 0.14 : 0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Rectangle())
+            .onTapGesture { ui.browse() }
+            .padding(.bottom, 5)
             ForEach(agents) { agent in
                 let star = agent.source == .grok && ui.pinned.contains(agent.name)
                 RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks, star: star) { dragged in
@@ -413,45 +494,9 @@ private struct Rail: View {
                     ui.move(dragged, before: agent.id, in: agents.map(\.id))
                 }
             }
-            Spacer(minLength: 10)
-            Rectangle().fill(.white.opacity(0.08)).frame(height: 1).padding(.horizontal, 5).padding(.bottom, 4)
-            // One labelled row each, instead of a strip of small icons.
-            NavRow(icon: "checklist", title: "To-dos", on: ui.showingTasks,
-                   badge: NotionTasks.shared.connected && !NotionTasks.shared.tasks.isEmpty ? "\(NotionTasks.shared.tasks.count)" : nil) {
-                ui.composing = false
-                ui.showingProfiles = false
-                ui.showingTasks = true
-                ui.controller?.panel.makeKey()
-            }
-            NavRow(icon: "person.2", title: "Chrome profiles", on: ui.showingProfiles || stripOpen) {
-                ui.composing = false
-                ui.showingTasks = false
-                ui.showingProfiles = true
-            }
-            .onHover { overButton = $0; settleStrip() }
-            // Floats above the row instead of pushing anything, so nothing around it moves.
-            .overlay(alignment: .bottomLeading) {
-                if stripOpen {
-                    ProfileStrip()
-                        .frame(width: 160)
-                        .background(.black, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        .onHover { overStrip = $0; settleStrip() }
-                        .offset(y: -28)
-                        .transition(.opacity)
-                }
-            }
-            NavRow(icon: "magnifyingglass", title: "Search", on: ui.browsing) { ui.browse() }
-            HStack(spacing: 0) {
-                NavRow(icon: "square.and.pencil", title: "New chat", on: ui.composing && !ui.showingProfiles && !ui.showingTasks) {
-                    ui.showingProfiles = false
-                    ui.showingTasks = false
-                    ui.composing = true
-                }
-                Footer().frame(width: 26)
-            }
+            Spacer(minLength: 0)
         }
-        .frame(width: 160)
-        .padding(.top, 2)
+        .frame(width: 176)
     }
 
     /// Open while the pointer is on the button or the strip, with a short grace period so it
@@ -648,33 +693,23 @@ private struct TasksView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Text("To-dos").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
-                if notion.connected {
-                    Text("\(notion.tasks.count)").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
-                }
-                Spacer()
-                if notion.connected {
-                    Button { notion.refresh() } label: {
-                        Image(systemName: "arrow.clockwise").font(.system(size: 10.5))
-                            .foregroundStyle(.white.opacity(notion.loading ? 0.25 : 0.5))
-                    }
-                    .buttonStyle(.plain).help("Refresh from Notion")
-                }
-            }
-            .padding(.horizontal, 6)
-
             if !notion.connected {
                 setup
             } else {
                 HStack(spacing: 6) {
                     Image(systemName: "plus").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
-                    TextField("Add a to-do", text: $draft)
+                    TextField("Add a to-do to My to-dos", text: $draft)
                         .textFieldStyle(.plain).font(.system(size: 12.5)).focused($focused)
                         .onSubmit {
                             notion.add(draft)
                             draft = ""
                         }
+                    Button { notion.refresh() } label: {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 10.5))
+                            .foregroundStyle(.white.opacity(notion.loading ? 0.25 : 0.5))
+                            .frame(width: 20, height: 18).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).help("Refresh from Notion")
                 }
                 .padding(.horizontal, 8).padding(.vertical, 6)
                 .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -694,7 +729,6 @@ private struct TasksView: View {
         .padding(.top, 2)
         .onAppear {
             notion.refresh()
-            DispatchQueue.main.async { focused = true }
         }
     }
 
@@ -715,10 +749,21 @@ private struct TaskColumn: View {
     let cards: [TaskItem]
     @State private var targeted = false
 
+    /// The colour Notion gives this column on the board.
+    private var tint: Color {
+        switch title {
+        case "Upshow to-dos": return Palette.colors[8]
+        case "My to-dos": return Palette.blue
+        case "Waiting On": return Palette.amber
+        default: return .white.opacity(0.4)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 5) {
-                Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.75))
+            HStack(spacing: 6) {
+                Circle().fill(tint).frame(width: 7, height: 7)
+                Text(title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
                 Text("\(cards.count)").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.35))
                 Spacer()
             }
@@ -728,9 +773,9 @@ private struct TaskColumn: View {
                     ForEach(cards) { TaskCard(task: $0) }
                 }
             }
-            .frame(height: 320)
+            .frame(height: 366)
         }
-        .padding(7)
+        .padding(8)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(.white.opacity(targeted ? 0.1 : 0.04), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .dropDestination(for: String.self) { ids, _ in
@@ -766,28 +811,31 @@ private struct TaskCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(task.name).font(.system(size: 11.5)).foregroundStyle(.white.opacity(ticking ? 0.4 : 0.92))
-                .strikethrough(ticking).lineLimit(4).fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 5) {
-                if let (text, color) = dueText {
-                    Text(text).font(.system(size: 10, weight: .medium)).foregroundStyle(color)
+        HStack(alignment: .top, spacing: 7) {
+            Button {
+                ticking = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { NotionTasks.shared.complete(task) }
+            } label: {
+                Image(systemName: ticking ? "checkmark.circle.fill" : "circle").font(.system(size: 13.5))
+                    .foregroundStyle(ticking ? Palette.green : .white.opacity(hovered ? 0.8 : 0.35))
+                    .frame(width: 16, height: 16).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("Mark as done")
+            VStack(alignment: .leading, spacing: 4) {
+                Text(task.name).font(.system(size: 12)).foregroundStyle(.white.opacity(ticking ? 0.4 : 0.92))
+                    .strikethrough(ticking).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if dueText != nil || priorityColor != nil {
+                    HStack(spacing: 5) {
+                        if let (text, color) = dueText {
+                            Text(text).font(.system(size: 10.5, weight: .medium)).foregroundStyle(color)
+                        }
+                        if let color = priorityColor {
+                            Text(task.priority ?? "").font(.system(size: 10, weight: .semibold)).foregroundStyle(color)
+                                .padding(.horizontal, 5).padding(.vertical, 1).background(color.opacity(0.16), in: Capsule())
+                        }
+                    }
                 }
-                if let color = priorityColor {
-                    Circle().fill(color).frame(width: 6, height: 6)
-                    Text(task.priority ?? "").font(.system(size: 10)).foregroundStyle(color.opacity(0.9))
-                }
-                Spacer(minLength: 0)
-                Button {
-                    ticking = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { NotionTasks.shared.complete(task) }
-                } label: {
-                    Image(systemName: ticking ? "checkmark.circle.fill" : "circle").font(.system(size: 13))
-                        .foregroundStyle(ticking ? Palette.green : .white.opacity(hovered ? 0.75 : 0.3))
-                        .frame(width: 18, height: 16).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).help("Mark as done")
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 7)
