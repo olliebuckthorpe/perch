@@ -23,6 +23,9 @@ struct ChatMessage: Identifiable, Equatable {
 
 /// Loads the recent conversation for an agent, from wherever that kind of agent keeps it.
 enum Threads {
+    /// One at a time and low priority: reading transcripts should never compete with the interface.
+    private static let queue = DispatchQueue(label: "perch.threads", qos: .utility)
+
     static let replyMarker = "Treat this as their next message:\n\n"
 
     static func load(_ agent: Agent) {
@@ -32,7 +35,7 @@ enum Threads {
         case .claude, .codex:
             guard let path = agent.transcriptPath else { return }
             let codex = agent.source == .codex
-            DispatchQueue.global(qos: .userInitiated).async {
+            queue.async {
                 let messages = parse(path, codex: codex)
                 DispatchQueue.main.async { [weak agent] in
                     guard let agent, !messages.isEmpty else { return }

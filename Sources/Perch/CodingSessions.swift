@@ -40,6 +40,7 @@ final class CodingSessions {
                 agent.hostBundleID = Self.claudeBundleID
                 agent.lastActivity = mtime
                 titled.insert(agent.id)
+                Threads.load(agent)
             }
         }
     }
@@ -126,6 +127,8 @@ final class CodingSessions {
 
         let tool = j["tool_name"] as? String ?? ""
         let input = j["tool_input"] as? [String: Any] ?? [:]
+        // Keep the conversation loaded at turn boundaries, so the chat is ready before it is opened.
+        if mode == "info", ["Stop", "UserPromptSubmit", "SessionStart"].contains(event) { Threads.load(agent) }
 
         if mode == "wait" {
             guard !headless else { req.respond(); return }

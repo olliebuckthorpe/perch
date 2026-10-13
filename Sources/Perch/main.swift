@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: NotchController?
     private let codex = CodexWatcher()
     private var pruneTimer: Timer?
+    private var awake: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let bundle = Bundle.main.bundleIdentifier,
@@ -28,6 +29,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do { try server.start() } catch { NSLog("Perch: could not start hook server: \(error)") }
         self.server = server
 
+        // Without this macOS naps the app while it sits idle, and the first open after a quiet
+        // spell stutters while it wakes up. This does not stop the Mac itself from sleeping.
+        awake = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
+                                                      reason: "Keeps the notch responsive")
         installEditMenu()
         controller = NotchController(store: AgentStore.shared)
         CodingSessions.shared.start()

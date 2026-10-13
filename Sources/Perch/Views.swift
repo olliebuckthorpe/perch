@@ -611,14 +611,13 @@ private struct NewChatView: View {
 private struct ChatView: View {
     let agent: Agent
     @Environment(NotchUI.self) private var ui
-    @State private var contentHeight: CGFloat = 0
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
+                    // Lazy, so only the messages on screen are laid out when the island opens.
+                    LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(messages) { bubble($0) }
                         if agent.status == .working {
                             Text(agent.source == .grok ? "\(agent.name) is working…" : "Working…")
@@ -627,12 +626,12 @@ private struct ChatView: View {
                         Color.clear.frame(height: 1).id("end")
                     }
                     .padding(.horizontal, 6)
-                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { contentHeight = $0 }
                 }
                 .defaultScrollAnchor(.bottom)
-                .frame(height: min(max(contentHeight, 30), 400))
+                // A fixed height keeps the island the same size every time it opens, so the
+                // opening animation has one target instead of jumping as the history loads.
+                .frame(height: 380)
                 .onChange(of: messages.last?.id) { proxy.scrollTo("end", anchor: .bottom) }
-                .onChange(of: contentHeight) { proxy.scrollTo("end", anchor: .bottom) }
                 .onAppear { DispatchQueue.main.async { proxy.scrollTo("end", anchor: .bottom) } }
             }
             if agent.status == .needsYou, agent.pending == nil {
