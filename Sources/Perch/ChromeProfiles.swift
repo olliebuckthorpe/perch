@@ -15,6 +15,20 @@ struct ChromeProfile: Identifiable {
     /// Chrome's own colour for the profile, as it shows in its profile switcher.
     let argb: Int?
 
+    /// A chosen icon for the profile (a client's favicon, say), which wins over the Google picture.
+    var iconPath: String? {
+        let path = "\(Shell.home)/.perch/profile-icons/\(id).png"
+        return FileManager.default.fileExists(atPath: path) ? path : nil
+    }
+
+    /// Profiles the user does not want offered in the notch. Chrome's folder names.
+    static var hidden: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: "hiddenProfiles") ?? ["Profile 1"]) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "hiddenProfiles") }
+    }
+
+    static func shown() -> [ChromeProfile] { all().filter { !hidden.contains($0.id) } }
+
     static func all() -> [ChromeProfile] {
         let path = "\(Shell.home)/Library/Application Support/Google/Chrome/Local State"
         guard let data = FileManager.default.contents(atPath: path),

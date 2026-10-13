@@ -408,11 +408,6 @@ private struct Rail: View {
                 }
             }
             Spacer(minLength: 6)
-            if stripOpen {
-                ProfileStrip()
-                    .onHover { overStrip = $0; settleStrip() }
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
             HStack(spacing: 4) {
                 railButton("magnifyingglass", "Search all chats and bots", on: ui.browsing) { ui.browse() }
                 railButton("square.and.pencil", "New Claude Code chat", on: ui.composing && !ui.showingProfiles) {
@@ -425,6 +420,17 @@ private struct Rail: View {
                 }
                 .onHover { overButton = $0; settleStrip() }
                 Spacer()
+            }
+            // Floats above the buttons instead of pushing them, so nothing around it moves.
+            .overlay(alignment: .bottomLeading) {
+                if stripOpen {
+                    ProfileStrip()
+                        .frame(width: 150)
+                        .background(.black, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .onHover { overStrip = $0; settleStrip() }
+                        .offset(y: -28)
+                        .transition(.opacity)
+                }
             }
         }
         .frame(width: 150)
@@ -597,6 +603,14 @@ private struct ProfileAvatar: View {
         return Color(red: Double((v >> 16) & 0xFF) / 255, green: Double((v >> 8) & 0xFF) / 255, blue: Double(v & 0xFF) / 255)
     }
 
+    private var icon: NSImage? {
+        guard let path = profile.iconPath else { return nil }
+        if let cached = Self.pictures.object(forKey: path as NSString) { return cached }
+        guard let image = NSImage(contentsOfFile: path) else { return nil }
+        Self.pictures.setObject(image, forKey: path as NSString)
+        return image
+    }
+
     private var picture: NSImage? {
         guard let path = profile.picturePath else { return nil }
         if let cached = Self.pictures.object(forKey: path as NSString) { return cached }
@@ -608,7 +622,12 @@ private struct ProfileAvatar: View {
     var body: some View {
         let initial = String(profile.name.prefix(1)).uppercased()
         ZStack {
-            if let picture {
+            if let icon {
+                // A chosen icon sits whole on a white disc, since logos are rarely round.
+                Image(nsImage: icon).resizable().aspectRatio(contentMode: .fit)
+                    .padding(size * 0.14)
+                    .frame(width: size, height: size).background(.white, in: Circle()).clipShape(Circle())
+            } else if let picture {
                 Image(nsImage: picture).resizable().aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size).clipShape(Circle())
                     .overlay(Circle().strokeBorder(tint, lineWidth: max(1.5, size * 0.09)))
@@ -655,7 +674,7 @@ private struct ProfileStrip: View {
         .padding(.horizontal, 5).padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .onAppear { profiles = ChromeProfile.all() }
+        .onAppear { profiles = ChromeProfile.shown() }
     }
 }
 
@@ -703,7 +722,7 @@ private struct ProfilesView: View {
         }
         .padding(.top, 2)
         .onAppear {
-            profiles = ChromeProfile.all()
+            profiles = ChromeProfile.shown()
             link = ChromeProfile.copiedLink
             canJump = ChromeProfile.canJump
         }
