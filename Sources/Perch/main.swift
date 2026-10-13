@@ -60,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if EdgeGuard.wanted { EdgeGuard.shared.start(prompt: false) }
         codex.start()
         GrokSource.shared.start()
+        NotionTasks.shared.start()
 
         pruneTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in AgentStore.shared.prune() }
         // A restart can come without warning, so the list is written out as it changes.

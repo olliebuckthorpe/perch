@@ -28,6 +28,8 @@ final class NotchUI {
     var browsing = false
     /// Showing the Chrome profile switcher in the right-hand pane.
     var showingProfiles = false
+    /// Showing the Notion to-do list in the right-hand pane.
+    var showingTasks = false
     /// Which search result the arrow keys are on.
     var searchIndex = 0
     /// Whether the open chat should take the keyboard. Only after a deliberate click, never on hover.
@@ -179,6 +181,7 @@ final class NotchUI {
         selectedID = nil
         composing = false
         showingProfiles = false
+        showingTasks = false
         browsing = true
         searchIndex = 0
         // Straight into typing: the search field takes the keyboard.
@@ -202,6 +205,7 @@ final class NotchUI {
         if let id = selectedID, !isDrafting(id) { selectedID = nil }
         browsing = false
         showingProfiles = false
+        showingTasks = false
         focusReply = false
         Dictation.shared.stop()
         autoOpened = false
@@ -212,6 +216,7 @@ final class NotchUI {
         composing = false
         browsing = false
         showingProfiles = false
+        showingTasks = false
         selectedID = id
         focusReply = true
         UserDefaults.standard.set(id, forKey: "lastChat")
@@ -224,6 +229,7 @@ final class NotchUI {
         composing = false
         browsing = false
         showingProfiles = false
+        showingTasks = false
         focusReply = true
         UserDefaults.standard.set(id, forKey: "lastChat")
         expanded = true

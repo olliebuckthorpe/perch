@@ -110,7 +110,9 @@ private struct ExpandedBody: View {
 
     @ViewBuilder private var pane: some View {
         Group {
-            if ui.showingProfiles {
+            if ui.showingTasks {
+                TasksView()
+            } else if ui.showingProfiles {
                 ProfilesView()
             } else if ui.composing {
                 NewChatView()
@@ -405,7 +407,7 @@ private struct Rail: View {
         VStack(alignment: .leading, spacing: 1) {
             ForEach(agents) { agent in
                 let star = agent.source == .grok && ui.pinned.contains(agent.name)
-                RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles, star: star) { dragged in
+                RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks, star: star) { dragged in
                     // Pinned bots stay at the top; everything else can be dragged into any order.
                     guard !star else { return }
                     ui.move(dragged, before: agent.id, in: agents.map(\.id))
@@ -414,12 +416,20 @@ private struct Rail: View {
             Spacer(minLength: 6)
             HStack(spacing: 4) {
                 railButton("magnifyingglass", "Search all chats and bots", on: ui.browsing) { ui.browse() }
-                railButton("square.and.pencil", "New Claude Code chat", on: ui.composing && !ui.showingProfiles) {
+                railButton("square.and.pencil", "New Claude Code chat", on: ui.composing && !ui.showingProfiles && !ui.showingTasks) {
                     ui.showingProfiles = false
+                    ui.showingTasks = false
                     ui.composing = true
+                }
+                railButton("checklist", "To-do list", on: ui.showingTasks) {
+                    ui.composing = false
+                    ui.showingProfiles = false
+                    ui.showingTasks = true
+                    ui.controller?.panel.makeKey()
                 }
                 railButton("person.2", "Jump to a Chrome profile", on: ui.showingProfiles || stripOpen) {
                     ui.composing = false
+                    ui.showingTasks = false
                     ui.showingProfiles = true
                 }
                 .onHover { overButton = $0; settleStrip() }
@@ -596,6 +606,141 @@ private struct NoticeView: View {
         .onTapGesture { ui.show(agent.id) }
         .onHover { hovered = $0 }
         .padding(.bottom, 2)
+    }
+}
+
+// MARK: To-do list
+
+/// The Notion to-do list: add one at the top, tick them off, click a name to open it in Notion.
+private struct TasksView: View {
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+    private var notion: NotionTasks { NotionTasks.shared }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text("To-dos").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                if notion.connected {
+                    Text("\(notion.tasks.count)").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                }
+                Spacer()
+                if notion.connected {
+                    Button { notion.refresh() } label: {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 10.5))
+                            .foregroundStyle(.white.opacity(notion.loading ? 0.25 : 0.5))
+                    }
+                    .buttonStyle(.plain).help("Refresh from Notion")
+                }
+            }
+            .padding(.horizontal, 6)
+
+            if !notion.connected {
+                setup
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+                    TextField("Add a to-do", text: $draft)
+                        .textFieldStyle(.plain).font(.system(size: 12.5)).focused($focused)
+                        .onSubmit {
+                            notion.add(draft)
+                            draft = ""
+                        }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                if let problem = notion.problem {
+                    Text(problem).font(.system(size: 11)).foregroundStyle(Palette.amber.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 6)
+                }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(NotionTasks.columns, id: \.self) { column in
+                            let rows = notion.tasks.filter { $0.column == column }
+                            if !rows.isEmpty {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Text(column).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
+                                        .padding(.horizontal, 6).padding(.bottom, 2)
+                                    ForEach(rows) { TaskRow(task: $0) }
+                                }
+                            }
+                        }
+                        if notion.loadedOnce, notion.tasks.isEmpty, notion.problem == nil {
+                            Text("Nothing on the list.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
+                                .padding(.horizontal, 6)
+                        }
+                    }
+                }
+                .frame(height: 330)
+            }
+        }
+        .padding(.top, 2)
+        .onAppear {
+            notion.refresh()
+            DispatchQueue.main.async { focused = true }
+        }
+    }
+
+    private var setup: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Not connected to Notion yet.").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
+            Text("Perch needs a Notion access token saved at ~/.perch/notion-token, and the tasks database shared with that integration.")
+                .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.55)).fixedSize(horizontal: false, vertical: true)
+            Button("Check again") { notion.refresh() }.buttonStyle(ChipButton())
+        }
+        .padding(.horizontal, 6)
+    }
+}
+
+private struct TaskRow: View {
+    let task: TaskItem
+    @State private var hovered = false
+    @State private var ticking = false
+
+    private var dueText: (String, Color)? {
+        guard let due = task.due else { return nil }
+        let days = Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: Date()),
+                                                   to: Calendar.current.startOfDay(for: due)).day ?? 0
+        if days < 0 { return ("\(-days)d late", Palette.red) }
+        if days == 0 { return ("Today", Palette.amber) }
+        if days == 1 { return ("Tomorrow", .white.opacity(0.5)) }
+        if days < 7 { return (due.formatted(.dateTime.weekday(.abbreviated)), .white.opacity(0.45)) }
+        return (due.formatted(.dateTime.day().month(.abbreviated)), .white.opacity(0.4))
+    }
+
+    private var priorityColor: Color? {
+        switch task.priority {
+        case "Urgent": return Palette.red
+        case "High": return Palette.amber
+        default: return nil
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Button {
+                ticking = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { NotionTasks.shared.complete(task) }
+            } label: {
+                Image(systemName: ticking ? "checkmark.circle.fill" : "circle").font(.system(size: 13))
+                    .foregroundStyle(ticking ? Palette.green : .white.opacity(hovered ? 0.7 : 0.4))
+                    .frame(width: 18, height: 18).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("Mark as done")
+            Text(task.name).font(.system(size: 12)).foregroundStyle(.white.opacity(ticking ? 0.4 : 0.92))
+                .strikethrough(ticking).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            if let color = priorityColor { Circle().fill(color).frame(width: 6, height: 6) }
+            if let (text, color) = dueText {
+                Text(text).font(.system(size: 10.5)).foregroundStyle(color).lineLimit(1).layoutPriority(1)
+            }
+        }
+        .padding(.horizontal, 6).padding(.vertical, 4)
+        .background(.white.opacity(hovered ? 0.06 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { NotionTasks.shared.open(task) }
+        .onHover { hovered = $0 }
     }
 }
 
