@@ -21,6 +21,7 @@ struct NotchContent: View {
         // so the gap always stays lined up with the hardware notch.
         let extra = ui.expanded ? max(0, 340 - (l + ui.notch.width + r)) : 0
         let radius: CGFloat = ui.expanded ? 18 : 10
+        let openWidth = max(l + ui.notch.width + r, 340)
         let shape = UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
 
         VStack(spacing: 0) {
@@ -50,6 +51,9 @@ struct NotchContent: View {
         .animation(island, value: ui.selectedID)
         .animation(island, value: store.needing.count)
         .animation(island, value: l + r)
+        .onChange(of: [openWidth, r - l], initial: true) {
+            ui.controller?.openShapeChanged(width: openWidth, offset: (r - l) / 2)
+        }
         .onChange(of: store.attention) { ui.attention(store) }
         .onChange(of: store.needing.count) { _, count in ui.pendingChanged(count) }
     }

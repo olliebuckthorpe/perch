@@ -143,6 +143,9 @@ final class NotchController {
     let panel: NotchPanel
     private let ui = NotchUI.shared
     private var liveRect = CGRect.zero
+    /// Where the island will be once open: width, and how far its centre sits from the notch's.
+    private var openWidth: CGFloat = 340
+    private var openOffset: CGFloat = 0
     private var monitors: [Any] = []
     private static let canvas = CGSize(width: 720, height: 680)
 
@@ -152,7 +155,8 @@ final class NotchController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3)
+        // Above the menu bar even when it slides down over a full screen app.
+        panel.level = .popUpMenu
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         panel.isMovable = false
         panel.hidesOnDeactivate = false
@@ -217,15 +221,23 @@ final class NotchController {
         trackMouse()
     }
 
+    func openShapeChanged(width: CGFloat, offset: CGFloat) {
+        openWidth = width
+        openOffset = offset
+    }
+
     private func trackMouse() {
         let mouse = NSEvent.mouseLocation
         let frame = panel.frame
+        // Slack all round, and plenty upwards so pushing against the top edge still counts.
         let island = CGRect(x: frame.minX + liveRect.minX, y: frame.maxY - liveRect.maxY,
-                            width: liveRect.width, height: liveRect.height)
-        // A little slack upwards so the very top edge of the screen still counts.
-        let inside = island.insetBy(dx: -3, dy: -3).contains(mouse)
-        if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
-        ui.hover(inside)
+                            width: liveRect.width, height: liveRect.height + 20).insetBy(dx: -3, dy: -3)
+        // Closed, the whole strip above where the island opens is the trigger, not just the pill.
+        let strip = CGRect(x: frame.midX + openOffset - openWidth / 2, y: frame.maxY - ui.notch.height,
+                           width: openWidth, height: ui.notch.height + 20)
+        let onIsland = island.contains(mouse)
+        if panel.ignoresMouseEvents == onIsland { panel.ignoresMouseEvents = !onIsland }
+        ui.hover(onIsland || (!ui.expanded && strip.contains(mouse)))
     }
 
     /// Hand keyboard focus back to whatever the user was doing.
