@@ -6,30 +6,46 @@
 # behaves exactly as it would without the hook.
 
 SOCK="$HOME/.perch/perch.sock"
-[ -S "$SOCK" ] || exit 0
 
-case "$2" in
-  permission|ask) MAX=300 ;;
-  stop) MAX=590 ;;
-  wait) MAX=43000 ;;
-  *) MAX=2 ;;
-esac
+post() {
+  curl -s --unix-socket "$SOCK" --max-time "$1" -X POST \
+    -H "Content-Type: application/json" -H "Expect:" \
+    -H "X-Perch-Source: $SRC" -H "X-Perch-Mode: $MODE" \
+    -H "X-Perch-Entrypoint: ${CLAUDE_CODE_ENTRYPOINT:-}" \
+    -H "X-Perch-Term: ${TERM_PROGRAM:-}" \
+    -H "X-Perch-Headless: ${PERCH_HEADLESS:-0}" \
+    --data-binary @- http://perch/hook 2>/dev/null
+}
 
-OUT=$(curl -s --unix-socket "$SOCK" --max-time "$MAX" -X POST \
-  -H "Content-Type: application/json" -H "Expect:" \
-  -H "X-Perch-Source: $1" -H "X-Perch-Mode: ${2:-info}" \
-  -H "X-Perch-Entrypoint: ${CLAUDE_CODE_ENTRYPOINT:-}" \
-  -H "X-Perch-Term: ${TERM_PROGRAM:-}" \
-  -H "X-Perch-Headless: ${PERCH_HEADLESS:-0}" \
-  --data-binary @- http://perch/hook 2>/dev/null)
+SRC="$1"
+MODE="${2:-info}"
 
 # A waiter runs in the background after each turn. If a reply is typed in the notch while the
 # session is idle, exiting 2 wakes the session with that reply (Claude Code's asyncRewake).
-if [ "$2" = "wait" ]; then
-  [ -n "$OUT" ] || exit 0
-  printf '%s\n' "$OUT" >&2
-  exit 2
+# It reconnects if Perch restarts, and gives up once Perch has been gone for ten minutes.
+if [ "$MODE" = "wait" ]; then
+  BODY=$(cat)
+  GONE=0
+  while [ "$GONE" -lt 120 ]; do
+    if [ -S "$SOCK" ] && OUT=$(printf '%s' "$BODY" | post 43000); then
+      # Perch answered. Empty means a newer waiter took over for this session.
+      [ -n "$OUT" ] || exit 0
+      printf '%s\n' "$OUT" >&2
+      exit 2
+    fi
+    GONE=$((GONE + 1))
+    sleep 5
+  done
+  exit 0
 fi
 
-[ -n "$OUT" ] && printf '%s' "$OUT"
+[ -S "$SOCK" ] || exit 0
+
+case "$MODE" in
+  permission|ask) MAX=300 ;;
+  stop) MAX=590 ;;
+  *) MAX=2 ;;
+esac
+
+post "$MAX"
 exit 0
