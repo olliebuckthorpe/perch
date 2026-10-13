@@ -1761,6 +1761,8 @@ private struct ChatView: View {
                         Text(emoji).font(.system(size: 11))
                             .padding(.horizontal, 5).padding(.vertical, 1.5)
                             .background(.white.opacity(0.1), in: Capsule())
+                            // A new reaction lands with a little bounce.
+                            .modifier(PopIn(delay: 0))
                     }
                 }
             }
@@ -1980,35 +1982,93 @@ private struct AgentBubble: View {
     let text: String
     let react: ((String) -> Void)?
     @State private var hovered = false
+    @State private var picking = false
+    @State private var over: String?
+    @State private var chosen: String?
 
-    private static let quick = ["👍", "❤️", "😂", "🙏", "👀", "✅"]
+    private static let quick = ["👍", "❤️", "😂", "🙏", "👀", "🔥", "✅"]
+    private static let pop = Animation.spring(response: 0.3, dampingFraction: 0.6)
 
     var body: some View {
         HStack(spacing: 0) {
             MessageBody(text: text)
                 .padding(.horizontal, 11).padding(.vertical, 8)
                 .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            // Only while the pointer is on the message: one small, dim face. Clicking it opens
-            // a menu of reactions.
-            if let react {
-                Menu {
-                    ForEach(Self.quick, id: \.self) { emoji in
-                        Button(emoji) { react(emoji) }
-                    }
-                } label: {
-                    Image(systemName: "face.smiling").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+            // Only while the pointer is on the message: one small, dim face. Clicking it springs
+            // open a tray of reactions just above.
+            if react != nil {
+                Button { withAnimation(Self.pop) { picking.toggle() } } label: {
+                    Image(systemName: picking ? "face.smiling.inverse" : "face.smiling").font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(picking ? 0.9 : 0.45))
+                        .rotationEffect(.degrees(picking ? -14 : 0))
+                        .scaleEffect(picking ? 1.2 : 1)
                         .frame(width: 26, height: 24).contentShape(Rectangle())
                 }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .buttonStyle(Press(reach: 4))
                 .padding(.leading, 2)
-                .opacity(hovered ? 1 : 0)
+                .opacity(hovered || picking ? 1 : 0)
+                .overlay(alignment: .bottomLeading) {
+                    if picking { tray.offset(x: -6, y: -26).transition(.scale(scale: 0.4, anchor: .bottomLeading).combined(with: .opacity)) }
+                }
             }
             Spacer(minLength: 28)
         }
         // The whole row counts as "on the message", including the gap between the bubble and
         // the face, so the face does not vanish on the way over to it.
         .contentShape(Rectangle())
-        .onHover { hovered = $0 }
+        .onHover { inside in
+            hovered = inside
+            // Wandering off closes the tray after a moment, unless the pointer comes back.
+            if !inside, picking {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    if !hovered, over == nil { withAnimation(.easeOut(duration: 0.15)) { picking = false } }
+                }
+            }
+        }
+        .zIndex(picking ? 5 : 0)
+    }
+
+    /// The reactions, popping in one after another. Each swells under the pointer, and the one
+    /// picked jumps before the tray closes.
+    private var tray: some View {
+        HStack(spacing: 2) {
+            ForEach(Array(Self.quick.enumerated()), id: \.element) { index, emoji in
+                Text(emoji).font(.system(size: 17))
+                    .scaleEffect(chosen == emoji ? 1.7 : over == emoji ? 1.4 : 1, anchor: .bottom)
+                    .offset(y: chosen == emoji ? -8 : over == emoji ? -3 : 0)
+                    .frame(width: 28, height: 28).contentShape(Rectangle())
+                    .onHover { inside in withAnimation(.spring(response: 0.2, dampingFraction: 0.6)) { over = inside ? emoji : (over == emoji ? nil : over) } }
+                    .onTapGesture { pick(emoji) }
+                    .modifier(PopIn(delay: Double(index) * 0.028))
+            }
+        }
+        .padding(.horizontal, 6).padding(.vertical, 3)
+        .background(Color(white: 0.2), in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.5), radius: 8, y: 3)
+        .fixedSize()
+    }
+
+    private func pick(_ emoji: String) {
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.5)) { chosen = emoji }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+            react?(emoji)
+            withAnimation(.easeOut(duration: 0.16)) { picking = false }
+            chosen = nil
+            over = nil
+        }
+    }
+}
+
+/// Springs a view up from nothing a moment after it appears.
+private struct PopIn: ViewModifier {
+    let delay: Double
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(shown ? 1 : 0.2).opacity(shown ? 1 : 0)
+            .onAppear { withAnimation(.spring(response: 0.3, dampingFraction: 0.55).delay(delay)) { shown = true } }
     }
 }
 

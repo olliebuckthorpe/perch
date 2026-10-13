@@ -369,6 +369,8 @@ final class CodingSessions {
         if agent.status == .working, agent.pending == nil {
             // Mid-turn with no way in right now: hold it for the next opening, a moment away.
             agent.queued.append(text)
+            // Written down at once: a message waiting for its turn must survive Perch restarting.
+            store.save()
             return
         }
         if let pending = agent.pending, case .followUp = pending.kind, agent.source == .codex {

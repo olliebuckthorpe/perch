@@ -156,6 +156,7 @@ final class AgentStore {
             row["cwd"] = a.cwd
             row["transcript"] = a.transcriptPath
             row["host"] = a.hostBundleID
+            if !a.queued.isEmpty { row["queued"] = a.queued }
             return row
         }
         guard let data = try? JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys]),
@@ -183,6 +184,7 @@ final class AgentStore {
             a.cwd = row["cwd"] as? String
             a.transcriptPath = row["transcript"] as? String
             a.hostBundleID = row["host"] as? String
+            a.queued = row["queued"] as? [String] ?? []
             a.lastActivity = at
         }
     }
