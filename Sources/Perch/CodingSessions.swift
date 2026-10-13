@@ -18,7 +18,57 @@ final class CodingSessions {
         "alacritty": "org.alacritty",
     ]
 
+    private var titled = Set<String>()
+
+    /// Sessions that were already open before Perch launched have not sent a hook yet,
+    /// so pick up the recently active ones from their transcripts.
+    private func seed() {
+        let root = "\(Shell.home)/.claude/projects"
+        let fm = FileManager.default
+        let now = Date()
+        for project in (try? fm.contentsOfDirectory(atPath: root)) ?? [] {
+            for file in (try? fm.contentsOfDirectory(atPath: "\(root)/\(project)")) ?? [] where file.hasSuffix(".jsonl") {
+                let path = "\(root)/\(project)/\(file)"
+                guard let mtime = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date,
+                      now.timeIntervalSince(mtime) < 30 * 60 else { continue }
+                let info = Self.transcriptInfo(path)
+                // Untitled transcripts are one-off background runs, not sessions you would recognise.
+                guard let title = info.title else { continue }
+                let agent = store.upsert(source: .claude, sessionID: String(file.dropLast(6)), name: title)
+                agent.cwd = info.cwd
+                agent.hostBundleID = Self.claudeBundleID
+                agent.lastActivity = mtime
+                titled.insert(agent.id)
+            }
+        }
+    }
+
+    /// The session title and working directory, read from the end of a Claude Code transcript.
+    static func transcriptInfo(_ path: String) -> (title: String?, cwd: String?) {
+        guard let h = FileHandle(forReadingAtPath: path) else { return (nil, nil) }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        let span: UInt64 = 400 << 10
+        try? h.seek(toOffset: size > span ? size - span : 0)
+        guard let data = try? h.readToEnd() else { return (nil, nil) }
+        var title: String?
+        var cwd: String?
+        for line in String(decoding: data, as: UTF8.self).split(separator: "\n").reversed() {
+            if title == nil, line.contains("\"custom-title\"") || line.contains("\"agent-name\""),
+               let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] {
+                title = o["customTitle"] as? String ?? o["agentName"] as? String
+            }
+            if cwd == nil, line.contains("\"cwd\""), line.count < 200_000,
+               let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] {
+                cwd = o["cwd"] as? String
+            }
+            if title != nil && cwd != nil { break }
+        }
+        return (title, cwd)
+    }
+
     func start() {
+        seed()
         // Coming back to the agent's own app means you will answer there, so let go of anything held.
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
@@ -47,7 +97,16 @@ final class CodingSessions {
         if !headless { agent.hostBundleID = hostBundle(source: source, headers: req.headers) }
         agent.lastActivity = Date()
         agent.ended = false
-        if let title = j["session_title"] as? String, !title.isEmpty { agent.name = title }
+        if let title = j["session_title"] as? String, !title.isEmpty {
+            agent.name = title
+        } else if source == .claude, let path = j["transcript_path"] as? String,
+                  !titled.contains(agent.id) || event == "UserPromptSubmit" || event == "Stop" {
+            // Claude Code names a session a little after it starts, so look again at turn boundaries.
+            if let title = Self.transcriptInfo(path).title {
+                agent.name = title
+                titled.insert(agent.id)
+            }
+        }
 
         let tool = j["tool_name"] as? String ?? ""
         let input = j["tool_input"] as? [String: Any] ?? [:]

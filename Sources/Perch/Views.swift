@@ -88,6 +88,8 @@ private struct ExpandedBody: View {
 
     @ViewBuilder private var roster: some View {
         let sessions = store.sessions
+        // Everything active, topped up with the most recent quiet ones.
+        let shown = max(4, sessions.filter { $0.status != .idle }.count)
         Group {
             SectionHeader("Sessions")
             if sessions.isEmpty {
@@ -96,10 +98,10 @@ private struct ExpandedBody: View {
                     .padding(.horizontal, 8)
             } else {
                 VStack(spacing: 0) {
-                    ForEach(sessions.prefix(8)) { AgentRow(agent: $0) }
+                    ForEach(sessions.prefix(shown)) { AgentRow(agent: $0) }
                 }
-                if sessions.count > 8 {
-                    Text("and \(sessions.count - 8) more").font(.system(size: 11))
+                if sessions.count > shown {
+                    Text("and \(sessions.count - shown) quiet").font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.4)).padding(.horizontal, 8)
                 }
             }
