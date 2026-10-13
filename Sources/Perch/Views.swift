@@ -808,13 +808,19 @@ private struct ChatView: View {
                         Spacer(minLength: 50)
                         text.foregroundStyle(.white)
                             .padding(.horizontal, 10).padding(.vertical, 6)
-                            .background(.white.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .background(.white.opacity(0.17), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                 }
             } else if let email = message.email {
                 EmailCard(draft: email, agent: agent)
             } else {
-                MessageBody(text: parts.text)
+                // The agent's side: a quieter bubble on the left, yours brighter on the right.
+                HStack(spacing: 0) {
+                    MessageBody(text: parts.text)
+                        .padding(.horizontal, 10).padding(.vertical, 7)
+                        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    Spacer(minLength: 28)
+                }
             }
             if !message.reactions.isEmpty {
                 // Reactions the agent (or you) left on this message in Grok Bot.
