@@ -54,6 +54,110 @@ extension Agent {
     var color: Color { avatarColor.flatMap { Palette.grok[$0] } ?? Palette.color(colorIndex) }
 }
 
+/// Where a Grok bot's eyes are, as fractions of the face. Moving between poses is what makes
+/// the face look like a ball rolling: the eyes slide, tilt, and change size and roundness.
+struct EyePose: Equatable {
+    var step = 0
+    var x: CGFloat
+    var y: CGFloat
+    var tilt: Double
+    var w: CGFloat
+    var h: CGFloat
+    var gap: CGFloat
+    /// The far eye is a little smaller, as it would be on a ball turned away.
+    var far: CGFloat = 1
+
+    static let rest = EyePose(x: 0.15, y: -0.19, tilt: -24, w: 0.10, h: 0.23, gap: 0.21, far: 0.74)
+    static let facing = EyePose(x: 0, y: -0.02, tilt: 0, w: 0.115, h: 0.27, gap: 0.31)
+
+    /// The look-around Grok Bot's avatars do: face left, swing up close, go wide-eyed looking
+    /// left then down, look straight out for a moment, and roll back to rest.
+    static let lookAround: [EyePose] = [
+        rest,
+        EyePose(step: 1, x: -0.22, y: -0.02, tilt: -4, w: 0.105, h: 0.26, gap: 0.29),
+        EyePose(step: 2, x: -0.22, y: -0.02, tilt: -4, w: 0.105, h: 0.26, gap: 0.29),
+        EyePose(step: 3, x: 0.13, y: -0.15, tilt: -32, w: 0.15, h: 0.36, gap: 0.3, far: 0.85),
+        EyePose(step: 4, x: 0.13, y: -0.15, tilt: -32, w: 0.15, h: 0.36, gap: 0.3, far: 0.85),
+        EyePose(step: 5, x: -0.2, y: -0.06, tilt: -8, w: 0.25, h: 0.2, gap: 0.33, far: 0.9),
+        EyePose(step: 6, x: -0.2, y: -0.06, tilt: -8, w: 0.25, h: 0.2, gap: 0.33, far: 0.9),
+        EyePose(step: 7, x: -0.17, y: 0.2, tilt: -22, w: 0.25, h: 0.19, gap: 0.33, far: 0.9),
+        EyePose(step: 8, x: -0.17, y: 0.2, tilt: -22, w: 0.25, h: 0.19, gap: 0.33, far: 0.9),
+        EyePose(step: 9, x: 0, y: -0.02, tilt: 0, w: 0.115, h: 0.27, gap: 0.31),
+        EyePose(step: 10, x: 0, y: -0.02, tilt: 0, w: 0.115, h: 0.27, gap: 0.31),
+    ]
+
+    /// How long the move into each step takes. Repeated poses are the holds.
+    var duration: Double {
+        switch step {
+        case 1: return 0.5
+        case 2: return 0.45
+        case 3: return 0.4
+        case 4: return 0.25
+        case 5: return 0.16
+        case 6: return 0.3
+        case 7: return 0.5
+        case 8: return 0.25
+        case 9: return 0.32
+        case 10: return 1.0
+        default: return 0.42
+        }
+    }
+}
+
+/// The two eyes. They rest in the corner, turn to face the pointer when it is over them, and
+/// every so often (more often while the bot is working) play the look-around.
+struct GrokEyes: View {
+    let size: CGFloat
+    let lively: Bool
+    @State private var plays = 0
+    @State private var hovered = false
+    @State private var timer: Timer?
+
+    var body: some View {
+        Group {
+            if hovered {
+                eyes(.facing)
+            } else {
+                PhaseAnimator(EyePose.lookAround, trigger: plays) { pose in
+                    eyes(pose)
+                } animation: { pose in
+                    .easeInOut(duration: pose.duration)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .contentShape(Circle())
+        .onHover { over in withAnimation(.easeOut(duration: 0.18)) { hovered = over } }
+        .onAppear { schedule(first: true) }
+        .onDisappear { timer?.invalidate() }
+        .onChange(of: lively) { schedule(first: false) }
+    }
+
+    private func eyes(_ pose: EyePose) -> some View {
+        HStack(spacing: 0) {
+            Capsule().fill(.white).frame(width: size * pose.w, height: size * pose.h)
+            Spacer(minLength: 0)
+            Capsule().fill(.white).frame(width: size * pose.w * pose.far, height: size * pose.h * pose.far)
+        }
+        .frame(width: size * (pose.gap + pose.w))
+        .rotationEffect(.degrees(pose.tilt))
+        .offset(x: size * pose.x, y: size * pose.y)
+    }
+
+    /// Plays the look-around shortly after appearing, then at loose intervals: every few seconds
+    /// while working, otherwise now and then. Between plays nothing is running at all.
+    private func schedule(first: Bool) {
+        timer?.invalidate()
+        let wait = first ? Double.random(in: 0.5...1.4) : lively ? Double.random(in: 6...9) : Double.random(in: 28...60)
+        let t = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { _ in
+            plays += 1
+            schedule(first: false)
+        }
+        t.tolerance = first ? 0.2 : 2
+        timer = t
+    }
+}
+
 /// Codex's cloud: a soft, bumpy blob in a blue-to-violet wash with a white `>_` prompt on it.
 struct CodexMark: View {
     private struct Cloud: Shape {
@@ -209,30 +313,13 @@ struct FaceView: View {
         .overlay(alignment: .topTrailing) { badge.offset(x: size * 0.16, y: -size * 0.12) }
     }
 
-    /// Grok Bot's own look: a round blob with two tilted highlight eyes, top right.
+    /// Grok Bot's own look: a round blob whose two highlight eyes move as if painted on a ball.
     @ViewBuilder private var grokBody: some View {
         let black = agent.avatarColor == "black"
         Circle().fill(black ? Color.black : agent.color)
             // A black blob needs an edge to show up against the island.
             .overlay(Circle().strokeBorder(.white.opacity(black ? 0.9 : 0), lineWidth: max(1.2, size * 0.07)))
-        if agent.status == .working {
-            TimelineView(.periodic(from: .now, by: 1.1)) { context in
-                let step = Int(context.date.timeIntervalSinceReferenceDate / 1.1) % 4
-                grokEyes.offset(x: [-1.0, 0, 1.0, 0][step] * size * 0.05)
-                    .animation(.easeInOut(duration: 0.3), value: step)
-            }
-        } else {
-            grokEyes
-        }
-    }
-
-    private var grokEyes: some View {
-        ZStack {
-            Capsule().fill(.white).frame(width: size * 0.10, height: size * 0.24)
-                .rotationEffect(.degrees(-24)).offset(x: size * 0.05, y: -size * 0.16)
-            Capsule().fill(.white).frame(width: size * 0.09, height: size * 0.17)
-                .rotationEffect(.degrees(-24)).offset(x: size * 0.25, y: -size * 0.22)
-        }
+        GrokEyes(size: size, lively: agent.status == .working)
     }
 
     private var bodyShape: AnyShape {
