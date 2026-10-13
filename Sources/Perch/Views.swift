@@ -5,6 +5,8 @@ private let faceSize: CGFloat = 16
 private let maxFaces = 7
 private let island = Animation.spring(response: 0.34, dampingFraction: 0.88)
 
+private let dialWidth: CGFloat = 24
+
 private func earWidth(_ count: Int) -> CGFloat {
     count == 0 ? 0 : CGFloat(count) * faceSize + CGFloat(count - 1) * 4 + 16
 }
@@ -18,7 +20,11 @@ struct NotchContent: View {
         // Every chat that is in the sidebar sits in the notch too, idle ones included (they just
         // sit still). Only chats the user has cleared are left out.
         let right = Array(store.sessions.filter { !ui.isDismissed($0) }.prefix(maxFaces))
-        let l = earWidth(left.count), r = earWidth(right.count)
+        // A small usage dial sits at the outer end of each side: Grok Bot's by the bots, Claude's
+        // by the chats.
+        let usage = Usage.shared
+        let grokDial = usage.grok.week != nil, claudeDial = usage.claude.short != nil || usage.claude.week != nil
+        let l = earWidth(left.count) + (grokDial ? dialWidth : 0), r = earWidth(right.count) + (claudeDial ? dialWidth : 0)
         // Opened, the island is at least 340 wide; the extra is shared between both sides
         // so the gap always stays lined up with the hardware notch.
         // A chat needs more room than the roster.
@@ -30,9 +36,19 @@ struct NotchContent: View {
 
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                Ear(agents: left).frame(width: l + extra / 2, alignment: .trailing)
+                HStack(spacing: 0) {
+                    if grokDial { UsageDial(plan: usage.grok, name: "Grok Bot", color: .white).padding(.leading, 10) }
+                    Ear(agents: left)
+                }
+                .frame(width: l + extra / 2, alignment: .trailing)
                 Color.clear.frame(width: ui.notch.width)
-                Ear(agents: right).frame(width: r + extra / 2, alignment: .leading)
+                HStack(spacing: 0) {
+                    Ear(agents: right)
+                    if claudeDial {
+                        UsageDial(plan: usage.claude, name: "Claude", color: Color(red: 0.85, green: 0.47, blue: 0.34)).padding(.trailing, 10)
+                    }
+                }
+                .frame(width: r + extra / 2, alignment: .leading)
             }
             .frame(height: ui.notch.height)
 
@@ -409,35 +425,28 @@ private let tabSwitch = Animation.spring(response: 0.34, dampingFraction: 0.86)
 
 // MARK: Usage
 
-/// Two small dials, one per subscription. The outer ring is the five hour window, the inner
-/// one the week. Hover for the numbers and when each resets.
-private struct UsageRings: View {
+/// A small dial for one subscription. The outer ring is the short window when there is one
+/// (Claude's five hours), with the week inside it; a plan with only a weekly allowance gets
+/// the one ring. Hover for the numbers and when each resets.
+private struct UsageDial: View {
+    let plan: Usage.Plan
+    let name: String
+    let color: Color
+
     var body: some View {
-        let usage = Usage.shared
-        HStack(spacing: 7) {
-            if usage.claude.short != nil || usage.claude.week != nil {
-                dial(usage.claude, name: "Claude", color: Color(red: 0.85, green: 0.47, blue: 0.34))
-            }
-            if usage.codex.short != nil || usage.codex.week != nil {
-                dial(usage.codex, name: "Codex", color: Color(red: 0.50, green: 0.47, blue: 0.98))
-            }
-        }
-    }
-
-    private func dial(_ plan: Usage.Plan, name: String, color: Color) -> some View {
-        let short = (plan.short?.current ?? 0) / 100, week = (plan.week?.current ?? 0) / 100
-        return ZStack {
-            ring(short, color: color, width: 2.6).frame(width: 20, height: 20)
-            ring(week, color: color.opacity(0.75), width: 2.2).frame(width: 11.5, height: 11.5)
-        }
-        .frame(width: 22, height: 22)
-        .reach(2, 8)
-        .help(describe(plan, name: name))
-    }
-
-    private func ring(_ part: Double, color: Color, width: CGFloat) -> some View {
+        let outer = plan.short ?? plan.week, inner = plan.short == nil ? nil : plan.week
         ZStack {
-            Circle().stroke(.white.opacity(0.12), lineWidth: width)
+            ring((outer?.current ?? 0) / 100, width: 2.2).frame(width: 13, height: 13)
+            if let inner { ring(inner.current / 100, width: 2).frame(width: 6, height: 6) }
+        }
+        .frame(width: 14, height: 14)
+        .reach(4, 9)
+        .help(describe)
+    }
+
+    private func ring(_ part: Double, width: CGFloat) -> some View {
+        ZStack {
+            Circle().stroke(.white.opacity(0.16), lineWidth: width)
             Circle().trim(from: 0, to: max(0.001, min(1, part)))
                 .stroke(part > 0.9 ? Palette.red : color, style: StrokeStyle(lineWidth: width, lineCap: .round))
                 .rotationEffect(.degrees(-90))
@@ -445,7 +454,7 @@ private struct UsageRings: View {
         }
     }
 
-    private func describe(_ plan: Usage.Plan, name: String) -> String {
+    private var describe: String {
         func line(_ label: String, _ w: Usage.Window?) -> String? {
             guard let w else { return nil }
             var s = "\(label): \(Int(w.current.rounded()))% used"
@@ -480,7 +489,6 @@ private struct TopBar: View {
                 withAnimation(tabSwitch) { ui.showingTasks = true }
             }
             Spacer(minLength: 8)
-            UsageRings().padding(.trailing, 6)
             ForEach(profiles) { profile in
                 ProfileAvatar(profile: profile, size: 22)
                     .scaleEffect(hovered == profile.id ? 1.14 : 1)

@@ -35,6 +35,9 @@ final class GrokSource {
             agent.hostBundleID = Self.bundleID
         }
         startBridge()
+        refreshUsage()
+        let usageTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.refreshUsage() }
+        usageTimer.tolerance = 60
         refresh()
         // Safety net in case the event stream drops something.
         timer = Timer.scheduledTimer(withTimeInterval: 45, repeats: true) { [weak self] _ in self?.refresh() }
@@ -347,6 +350,14 @@ final class GrokSource {
     }
 
     // MARK: Image upload (still through the CLI, which knows the upload service)
+
+    /// How much of the week's Grok Bot allowance is used. Read-only, every ten minutes.
+    private func refreshUsage() {
+        cli(["cursor", "rpc", "--service", "aiserver.v1.DashboardService", "GetSandUsageStatus", "{}"]) { code, out in
+            guard code == 0, let json = try? JSONSerialization.jsonObject(with: Data(out.utf8)) as? [String: Any] else { return }
+            Usage.shared.takeGrok(json)
+        }
+    }
 
     private func cli(_ args: [String], completion: @escaping (Int32, String) -> Void) {
         guard let node, let cli else { completion(-1, ""); return }

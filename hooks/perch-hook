@@ -6,7 +6,8 @@
 # behaves exactly as it would without the hook.
 
 # Perch's own helper runs (writing a chat title, for one) are not chats and stay out of the notch.
-[ -n "$PERCH_SKIP" ] && exit 0
+# The one exception is the status line, which only carries how much of the plan is used.
+[ -n "$PERCH_SKIP" ] && [ "$2" != "status" ] && exit 0
 
 SOCK="$HOME/.perch/perch.sock"
 

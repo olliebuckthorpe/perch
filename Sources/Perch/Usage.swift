@@ -24,8 +24,24 @@ final class Usage {
 
     private(set) var claude = Plan()
     private(set) var codex = Plan()
+    /// Grok Bot has one allowance, counted over the week.
+    private(set) var grok = Plan()
+
+    /// Grok Bot's own usage status: a percentage and when the week resets.
+    func takeGrok(_ json: [String: Any]) {
+        guard let percent = (json["usagePercent"] as? NSNumber)?.doubleValue else { return }
+        let resets = (json["nextResetTimestampUtc"] as? String).flatMap { s -> Date? in
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+        }
+        let plan = Plan(short: nil, week: Window(used: percent, resets: resets), at: Date())
+        if plan.week != grok.week { grok = plan }
+        Self.save(plan, "usageGrok")
+    }
 
     private init() {
+        grok = Self.load("usageGrok")
         claude = Self.load("usageClaude")
         codex = Self.load("usageCodex")
     }
