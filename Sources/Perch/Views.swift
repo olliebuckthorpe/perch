@@ -1641,6 +1641,10 @@ private struct ChatView: View {
                 FileCard(name: name, path: path, agent: agent)
             } else if let email = message.email {
                 EmailCard(draft: email, agent: agent)
+            } else if let choice = message.choice {
+                // Answered once you have said anything after it, by picking or by typing.
+                let asked = messages.firstIndex { $0.id == message.id } ?? 0
+                ChoiceCard(choice: choice, agent: agent, answered: messages.dropFirst(asked + 1).contains { $0.fromUser })
             } else {
                 // The agent's side: a quieter bubble on the left, yours brighter on the right.
                 AgentBubble(text: parts.text, react: agent.source == .grok && !message.id.hasPrefix("local-") ? { emoji in
@@ -2016,6 +2020,60 @@ private struct MessageBody: View {
         .padding(.horizontal, 9).padding(.vertical, 3)
         .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.white.opacity(0.1), lineWidth: 1))
+    }
+}
+
+/// A question from an agent with options to pick from. Picking one sends it as your reply;
+/// the reply box underneath is there for an answer of your own.
+private struct ChoiceCard: View {
+    let choice: ChoiceWidget
+    let agent: Agent
+    let answered: Bool
+    @State private var hovered: String?
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(choice.prompt).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white.opacity(0.95))
+                    .fixedSize(horizontal: false, vertical: true)
+                VStack(spacing: 0) {
+                    ForEach(Array(choice.options.enumerated()), id: \.offset) { index, option in
+                        if index > 0 { Rectangle().fill(.white.opacity(0.08)).frame(height: 1) }
+                        Button { GrokSource.shared.send(agent, text: option.value) } label: {
+                            HStack(alignment: .top, spacing: 9) {
+                                Text(String(UnicodeScalar(UInt8(65 + min(index, 25)))))
+                                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(.white.opacity(0.6))
+                                    .frame(width: 18, height: 18)
+                                    .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option.label).font(.system(size: 12.5, weight: .medium)).foregroundStyle(.white)
+                                    if !option.detail.isEmpty {
+                                        Text(option.detail).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.55))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                            .background(.white.opacity(hovered == option.label && !answered ? 0.07 : 0))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(Press(reach: 0))
+                        .onHover { hovered = $0 ? option.label : (hovered == option.label ? nil : hovered) }
+                    }
+                }
+                .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .disabled(answered)
+                Text(answered ? "Answered" : "Pick one, or type your own answer below.")
+                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.35))
+            }
+            .padding(11)
+            .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .opacity(answered ? 0.6 : 1)
+            Spacer(minLength: 28)
+        }
     }
 }
 

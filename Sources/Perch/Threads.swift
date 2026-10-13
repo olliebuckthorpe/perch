@@ -13,12 +13,24 @@ struct EmailDraft: Equatable {
     var superseded = false
 }
 
+/// A question an agent put to the user as a set of options to pick from.
+struct ChoiceWidget: Equatable {
+    struct Option: Equatable {
+        let label: String
+        let value: String
+        let detail: String
+    }
+    var prompt = ""
+    var options: [Option] = []
+}
+
 struct ChatMessage: Identifiable, Equatable {
     var id: String
     let fromUser: Bool
     let text: String
     var reactions: [String] = []
     var email: EmailDraft?
+    var choice: ChoiceWidget?
     /// Set when this is one agent talking to another, not part of the conversation with the user.
     /// A file the agent attached: its name, and where it lives on the agent's own computer.
     var fileName: String?

@@ -245,6 +245,16 @@ final class GrokSource {
                         let name = message["file_name"] as? String ?? URL(fileURLWithPath: path).lastPathComponent
                         return ChatMessage(id: id, fromUser: false, text: name, reactions: reactions, fileName: name, filePath: path)
                     }
+                    if message["type"] as? String == "widget", let w = message["widget"] as? [String: Any],
+                       let raw = w["options"] as? [[String: Any]], !raw.isEmpty {
+                        let options = raw.compactMap { o -> ChoiceWidget.Option? in
+                            guard let label = o["label"] as? String else { return nil }
+                            return .init(label: label, value: o["value"] as? String ?? label, detail: o["description"] as? String ?? "")
+                        }
+                        let prompt = w["prompt"] as? String ?? ""
+                        return ChatMessage(id: id, fromUser: false, text: prompt, reactions: reactions,
+                                           choice: ChoiceWidget(prompt: prompt, options: options))
+                    }
                     // Some other kind of card the notch cannot draw yet: say so, do not hide it.
                     guard let type = message["type"] as? String else { return nil }
                     return ChatMessage(id: id, fromUser: false, text: "_Sent a \(type.replacingOccurrences(of: "-", with: " ")). Open Grok Bot to see it._", reactions: reactions)
