@@ -109,9 +109,8 @@ struct EyePose: Equatable {
 struct GrokEyes: View {
     let size: CGFloat
     let lively: Bool
-    @State private var plays = 0
     @State private var hovered = false
-    @State private var timer: Timer?
+    private var plays: Int { lively ? EyeClock.shared.lively : EyeClock.shared.calm }
 
     var body: some View {
         Group {
@@ -128,9 +127,6 @@ struct GrokEyes: View {
         .frame(width: size, height: size)
         .contentShape(Circle())
         .onHover { over in withAnimation(.easeOut(duration: 0.18)) { hovered = over } }
-        .onAppear { schedule(first: true) }
-        .onDisappear { timer?.invalidate() }
-        .onChange(of: lively) { schedule(first: false) }
     }
 
     private func eyes(_ pose: EyePose) -> some View {
@@ -143,18 +139,29 @@ struct GrokEyes: View {
         .rotationEffect(.degrees(pose.tilt))
         .offset(x: size * pose.x, y: size * pose.y)
     }
+}
 
-    /// Plays the look-around shortly after appearing, then at loose intervals: every few seconds
-    /// while working, otherwise now and then. Between plays nothing is running at all.
-    private func schedule(first: Bool) {
-        timer?.invalidate()
-        let wait = first ? Double.random(in: 0.5...1.4) : lively ? Double.random(in: 6...9) : Double.random(in: 28...60)
-        let t = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { _ in
-            plays += 1
-            schedule(first: false)
+/// One clock for every pair of eyes, so the same bot shown in several places (the notch, the
+/// sidebar, the chat header) looks around in step instead of each copy doing its own thing.
+@Observable
+final class EyeClock {
+    static let shared = EyeClock()
+    private(set) var calm = 0
+    private(set) var lively = 0
+
+    private init() {
+        tick(lively: false, after: 1)
+        tick(lively: true, after: 1)
+    }
+
+    /// Every few seconds for bots that are working, otherwise now and then.
+    private func tick(lively: Bool, after wait: Double) {
+        let t = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            if lively { self.lively += 1 } else { self.calm += 1 }
+            self.tick(lively: lively, after: lively ? Double.random(in: 6...9) : Double.random(in: 28...60))
         }
-        t.tolerance = first ? 0.2 : 2
-        timer = t
+        t.tolerance = 0.2
     }
 }
 

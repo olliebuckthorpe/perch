@@ -122,6 +122,9 @@ final class NotchUI {
         guard inside != hovering else { return }
         hovering = inside
         if inside {
+            // The banner dropped down onto a pointer that was already there. That is not someone
+            // coming up to read it, so it stays a banner and still times out.
+            if expanded, cardsOnly, noticeID != nil, !noticeArmed { return }
             collapseWork?.cancel()
             autoOpened = false
             if expanded, cardsOnly, let id = noticeID {
@@ -134,6 +137,9 @@ final class NotchUI {
                     self.browsing = false
                     self.selectedID = id
                     self.focusReply = false
+                    // Opening it this way is reading it, same as a click.
+                    UserDefaults.standard.set(id, forKey: "lastChat")
+                    self.markSeen(id)
                 }
                 expandWork = work
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
@@ -149,6 +155,7 @@ final class NotchUI {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
         } else {
             expandWork?.cancel()
+            noticeArmed = true
             scheduleCollapse(after: 0.22)
         }
     }
@@ -307,6 +314,8 @@ final class NotchUI {
 
     /// The agent a self-opened summary banner is about.
     private(set) var noticeID: String?
+    /// Hovering only opens a banner once the pointer has been seen away from it.
+    @ObservationIgnored private var noticeArmed = true
 
     /// Something wants the user: drop down a short summary, like a notification. It shows for a
     /// few seconds and tucks away unless the pointer has come up to it; clicking it opens the
@@ -317,6 +326,14 @@ final class NotchUI {
         guard pendingLinks.isEmpty else { return }
         // Already open and in use: do not pull the view out from under the user.
         if expanded && !autoOpened { return }
+        if !expanded || noticeID != id {
+            noticeArmed = false
+            // Once it has finished dropping, a pointer that is clear of it can come up and open it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+                guard let self, self.noticeID == id, !self.hovering else { return }
+                self.noticeArmed = true
+            }
+        }
         autoOpened = true
         cardsOnly = true
         noticeID = id
@@ -324,7 +341,7 @@ final class NotchUI {
         expanded = true
         collapseWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.autoOpened || self.cardsOnly, !self.hovering, !self.typing else { return }
+            guard let self, self.autoOpened || self.cardsOnly, !(self.hovering && self.noticeArmed), !self.typing else { return }
             self.collapse()
         }
         collapseWork = work
