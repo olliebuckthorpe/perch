@@ -24,6 +24,8 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Perch listens while you dictate a reply to an agent.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Perch turns what you say into the text of your reply.</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>

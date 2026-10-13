@@ -24,7 +24,15 @@ enum Threads {
                     // Keep anything just sent from the notch that the file has not caught up with.
                     let known = Set(messages.filter(\.fromUser).map(\.text))
                     let unsent = agent.thread.filter { $0.id.hasPrefix("local-") && !known.contains($0.text) }
-                    agent.thread = messages + unsent
+                    var thread = messages + unsent
+                    // The transcript can trail the session by a moment, so make sure the answer
+                    // the session just gave is there even if the file has not caught up.
+                    let latest = agent.lastMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if agent.status == .done, !latest.isEmpty,
+                       !messages.suffix(4).contains(where: { !$0.fromUser && $0.text.prefix(80) == latest.prefix(80) }) {
+                        thread.append(ChatMessage(id: "latest", fromUser: false, text: latest))
+                    }
+                    agent.thread = thread
                 }
             }
         }

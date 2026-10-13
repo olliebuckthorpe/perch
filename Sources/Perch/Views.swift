@@ -87,9 +87,10 @@ private struct ExpandedBody: View {
             if let id = ui.selectedID, let agent = store.find(id) {
                 ChatView(agent: agent)
             } else {
-                ForEach(store.needing) { PendingCard(agent: $0) }
+                let asks = store.needing.filter { if case .followUp = $0.pending!.kind { return false } else { return true } }
+                ForEach(asks) { PendingCard(agent: $0) }
                 // Opened by itself to ask something: show just the ask, not the whole roster.
-                if !(ui.cardsOnly && !store.needing.isEmpty) { roster }
+                if !(ui.cardsOnly && !asks.isEmpty) { roster }
             }
         }
         .padding(.horizontal, 8)
@@ -203,8 +204,18 @@ private struct ChatView: View {
                 .frame(height: min(max(contentHeight, 30), 400))
                 .onChange(of: messages.last?.id) { proxy.scrollTo("end", anchor: .bottom) }
             }
-            if agent.pending != nil {
-                PendingCard(agent: agent)
+            if let pending = agent.pending {
+                if case .followUp = pending.kind {
+                    // Just finished: offer the usual nudges above the reply box.
+                    HStack(spacing: 6) {
+                        ForEach(["Keep going", "Run the tests"], id: \.self) { quick in
+                            Button(quick) { CodingSessions.shared.reply(agent, text: quick) }.buttonStyle(ChipButton())
+                        }
+                    }
+                    ReplyField(agent: agent, autofocus: true)
+                } else {
+                    PendingCard(agent: agent)
+                }
             } else {
                 ReplyField(agent: agent, autofocus: true)
             }
@@ -310,6 +321,8 @@ private struct ReplyField: View {
     private var busy: Bool { agent.source != .grok && agent.status == .working && agent.pending == nil }
 
     private var placeholder: String {
+        if let problem = Dictation.shared.problem { return problem }
+        if Dictation.shared.activeAgentID == agent.id { return "Listening…" }
         if agent.source == .grok { return "Message \(agent.name), paste images too" }
         if busy { return "Busy. Reply when it finishes." }
         if agent.pending != nil { return "Tell it what to do next" }
@@ -320,6 +333,7 @@ private struct ReplyField: View {
         let draft = Binding(get: { ui.drafts[agent.id] ?? "" }, set: { ui.drafts[agent.id] = $0 })
         let files = ui.attachments[agent.id] ?? []
         let empty = draft.wrappedValue.isEmpty && files.isEmpty
+        let listening = Dictation.shared.activeAgentID == agent.id
         VStack(alignment: .leading, spacing: 6) {
             if !files.isEmpty {
                 HStack(spacing: 6) {
@@ -344,6 +358,13 @@ private struct ReplyField: View {
                 .focused($focused)
                 .onSubmit { send() }
                 .disabled(busy)
+            Button { Dictation.shared.toggle(for: agent.id) } label: {
+                Image(systemName: listening ? "mic.fill" : "mic").font(.system(size: 13))
+                    .foregroundStyle(listening ? Palette.red : .white.opacity(0.45))
+                    .frame(width: 18, height: 18).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(busy)
+            .help(listening ? "Stop dictating" : "Dictate a reply")
             Button(action: send) {
                 Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
                     .foregroundStyle(empty || busy ? .white.opacity(0.2) : agent.color)
@@ -376,6 +397,7 @@ private struct ReplyField: View {
         let text = (ui.drafts[agent.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let files = ui.attachments[agent.id] ?? []
         guard !(text.isEmpty && files.isEmpty), !busy else { return }
+        Dictation.shared.stop()
         ui.drafts[agent.id] = nil
         ui.attachments[agent.id] = nil
         if agent.source == .grok {

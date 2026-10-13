@@ -108,6 +108,7 @@ final class NotchUI {
         cardsOnly = false
         // Keep the row with an unsent reply selected, so it is right there on reopening.
         if let id = selectedID, !isDrafting(id) { selectedID = nil }
+        Dictation.shared.stop()
         autoOpened = false
         controller?.releaseKey()
     }
@@ -140,13 +141,18 @@ final class NotchUI {
 
     /// Something is being held for the user: open up so they notice.
     func attention(_ store: AgentStore) {
-        guard let id = store.attentionAgentID, store.find(id)?.pending != nil else { return }
+        guard let id = store.attentionAgentID, let pending = store.find(id)?.pending else { return }
         if !expanded {
             autoOpened = true
             cardsOnly = true
         }
         // Step out of another agent's chat so the prompt is visible, unless a reply is half written there.
         if let open = selectedID, open != id, !isDrafting(open) { selectedID = nil }
+        // A session that has just finished opens as its full conversation, ready for a reply.
+        if case .followUp = pending.kind, selectedID == nil {
+            selectedID = id
+            cardsOnly = false
+        }
         holdOpenUntil = Date().addingTimeInterval(4)
         expanded = true
     }
