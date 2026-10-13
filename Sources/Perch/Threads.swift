@@ -14,7 +14,7 @@ struct EmailDraft: Equatable {
 }
 
 struct ChatMessage: Identifiable, Equatable {
-    let id: String
+    var id: String
     let fromUser: Bool
     let text: String
     var reactions: [String] = []
@@ -25,6 +25,19 @@ struct ChatMessage: Identifiable, Equatable {
 enum Threads {
     /// One at a time and low priority: reading transcripts should never compete with the interface.
     private static let queue = DispatchQueue(label: "perch.threads", qos: .utility)
+
+    /// A message sent from the notch is shown at once, then the agent's own record of it arrives
+    /// under a different id. Keeping the original id means the bubble stays where it is instead
+    /// of being removed and re-added, which is what made sending look jumpy.
+    static func keepingLocalIDs(_ loaded: [ChatMessage], from current: [ChatMessage]) -> [ChatMessage] {
+        var loaded = loaded
+        for local in current where local.id.hasPrefix("local-") {
+            if let i = loaded.lastIndex(where: { $0.fromUser && $0.text == local.text && !$0.id.hasPrefix("local-") }) {
+                loaded[i].id = local.id
+            }
+        }
+        return loaded
+    }
 
     static let replyMarker = "Treat this as their next message:\n\n"
 
@@ -39,6 +52,7 @@ enum Threads {
                 let messages = parse(path, codex: codex)
                 DispatchQueue.main.async { [weak agent] in
                     guard let agent, !messages.isEmpty else { return }
+                    let messages = keepingLocalIDs(messages, from: agent.thread)
                     // Keep anything just sent from the notch that the file has not caught up with.
                     let known = Set(messages.filter(\.fromUser).map(\.text))
                     let unsent = agent.thread.filter { $0.id.hasPrefix("local-") && !known.contains($0.text) }
@@ -50,7 +64,7 @@ enum Threads {
                        !messages.suffix(4).contains(where: { !$0.fromUser && $0.text.prefix(80) == latest.prefix(80) }) {
                         thread.append(ChatMessage(id: "latest", fromUser: false, text: latest))
                     }
-                    agent.thread = thread
+                    if thread != agent.thread { agent.thread = thread }
                 }
             }
         }

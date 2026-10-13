@@ -657,7 +657,7 @@ private struct ChatView: View {
                 // A fixed height keeps the island the same size every time it opens, so the
                 // opening animation has one target instead of jumping as the history loads.
                 .frame(height: 380)
-                .onChange(of: messages.last?.id) { settle(proxy) }
+                .onChange(of: messages.last?.id) { withAnimation(.easeOut(duration: 0.22)) { settle(proxy) } }
                 .onAppear { DispatchQueue.main.async { settle(proxy) } }
             }
             if agent.status == .needsYou, agent.pending == nil {
