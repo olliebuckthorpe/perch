@@ -25,8 +25,13 @@ final class NotionTasks {
     /// "✅ Jonny & Ollie Tasks".
     private static let database = UserDefaults.standard.string(forKey: "notionDatabase") ?? "65dc48ca8b7c4f3db300cdf1e87dafd2"
     static let tokenPath = "\(Shell.home)/.perch/notion-token"
-    /// The board's columns, in the order Notion shows them.
-    static let columns = ["Upshow to-dos", "My to-dos", "Waiting On"]
+    /// The board's columns. My to-dos leads because it is the one in daily use.
+    static let columns = ["My to-dos", "Upshow to-dos", "Waiting On"]
+
+    /// Columns folded down to a slim strip. My to-dos starts open; the others are opened when wanted.
+    var folded: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "foldedColumns") ?? ["Upshow to-dos", "Waiting On"]) {
+        didSet { UserDefaults.standard.set(Array(folded), forKey: "foldedColumns") }
+    }
 
     private(set) var tasks: [TaskItem] = []
     private(set) var problem: String?

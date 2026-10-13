@@ -772,24 +772,55 @@ private struct TaskColumn: View {
         }
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Circle().fill(tint).frame(width: 7, height: 7)
-                Text(title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
-                Text("\(cards.count)").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.35))
-                Spacer()
-            }
-            .padding(.horizontal, 4)
-            ScrollView {
-                VStack(spacing: 5) {
-                    ForEach(cards) { TaskCard(task: $0, tint: tint) }
-                }
-            }
-            .frame(height: 366)
+    private var folded: Bool { NotionTasks.shared.folded.contains(title) }
+
+    private func toggle() {
+        withAnimation(tabSwitch) {
+            if folded { NotionTasks.shared.folded.remove(title) } else { NotionTasks.shared.folded.insert(title) }
         }
-        .padding(8)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    var body: some View {
+        Group {
+            if folded {
+                // Folded: a slim strip with the name down its side. Click to open it.
+                VStack(spacing: 8) {
+                    Circle().fill(tint).frame(width: 7, height: 7)
+                    Text("\(cards.count)").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.7))
+                    Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+                        .fixedSize().rotationEffect(.degrees(90)).frame(width: 16, height: 110)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 10)
+                .frame(width: 40, height: 404)
+                .contentShape(Rectangle())
+                .onTapGesture { toggle() }
+                .help("Open \(title)")
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Circle().fill(tint).frame(width: 7, height: 7)
+                        Text(title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
+                        Text("\(cards.count)").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.35))
+                        Spacer()
+                        Button(action: toggle) {
+                            Image(systemName: "chevron.compact.left").font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.4)).frame(width: 18, height: 16).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).help("Fold this column away")
+                    }
+                    .padding(.horizontal, 4)
+                    ScrollView {
+                        VStack(spacing: 5) {
+                            ForEach(cards) { TaskCard(task: $0, tint: tint) }
+                        }
+                    }
+                    .frame(height: 366)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
         .background(.white.opacity(targeted ? 0.1 : 0.035), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .dropDestination(for: String.self) { ids, _ in
             guard let id = ids.first else { return false }
