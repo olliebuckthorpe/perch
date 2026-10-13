@@ -21,7 +21,7 @@ struct NotchContent: View {
         // so the gap always stays lined up with the hardware notch.
         // A chat needs more room than the roster.
         let chatting = ui.selectedID != nil || ui.composing
-        let extra = ui.expanded ? max(0, (ui.cardsOnly ? 340 : 470) - (l + ui.notch.width + r)) : 0
+        let extra = ui.expanded ? max(0, (ui.cardsOnly ? 340 : 580) - (l + ui.notch.width + r)) : 0
         let radius: CGFloat = ui.expanded ? 18 : 10
         let openWidth = max(l + ui.notch.width + r, 340)
         let shape = UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
@@ -307,25 +307,19 @@ private struct Rail: View {
     }
 
     var body: some View {
-        VStack(spacing: 7) {
+        VStack(alignment: .leading, spacing: 1) {
             ForEach(agents) { agent in
-                let selected = ui.selectedID == agent.id && !ui.composing
-                let star = agent.source == .grok && ui.pinned.contains(agent.name)
-                FaceView(agent: agent, size: star ? 20 : 22)
-                    // A pinned bot sits in a white bubble so it reads as the one that is always there.
-                    .padding(star ? 4 : 0)
-                    .background(.white.opacity(star ? 1 : 0), in: Circle())
-                    .padding(star ? 1 : 4)
-                    .background(.white.opacity(selected ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .contentShape(Rectangle())
-                    .onTapGesture { ui.select(agent.id) }
-                    .help(agent.name)
+                RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing,
+                        star: agent.source == .grok && ui.pinned.contains(agent.name))
             }
-            Spacer(minLength: 4)
-            railButton("magnifyingglass", "Search all chats and bots", on: ui.browsing) { ui.browse() }
-            railButton("square.and.pencil", "New Claude Code chat", on: ui.composing) { ui.composing = true }
+            Spacer(minLength: 6)
+            HStack(spacing: 4) {
+                railButton("magnifyingglass", "Search all chats and bots", on: ui.browsing) { ui.browse() }
+                railButton("square.and.pencil", "New Claude Code chat", on: ui.composing) { ui.composing = true }
+                Spacer()
+            }
         }
-        .frame(width: 32)
+        .frame(width: 150)
         .padding(.top, 2)
     }
 
@@ -338,6 +332,39 @@ private struct Rail: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain).help(help)
+    }
+}
+
+/// One chat in the sidebar: its face, its name, and a mark if it wants something.
+private struct RailRow: View {
+    let agent: Agent
+    let selected: Bool
+    let star: Bool
+    @Environment(NotchUI.self) private var ui
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            FaceView(agent: agent, size: star ? 14 : 16)
+                // A pinned bot sits in a white bubble so it reads as the one that is always there.
+                .padding(star ? 3 : 0)
+                .background(.white.opacity(star ? 1 : 0), in: Circle())
+                .frame(width: 20, height: 20)
+            Text(agent.name)
+                .font(.system(size: 11.5, weight: selected || agent.status > .done ? .semibold : .regular))
+                .foregroundStyle(.white.opacity(agent.status == .idle && !selected ? 0.6 : 0.95))
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 0)
+            if ui.isDrafting(agent.id) {
+                Image(systemName: "pencil").font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
+            }
+        }
+        .padding(.horizontal, 5).padding(.vertical, 4)
+        .background(.white.opacity(selected ? 0.14 : hovered ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture { ui.select(agent.id) }
+        .onHover { hovered = $0 }
+        .help(agent.name)
     }
 }
 
