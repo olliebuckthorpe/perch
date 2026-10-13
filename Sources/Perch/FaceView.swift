@@ -104,7 +104,7 @@ struct FaceView: View {
         let black = agent.avatarColor == "black"
         Circle().fill(black ? Color.black : agent.color)
             // A black blob needs an edge to show up against the island.
-            .overlay(Circle().strokeBorder(.white.opacity(black ? 0.32 : 0), lineWidth: max(1, size * 0.05)))
+            .overlay(Circle().strokeBorder(.white.opacity(black ? 0.9 : 0), lineWidth: max(1.2, size * 0.07)))
         if agent.status == .working {
             TimelineView(.periodic(from: .now, by: 1.1)) { context in
                 let step = Int(context.date.timeIntervalSinceReferenceDate / 1.1) % 4

@@ -298,18 +298,24 @@ private struct Rail: View {
         let sessions = store.sessions
         let active = sessions.filter { $0.status != .idle }
         let quiet = sessions.filter { $0.status == .idle }.prefix(max(0, 5 - active.count))
+        // Pinned bots lead the rail; the rest only join when they have something.
+        let pinned = store.grokBots.filter { ui.pinned.contains($0.name) }
         let bots = store.grokBots.filter(ui.inPill)
         // Whatever is open stays on the rail even if it has gone quiet.
         let open = ui.selectedID.flatMap { store.find($0) }.map { [$0] } ?? []
-        return (store.needing + active + quiet + bots + open).filter { seen.insert($0.id).inserted }
+        return (pinned + store.needing + active + quiet + bots + open).filter { seen.insert($0.id).inserted }
     }
 
     var body: some View {
         VStack(spacing: 7) {
             ForEach(agents) { agent in
                 let selected = ui.selectedID == agent.id && !ui.composing
-                FaceView(agent: agent, size: 22)
-                    .padding(4)
+                let star = agent.source == .grok && ui.pinned.contains(agent.name)
+                FaceView(agent: agent, size: star ? 20 : 22)
+                    // A pinned bot sits in a white bubble so it reads as the one that is always there.
+                    .padding(star ? 4 : 0)
+                    .background(.white.opacity(star ? 1 : 0), in: Circle())
+                    .padding(star ? 1 : 4)
                     .background(.white.opacity(selected ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .contentShape(Rectangle())
                     .onTapGesture { ui.select(agent.id) }
