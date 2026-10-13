@@ -75,6 +75,9 @@ final class CodingSessions {
 
     func start() {
         SkillIndex.shared.refresh()
+        indexDesktopSessions()
+        let reindex = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in self?.indexDesktopSessions() }
+        reindex.tolerance = 30
         for a in store.sessions {
             titled.insert(a.id)
             if a.kept { Threads.load(a) }
@@ -566,10 +569,21 @@ final class CodingSessions {
             NSWorkspace.shared.open(url)
             return
         }
-        if agent.source == .claude, let local = desktopSessionID(for: agent.sessionID),
-           let url = URL(string: "claude://code/continue?session=\(local)") {
-            // Straight to this exact chat in the Claude app, not just the app.
-            NSWorkspace.shared.open(url)
+        if agent.source == .claude, !agent.background || agent.adopted {
+            func go() -> Bool {
+                guard let local = desktopIDs[agent.sessionID],
+                      let url = URL(string: "claude://code/continue?session=\(local)") else { return false }
+                // Straight to this exact chat in the Claude app, not just the app.
+                NSWorkspace.shared.open(url)
+                return true
+            }
+            if go() { return }
+            // Not in the lookup yet (a brand new chat): bring Claude forward now, and land on the
+            // chat a moment later once it has been found.
+            if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.claudeBundleID) {
+                NSWorkspace.shared.openApplication(at: app, configuration: .init())
+            }
+            indexDesktopSessions { _ = go() }
             return
         }
         guard let bundle = agent.hostBundleID,
@@ -580,22 +594,38 @@ final class CodingSessions {
     // MARK: Helpers
 
     private var desktopIDs: [String: String] = [:]
+    private var indexing = false
 
-    /// The Claude desktop app keeps its own id for each chat. This finds it from the Claude Code
-    /// session id, by looking through the small records the app keeps for its sessions.
-    private func desktopSessionID(for cliID: String) -> String? {
-        if let known = desktopIDs[cliID] { return known }
-        let root = "\(Shell.home)/Library/Application Support/Claude/claude-code-sessions"
-        guard let walker = FileManager.default.enumerator(atPath: root) else { return nil }
-        for case let file as String in walker where file.hasSuffix(".json") {
-            guard let data = FileManager.default.contents(atPath: "\(root)/\(file)"), data.count < 2 << 20,
-                  let text = String(data: data, encoding: .utf8), text.contains(cliID),
-                  let row = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  row["cliSessionId"] as? String == cliID, let local = row["sessionId"] as? String else { continue }
-            desktopIDs[cliID] = local
-            return local
+    /// The Claude desktop app keeps its own id for each chat. This builds the lookup from Claude
+    /// Code session id to that id, off the main thread, by reading the small records the app
+    /// keeps. It is done ahead of time so opening a chat never has to wait for it.
+    private func indexDesktopSessions(then done: (() -> Void)? = nil) {
+        guard !indexing else { return }
+        indexing = true
+        DispatchQueue.global(qos: .utility).async {
+            let root = "\(Shell.home)/Library/Application Support/Claude/claude-code-sessions"
+            var found: [String: String] = [:]
+            func value(_ key: String, in text: String) -> String? {
+                guard let k = text.range(of: "\"\(key)\":\"") else { return nil }
+                let rest = text[k.upperBound...]
+                return rest.firstIndex(of: "\"").map { String(rest[..<$0]) }
+            }
+            if let walker = FileManager.default.enumerator(atPath: root) {
+                for case let file as String in walker where file.hasSuffix(".json") {
+                    // The two ids sit near the top of each record; no need to read or parse the rest.
+                    guard let handle = FileHandle(forReadingAtPath: "\(root)/\(file)") else { continue }
+                    let head = (try? handle.read(upToCount: 16 << 10)) ?? Data()
+                    try? handle.close()
+                    let text = String(decoding: head, as: UTF8.self)
+                    if let cli = value("cliSessionId", in: text), let local = value("sessionId", in: text) { found[cli] = local }
+                }
+            }
+            DispatchQueue.main.async {
+                self.desktopIDs = found
+                self.indexing = false
+                done?()
+            }
         }
-        return nil
     }
 
     private func hostBundle(source: AgentSource, headers: [String: String]) -> String? {
