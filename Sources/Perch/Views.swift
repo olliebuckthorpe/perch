@@ -956,14 +956,10 @@ private struct NewChatView: View {
 private struct ChatView: View {
     let agent: Agent
     @Environment(NotchUI.self) private var ui
-    /// The message the view is resting on. The newest one, pinned by its top edge: a long reply
-    /// is read from its first line, and a short one simply sits at the bottom.
-    @State private var position: String?
-
-    init(agent: Agent) {
-        self.agent = agent
-        // Set before the first frame, so the chat never flashes at the wrong place.
-        _position = State(initialValue: Self.restingID(agent.thread))
+    /// Rests the view on the newest message, by its top edge: a long reply is read from its
+    /// first line, and anything shorter simply sits at the bottom of the chat.
+    private func settle(_ proxy: ScrollViewProxy) {
+        if let target = Self.restingID(messages) { proxy.scrollTo(target, anchor: .top) }
     }
 
     /// The id of the last thing drawn: the last message, or the first of a trailing run of
@@ -982,7 +978,7 @@ private struct ChatView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
-            Group {
+            ScrollViewReader { proxy in
                 ScrollView {
                     // Not lazy: every message has to exist for the view to be able to come to
                     // rest on the newest one, and a chat is only a few dozen messages.
@@ -1002,18 +998,20 @@ private struct ChatView: View {
                                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                         }
                     }
-                    .scrollTargetLayout()
                     .padding(.horizontal, 6)
                 }
-                .scrollPosition(id: $position, anchor: .top)
                 // A fixed height keeps the island the same size every time it opens, so the
                 // opening animation has one target instead of jumping as the history loads.
                 .frame(height: 380)
                 .onChange(of: messages.last?.id) {
-                    withAnimation(.easeOut(duration: 0.22)) { position = Self.restingID(messages) }
+                    withAnimation(.easeOut(duration: 0.22)) { settle(proxy) }
                 }
                 .onAppear {
-                    position = Self.restingID(messages)
+                    // Go to the newest message as the chat appears, and again once it has been
+                    // laid out, since the first attempt can land before the content has a size.
+                    settle(proxy)
+                    DispatchQueue.main.async { settle(proxy) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { settle(proxy) }
                     // Opened before its history arrived: fetch it now, and once more shortly after
                     // in case the first try was too early.
                     if agent.thread.isEmpty {
