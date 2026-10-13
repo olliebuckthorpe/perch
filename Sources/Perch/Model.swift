@@ -90,6 +90,9 @@ final class Agent: Identifiable {
     /// Recent conversation, loaded when the agent's chat is opened.
     var thread: [ChatMessage] = []
     var transcriptPath: String?
+    /// Bumped (at most every couple of seconds) as the agent works, so an open chat keeps up mid-turn.
+    var tick = 0
+    @ObservationIgnored var lastTick = Date.distantPast
 
     func addLocal(_ text: String) {
         thread.append(ChatMessage(id: "local-\(UUID().uuidString)", fromUser: true, text: text))

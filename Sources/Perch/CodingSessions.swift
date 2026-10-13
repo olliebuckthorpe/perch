@@ -105,6 +105,10 @@ final class CodingSessions {
         if headless, source == .claude, !agent.adopted, !agent.desktopBound { agent.background = true }
         agent.lastActivity = Date()
         agent.ended = false
+        if Date().timeIntervalSince(agent.lastTick) > 2 {
+            agent.lastTick = Date()
+            agent.tick += 1
+        }
         if let title = j["session_title"] as? String, !title.isEmpty {
             agent.name = title
         } else if source == .claude, let path = j["transcript_path"] as? String,

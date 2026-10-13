@@ -594,7 +594,7 @@ private struct ChatView: View {
         }
         .padding(.top, 2)
         // Reload when the agent says something new or changes state.
-        .task(id: "\(agent.id)|\(agent.status.rawValue)|\(agent.lastMessage.count)") { Threads.load(agent) }
+        .task(id: "\(agent.id)|\(agent.status.rawValue)|\(agent.lastMessage.count)|\(agent.tick)") { Threads.load(agent) }
     }
 
     /// Until the history has loaded, at least show the latest thing the agent said.
