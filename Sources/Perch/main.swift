@@ -87,6 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "tasks":
             ui.expand()
             ui.showingTasks = true
+        case "compose":
+            ui.expand()
+            ui.composing = true
         case "collapse": ui.collapse()
         case "select" where parts.count > 1: ui.show(parts[1])
         case "allow" where parts.count > 1:

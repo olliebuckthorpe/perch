@@ -1191,20 +1191,76 @@ private struct ProfileRow: View {
 private struct NewChatView: View {
     @Environment(AgentStore.self) private var store
     @Environment(NotchUI.self) private var ui
-    @State private var folder = ""
+    @State private var folder = UserDefaults.standard.string(forKey: "newChatFolder") ?? ""
     @FocusState private var focused: Bool
 
-    /// Places recent sessions were working in, most recent first.
+    /// Folders to offer: the one used last time, ones picked by hand, then wherever recent
+    /// sessions were working. Throwaway and hidden locations are left out.
     private var folders: [String] {
         var seen = Set<String>()
+        let fm = FileManager.default
+        let picked = UserDefaults.standard.stringArray(forKey: "pickedFolders") ?? []
         let live = store.sessions.filter { $0.source == .claude }.compactMap(\.cwd)
         let older = SessionIndex.shared.entries.compactMap(\.cwd)
-        return (live + older + ["\(Shell.home)/Dev"]).filter { seen.insert($0).inserted }.prefix(8).map { $0 }
+        let all = [folder] + picked + live + older + ["\(Shell.home)/Dev"]
+        return all.filter { path in
+            !path.isEmpty && !path.contains("/.") && !path.hasPrefix("/tmp") && !path.hasPrefix("/private")
+                && fm.fileExists(atPath: path) && seen.insert(path).inserted
+        }.prefix(10).map { $0 }
+    }
+
+    private func choose(_ path: String) {
+        folder = path
+        UserDefaults.standard.set(path, forKey: "newChatFolder")
+        focused = true
+    }
+
+    /// Any other folder, through the normal macOS chooser. The island tucks away while it is
+    /// up and comes back on the new chat afterwards.
+    private func browse(from current: String) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use this folder"
+        panel.message = "Where should the new chat work?"
+        panel.directoryURL = URL(fileURLWithPath: current)
+        panel.level = .popUpMenu
+        NSApp.activate(ignoringOtherApps: true)
+        let ui = ui
+        panel.begin { response in
+            if response == .OK, let path = panel.url?.path {
+                var picked = UserDefaults.standard.stringArray(forKey: "pickedFolders") ?? []
+                picked.removeAll { $0 == path }
+                picked.insert(path, at: 0)
+                UserDefaults.standard.set(Array(picked.prefix(6)), forKey: "pickedFolders")
+                UserDefaults.standard.set(path, forKey: "newChatFolder")
+            }
+            ui.composing = true
+            ui.expand()
+            ui.controller?.panel.makeKey()
+        }
+    }
+
+    private func chip(_ path: String, selected: Bool) -> some View {
+        Button { choose(path) } label: {
+            HStack(spacing: 5) {
+                Image(systemName: selected ? "folder.fill" : "folder").font(.system(size: 10))
+                Text(URL(fileURLWithPath: path).lastPathComponent).font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(selected ? Color.black : .white.opacity(0.75))
+            .padding(.horizontal, 9).padding(.vertical, 5)
+            .background(selected ? Color.white.opacity(0.92) : .white.opacity(0.09), in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     var body: some View {
         let draft = Binding(get: { ui.drafts["new"] ?? "" }, set: { ui.drafts["new"] = $0 })
-        let chosen = folder.isEmpty ? (folders.first ?? Shell.home) : folder
+        let options = folders
+        let chosen = options.contains(folder) ? folder : (options.first ?? Shell.home)
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 7) {
                 Button { ui.composing = false } label: {
@@ -1214,18 +1270,28 @@ private struct NewChatView: View {
                 .buttonStyle(.plain)
                 Text("New Claude Code chat").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                 Spacer()
-                Menu {
-                    ForEach(folders, id: \.self) { path in
-                        Button(path.replacingOccurrences(of: Shell.home, with: "~")) { folder = path }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Work in").font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(options, id: \.self) { path in chip(path, selected: path == chosen) }
+                        Button { browse(from: chosen) } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "plus").font(.system(size: 9.5, weight: .semibold))
+                                Text("Other folder").font(.system(size: 11.5))
+                            }
+                            .foregroundStyle(.white.opacity(0.6))
+                            .padding(.horizontal, 9).padding(.vertical, 5)
+                            .overlay(Capsule().strokeBorder(.white.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+                            .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
                     }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "folder").font(.system(size: 10))
-                        Text(URL(fileURLWithPath: chosen).lastPathComponent).font(.system(size: 11))
-                    }
-                    .foregroundStyle(.white.opacity(0.6))
                 }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                Text(chosen.replacingOccurrences(of: Shell.home, with: "~"))
+                    .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.white.opacity(0.35))
+                    .lineLimit(1).truncationMode(.head)
             }
             HStack(alignment: .bottom, spacing: 6) {
                 TextField("What do you want to work on?", text: draft, axis: .vertical)
