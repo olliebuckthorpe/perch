@@ -7,6 +7,10 @@ struct EmailDraft: Equatable {
     var cc: [String] = []
     var subject = ""
     var body = ""
+    /// Grok Bot's own record of what happened to it: "sent", or nil while it is still a draft.
+    var sendState: String?
+    /// A later draft replaced this one before it was sent.
+    var superseded = false
 }
 
 struct ChatMessage: Identifiable, Equatable {

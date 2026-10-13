@@ -609,44 +609,70 @@ private struct EmailCard: View {
     @Environment(NotchUI.self) private var ui
     @State private var copied = false
 
+    @State private var expanded = false
+
+    private var sent: Bool { draft.sendState == "sent" }
+    /// Sent and replaced drafts fold away; only a live draft needs reading in full.
+    private var settled: Bool { sent || draft.superseded || draft.sendState != nil }
+
+    private var label: String {
+        if sent { return "Email sent" }
+        if draft.superseded { return "Earlier draft, replaced" }
+        if let state = draft.sendState { return "Email \(state)" }
+        return "Draft email"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 5) {
-                Image(systemName: "envelope.fill").font(.system(size: 10))
-                Text("Draft email").font(.system(size: 10.5, weight: .semibold))
+                Image(systemName: sent ? "checkmark.circle.fill" : "envelope.fill").font(.system(size: 10))
+                    .foregroundStyle(sent ? Palette.green : .white.opacity(0.55))
+                Text(label).font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(sent ? Palette.green : .white.opacity(0.55))
                 Spacer()
+                if settled {
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
             }
-            .foregroundStyle(.white.opacity(0.55))
             VStack(alignment: .leading, spacing: 2) {
                 field("To", draft.to.joined(separator: ", "))
-                if !draft.cc.isEmpty { field("Cc", draft.cc.joined(separator: ", ")) }
-                if !draft.from.isEmpty { field("From", draft.from) }
+                if !settled || expanded {
+                    if !draft.cc.isEmpty { field("Cc", draft.cc.joined(separator: ", ")) }
+                    if !draft.from.isEmpty { field("From", draft.from) }
+                }
             }
-            Text(draft.subject).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+            Text(draft.subject).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white.opacity(settled ? 0.7 : 1))
                 .fixedSize(horizontal: false, vertical: true)
-            Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
-            Text(draft.body).font(.system(size: 12.5)).lineSpacing(2).foregroundStyle(.white.opacity(0.9))
-                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 6) {
-                Button(copied ? "Copied" : "Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(draft.body, forType: .string)
-                    copied = true
+            if !settled || expanded {
+                Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
+                Text(draft.body).font(.system(size: 12.5)).lineSpacing(2).foregroundStyle(.white.opacity(0.9))
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    Button(copied ? "Copied" : "Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(draft.body, forType: .string)
+                        copied = true
+                    }
+                    .buttonStyle(ChipButton())
+                    if !settled {
+                        Button("Send in Grok Bot") {
+                            GrokSource.shared.open(agent)
+                            ui.collapse()
+                        }
+                        .buttonStyle(ChipButton())
+                    }
+                    Spacer()
                 }
-                .buttonStyle(ChipButton())
-                Button("Send in Grok Bot") {
-                    GrokSource.shared.open(agent)
-                    ui.collapse()
-                }
-                .buttonStyle(ChipButton())
-                Spacer()
+                .padding(.top, 2)
             }
-            .padding(.top, 2)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .background(.white.opacity(settled ? 0.04 : 0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
+        .contentShape(Rectangle())
+        .onTapGesture { if settled { expanded.toggle() } }
     }
 
     private func field(_ label: String, _ value: String) -> some View {

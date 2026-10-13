@@ -207,7 +207,7 @@ final class GrokSource {
                     if message["type"] as? String == "email-draft", let d = message["draft"] as? [String: Any] {
                         let draft = EmailDraft(from: d["from"] as? String ?? "", to: d["to"] as? [String] ?? [],
                                                cc: d["cc"] as? [String] ?? [], subject: d["subject"] as? String ?? "",
-                                               body: d["body"] as? String ?? "")
+                                               body: d["body"] as? String ?? "", sendState: e["draftSendState"] as? String)
                         return ChatMessage(id: id, fromUser: false, text: draft.body, reactions: reactions, email: draft)
                     }
                     // Some other kind of card the notch cannot draw yet: say so, do not hide it.
@@ -218,6 +218,13 @@ final class GrokSource {
                 }
             }
             guard !messages.isEmpty else { return }
+            // Only the newest unsent draft is live; earlier ones were replaced by it.
+            var messages = messages
+            if let newest = messages.lastIndex(where: { $0.email != nil }) {
+                for i in messages.indices where i < newest && messages[i].email?.sendState == nil {
+                    messages[i].email?.superseded = true
+                }
+            }
             // A message just sent from the notch stays put until the host's copy of it arrives.
             let recent = Set(messages.filter(\.fromUser).suffix(6).map(\.text))
             let unsent = agent.thread.filter { $0.id.hasPrefix("local-") && !recent.contains($0.text) }
