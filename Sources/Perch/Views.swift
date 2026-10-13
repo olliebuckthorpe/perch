@@ -644,7 +644,16 @@ private struct ChatView: View {
                 ScrollView {
                     // Lazy, so only the messages on screen are laid out when the island opens.
                     LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(messages) { bubble($0).id($0.id) }
+                        ForEach(items) { item in
+                            Group {
+                                if item.peers.isEmpty, let message = item.message {
+                                    bubble(message)
+                                } else {
+                                    PeerGroup(owner: agent.name, messages: item.peers)
+                                }
+                            }
+                            .id(item.id)
+                        }
                         if agent.status == .working {
                             Text(agent.source == .grok ? "\(agent.name) is working…" : "Working…")
                                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
@@ -696,11 +705,35 @@ private struct ChatView: View {
     /// the view, so you read it from the beginning (the same words the notification showed)
     /// with the rest below. If you spoke last, it sits at the very bottom as usual.
     private func settle(_ proxy: ScrollViewProxy) {
-        if let last = messages.last, !last.fromUser {
+        if let last = items.last, last.message?.fromUser != true {
             proxy.scrollTo(last.id, anchor: .top)
         } else {
             proxy.scrollTo("end", anchor: .bottom)
         }
+    }
+
+    /// What is drawn, top to bottom: ordinary messages one by one, and each run of bot-to-bot
+    /// messages gathered into a single line, the way Grok Bot shows them.
+    private struct Item: Identifiable {
+        let id: String
+        var message: ChatMessage?
+        var peers: [ChatMessage] = []
+    }
+
+    private var items: [Item] {
+        var out: [Item] = []
+        for message in messages {
+            if message.peerName != nil {
+                if let last = out.indices.last, !out[last].peers.isEmpty {
+                    out[last].peers.append(message)
+                } else {
+                    out.append(Item(id: message.id, peers: [message]))
+                }
+            } else {
+                out.append(Item(id: message.id, message: message))
+            }
+        }
+        return out
     }
 
     /// Until the history has loaded, at least show the latest thing the agent said.
@@ -1049,6 +1082,49 @@ private struct MessageBody: View {
         .padding(.horizontal, 9).padding(.vertical, 3)
         .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.white.opacity(0.1), lineWidth: 1))
+    }
+}
+
+/// A run of messages between bots, as one quiet centred line: "4 messages with Tweetie and
+/// Link", or "Message from Tweetie". Click it to read them.
+private struct PeerGroup: View {
+    let owner: String
+    let messages: [ChatMessage]
+    @Environment(AgentStore.self) private var store
+    @State private var expanded = false
+
+    private var names: [String] {
+        var seen = Set<String>()
+        return messages.compactMap(\.peerName).filter { seen.insert($0).inserted }
+    }
+
+    private var lead: String {
+        if messages.count > 1 { return "\(messages.count) messages with" }
+        return messages[0].peerOutbound ? "Message to" : "Message from"
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 5) {
+                Text(lead)
+                ForEach(Array(names.enumerated()), id: \.offset) { index, name in
+                    if index > 0 { Text(index == names.count - 1 ? "and" : ",") }
+                    if let bot = store.grokBots.first(where: { $0.name == name }) { FaceView(agent: bot, size: 13) }
+                    Text(name).foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            .font(.system(size: 11)).foregroundStyle(.white.opacity(0.42))
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+            .onTapGesture { expanded.toggle() }
+
+            if expanded {
+                ForEach(messages) { m in
+                    PeerNote(owner: owner, peer: m.peerName ?? "", outbound: m.peerOutbound, text: m.text)
+                }
+            }
+        }
     }
 }
 
