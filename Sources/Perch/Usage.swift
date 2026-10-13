@@ -60,7 +60,11 @@ final class Usage {
     /// `claude` command's own login, so Perch never touches the account's credentials.
     func refreshClaude() {
         guard let exe = Shell.find("claude") else { return }
-        let args = ["-p", "Reply with the single word ok", "--model", "haiku", "--output-format", "stream-json", "--verbose"]
+        // Stripped right down (no tools, no plugins, a one-line system prompt): about a twentieth
+        // of the tokens an ordinary headless run would send.
+        let args = ["-p", "Reply with the single word ok", "--model", "haiku", "--output-format", "stream-json", "--verbose",
+                    "--system-prompt", "Reply ok.", "--tools", "", "--strict-mcp-config", "--disable-slash-commands"]
+        checkedAt = Date()
         Shell.run(exe, args, cwd: "\(Shell.home)/.perch", env: ["PERCH_SKIP": "1"]) { [weak self] _, output in
             for line in output.split(separator: "\n") where line.contains("rate_limit_event") {
                 guard let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
@@ -79,13 +83,18 @@ final class Usage {
         }
     }
 
-    private var timer: Timer?
+    @ObservationIgnored private var checkedAt = Date.distantPast
 
-    /// Now, then every twenty minutes.
-    func start() {
+    /// Only checks when the number can have moved: after a Claude chat has done some work, and
+    /// never more than once every fifteen minutes. An idle Mac spends nothing.
+    func claudeWorked() {
+        guard Date().timeIntervalSince(checkedAt) > 900 else { return }
         refreshClaude()
-        timer = Timer.scheduledTimer(withTimeInterval: 1200, repeats: true) { [weak self] _ in self?.refreshClaude() }
-        timer?.tolerance = 120
+    }
+
+    /// Once at launch if what is saved is over an hour old.
+    func start() {
+        if Date().timeIntervalSince(claude.at) > 3600 { refreshClaude() }
     }
 
     /// Codex's `rate_limits` block: `primary` is the five hour window, `secondary` the week.

@@ -245,6 +245,7 @@ final class CodingSessions {
                 agent.detail = oneLine(j["message"] as? String ?? "Needs you")
             }
         case "Stop":
+            if agent.source == .claude { Usage.shared.claudeWorked() }
             // Claude Code: the turn ends normally and a waiter takes replies from here on.
             agent.lastTurnAt = Date()
             let last = j["last_assistant_message"] as? String ?? ""
