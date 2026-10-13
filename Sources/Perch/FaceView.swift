@@ -54,6 +54,40 @@ extension Agent {
     var color: Color { avatarColor.flatMap { Palette.grok[$0] } ?? Palette.color(colorIndex) }
 }
 
+/// The Claude Code mascot, drawn as the chunky pixel creature it is: a wide orange body, two
+/// square eyes, stubby arms out to the sides and four little legs.
+struct Mascot: View {
+    let eyes: Color
+
+    // 12 wide by 8 tall. X = body, o = eye, . = empty.
+    private static let grid = [
+        "..XXXXXXXX..",
+        "..XXXXXXXX..",
+        "..XoXXXXoX..",
+        "XXXXXXXXXXXX",
+        "XXXXXXXXXXXX",
+        "..XXXXXXXX..",
+        "..X.X..X.X..",
+        "..X.X..X.X..",
+    ]
+
+    var body: some View {
+        Canvas { context, size in
+            let cols = 12.0, rows = 8.0
+            let cell = min(size.width / cols, size.height / rows)
+            let origin = CGPoint(x: (size.width - cell * cols) / 2, y: (size.height - cell * rows) / 2)
+            for (r, line) in Self.grid.enumerated() {
+                for (c, ch) in line.enumerated() where ch != "." {
+                    // A hair of overlap so no seams show between the squares.
+                    let rect = CGRect(x: origin.x + Double(c) * cell, y: origin.y + Double(r) * cell,
+                                      width: cell + 0.4, height: cell + 0.4)
+                    context.fill(Path(rect), with: .color(ch == "o" ? eyes : Palette.claude))
+                }
+            }
+        }
+    }
+}
+
 /// A hand-drawn-looking burst of rays, in the spirit of Claude's spark.
 struct Spark: Shape {
     func path(in rect: CGRect) -> Path {
@@ -110,8 +144,8 @@ struct FaceView: View {
             if agent.source == .grok {
                 grokBody
             } else if agent.source == .claude {
-                // Every Claude chat wears the same orange spark, so it reads as Claude at a glance.
-                Spark().fill(Palette.claude)
+                // Every Claude chat wears the same little orange Claude Code creature.
+                Mascot(eyes: .black.opacity(0.85)).frame(width: size, height: size)
             } else {
                 bodyShape.fill(agent.color)
                 VStack(spacing: size * 0.07) {
