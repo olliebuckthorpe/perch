@@ -678,12 +678,7 @@ private struct ChatView: View {
             }
             if let pending = agent.pending {
                 if case .followUp = pending.kind {
-                    // Just finished: offer the usual nudges above the reply box.
-                    HStack(spacing: 6) {
-                        ForEach(["Keep going"], id: \.self) { quick in
-                            Button(quick) { CodingSessions.shared.reply(agent, text: quick) }.buttonStyle(ChipButton())
-                        }
-                    }
+                    // Just finished: it is simply a chat, so only the reply box.
                     ReplyField(agent: agent, autofocus: ui.focusReply)
                 } else {
                     PendingCard(agent: agent)
@@ -1253,9 +1248,6 @@ private struct PendingCard: View {
                     .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
-                ForEach(["Keep going"], id: \.self) { quick in
-                    Button(quick) { CodingSessions.shared.reply(agent, text: quick) }.buttonStyle(ChipButton())
-                }
                 Spacer()
                 Button("Dismiss") { CodingSessions.shared.dismiss(agent) }.buttonStyle(LinkButton())
             }
