@@ -15,10 +15,12 @@ HOOK = os.path.join(HOME, ".perch", "perch-hook")
 MARK = ".perch/perch-hook"
 
 
-def entry(source, mode, timeout, background=False, matcher=None):
+def entry(source, mode, timeout, background=False, matcher=None, rewake=False):
     hook = {"type": "command", "command": f'"{HOOK}" {source} {mode}', "timeout": timeout}
     if background:
         hook["async"] = True
+    if rewake:
+        hook["asyncRewake"] = True
     group = {"hooks": [hook]}
     if matcher:
         group["matcher"] = matcher
@@ -39,6 +41,11 @@ def wanted(source):
         hooks["Notification"] = [entry(source, "info", 5, background=True)]
         hooks["StopFailure"] = [entry(source, "info", 5, background=True)]
         hooks["PreToolUse"].append(entry(source, "ask", 310, matcher="AskUserQuestion"))
+        # Claude Code can be woken while idle, so a reply from the notch lands in the real session
+        # at any time. The turn is never held open; a background waiter listens instead.
+        waiter = entry(source, "wait", 43200, background=True, rewake=True)
+        hooks["Stop"] = [entry(source, "info", 5, background=True), waiter]
+        hooks["SessionStart"].append(waiter)
     return hooks
 
 

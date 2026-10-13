@@ -20,6 +20,9 @@ final class NotchUI {
     /// True when the island opened itself for a prompt, so it shows only that prompt.
     private(set) var cardsOnly = false
     var drafts: [String: String] = [:]
+    var attachments: [String: [Attachment]] = [:]
+    /// The agent whose reply field has the cursor, so a pasted image knows where to go.
+    @ObservationIgnored var focusedAgentID: String?
     var notch = CGSize(width: 185, height: 33)
     /// Grok bots that always sit in the notch. The rest only show up when they have something.
     var pinned: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "pinnedGrok") ?? ["Remmi"]) {
@@ -37,10 +40,20 @@ final class NotchUI {
     @ObservationIgnored private var expandWork: DispatchWorkItem?
     @ObservationIgnored private var collapseWork: DispatchWorkItem?
 
-    func isDrafting(_ id: String) -> Bool { !(drafts[id] ?? "").isEmpty }
+    func isDrafting(_ id: String) -> Bool { !(drafts[id] ?? "").isEmpty || !(attachments[id] ?? []).isEmpty }
 
     private var typing: Bool {
-        (controller?.panel.isKeyWindow ?? false) && drafts.values.contains { !$0.isEmpty }
+        (controller?.panel.isKeyWindow ?? false)
+            && (drafts.values.contains { !$0.isEmpty } || attachments.values.contains { !$0.isEmpty })
+    }
+
+    /// Cmd+V with an image on the clipboard attaches it to the reply being written.
+    func pasteImages() -> Bool {
+        guard expanded, let id = focusedAgentID ?? selectedID else { return false }
+        let images = Attachment.fromPasteboard()
+        guard !images.isEmpty else { return false }
+        attachments[id, default: []].append(contentsOf: images)
+        return true
     }
 
     func hover(_ inside: Bool) {
@@ -196,9 +209,15 @@ final class NotchController {
             self?.ui.outsideClick()
         }) { monitors.append(m) }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
-            guard event.keyCode == 53 else { return event }
-            self?.ui.collapse()
-            return nil
+            if event.keyCode == 53 {
+                self?.ui.collapse()
+                return nil
+            }
+            if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v",
+               self?.ui.pasteImages() == true {
+                return nil
+            }
+            return event
         }) { monitors.append(m) }
     }
 
@@ -231,6 +250,23 @@ final class NotchController {
         openOffset = offset
     }
 
+    private var menuBarCheck = (at: Date.distantPast, hidden: false)
+
+    /// True in a full screen space, where the menu bar is tucked away until the pointer hits the top.
+    private func menuBarHidden() -> Bool {
+        if Date().timeIntervalSince(menuBarCheck.at) < 0.4 { return menuBarCheck.hidden }
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        let width = screen?.frame.width ?? 0
+        let shown = list.contains { w in
+            guard w[kCGWindowLayer as String] as? Int == 24,
+                  w[kCGWindowOwnerName as String] as? String == "Window Server",
+                  let bounds = w[kCGWindowBounds as String] as? [String: Any] else { return false }
+            return bounds["Width"] as? Double == Double(width)
+        }
+        menuBarCheck = (Date(), !shown)
+        return !shown
+    }
+
     private func trackMouse() {
         let mouse = NSEvent.mouseLocation
         let frame = panel.frame
@@ -238,14 +274,18 @@ final class NotchController {
         let island = CGRect(x: frame.minX + liveRect.minX, y: frame.maxY - liveRect.maxY,
                             width: liveRect.width, height: liveRect.height + 20).insetBy(dx: -3, dy: -3)
         // Closed, the whole strip above where the island opens is the trigger, not just the pill.
-        let strip = CGRect(x: frame.midX + openOffset - openWidth / 2, y: frame.maxY - ui.notch.height,
-                           width: openWidth, height: ui.notch.height + 20)
+        // With the menu bar hidden the trigger reaches a little below the notch band, so the
+        // island opens before the pointer ever gets into the band.
+        let hidden = menuBarHidden()
+        let reach: CGFloat = hidden ? 10 : 0
+        let strip = CGRect(x: frame.midX + openOffset - openWidth / 2, y: frame.maxY - ui.notch.height - reach,
+                           width: openWidth, height: ui.notch.height + reach + 20)
         let onIsland = island.contains(mouse)
-        // In a full screen app, touching the top edge makes macOS slide the menu bar down.
-        // Over the island, hold the pointer just short of that edge so only the island opens.
-        if onIsland || strip.contains(mouse), let sc = screen, mouse.y >= sc.frame.maxY - 2,
-           let primary = NSScreen.screens.first {
-            CGWarpMouseCursorPosition(CGPoint(x: mouse.x, y: primary.frame.maxY - (sc.frame.maxY - 5)))
+        // In a full screen app, the pointer entering the top band makes macOS slide the menu bar
+        // and the app's title bar down. Over the island, hold it just below the band instead.
+        let ceiling = frame.maxY - ui.notch.height - 3
+        if hidden, onIsland || strip.contains(mouse), mouse.y > ceiling, let primary = NSScreen.screens.first {
+            CGWarpMouseCursorPosition(CGPoint(x: mouse.x, y: primary.frame.maxY - ceiling))
             CGAssociateMouseAndMouseCursorPosition(1)
         }
         if panel.ignoresMouseEvents == onIsland { panel.ignoresMouseEvents = !onIsland }

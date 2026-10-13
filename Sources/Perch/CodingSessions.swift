@@ -108,6 +108,16 @@ final class CodingSessions {
             }
         }
 
+        if mode == "wait" {
+            guard !headless else { req.respond(); return }
+            agent.waiter?.respond()
+            agent.waiter = req
+            req.onCancel = { [weak agent, weak req] in
+                if agent?.waiter === req { agent?.waiter = nil }
+            }
+            return
+        }
+
         let tool = j["tool_name"] as? String ?? ""
         let input = j["tool_input"] as? [String: Any] ?? [:]
 
@@ -167,6 +177,22 @@ final class CodingSessions {
                 agent.status = .needsYou
                 agent.detail = oneLine(j["message"] as? String ?? "Needs you")
             }
+        case "Stop":
+            // Claude Code: the turn ends normally and a waiter takes replies from here on.
+            let last = j["last_assistant_message"] as? String ?? ""
+            if !last.isEmpty { agent.lastMessage = last }
+            agent.status = .done
+            agent.detail = last.isEmpty ? "Finished" : oneLine(last)
+            clearPending(agent)
+            guard !hostIsFrontmost(agent) else { break }
+            let window = Settings.replyWindow
+            if window > 0, !headless {
+                // Just a prompt card; nothing is held, so it can simply time out.
+                let card = PendingRequest(kind: .followUp, deadline: Date().addingTimeInterval(TimeInterval(window))) { _ in }
+                agent.pending = card
+                scheduleExpiry(agent, card, hardLimit: Date().addingTimeInterval(540))
+            }
+            store.ping(agent)
         case "StopFailure":
             agent.status = .done
             agent.detail = "Stopped with an error"
@@ -251,7 +277,17 @@ final class CodingSessions {
     func reply(_ agent: Agent, text: String) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        if let pending = agent.pending, case .followUp = pending.kind {
+        if let waiter = agent.waiter {
+            // Wakes the real session, so the reply and the answer both show up in its own chat.
+            waiter.respond(Data("The user replied from Perch, their notch app. Treat this as their next message:\n\n\(text)".utf8))
+            agent.waiter = nil
+            clearPending(agent)
+            agent.status = .working
+            agent.detail = oneLine(text)
+            agent.lastActivity = Date()
+            return
+        }
+        if let pending = agent.pending, case .followUp = pending.kind, agent.source == .codex {
             // The session is still waiting at the end of its turn, so this lands as its next prompt.
             pending.finish(["decision": "block", "reason": text])
             agent.pending = nil
@@ -283,7 +319,7 @@ final class CodingSessions {
             let reply = output.trimmingCharacters(in: .whitespacesAndNewlines)
             if code != 0 {
                 agent.status = .done
-                agent.detail = "Reply did not go through (exit \(code)). Open the app to continue."
+                agent.detail = "Could not reach this session. Open it and send one message first."
             } else if agent.source == .claude, !reply.isEmpty {
                 agent.lastMessage = reply
                 agent.status = .done

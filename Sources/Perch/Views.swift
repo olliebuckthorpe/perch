@@ -239,14 +239,34 @@ private struct ReplyField: View {
     private var busy: Bool { agent.source != .grok && agent.status == .working && agent.pending == nil }
 
     private var placeholder: String {
-        if agent.source == .grok { return "Message \(agent.name)" }
+        if agent.source == .grok { return "Message \(agent.name), paste images too" }
         if busy { return "Busy. Reply when it finishes." }
         if agent.pending != nil { return "Tell it what to do next" }
-        return "Reply in the background"
+        return agent.waiter != nil ? "Reply to this session" : "Reply in the background"
     }
 
     var body: some View {
         let draft = Binding(get: { ui.drafts[agent.id] ?? "" }, set: { ui.drafts[agent.id] = $0 })
+        let files = ui.attachments[agent.id] ?? []
+        let empty = draft.wrappedValue.isEmpty && files.isEmpty
+        VStack(alignment: .leading, spacing: 6) {
+            if !files.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(files) { file in
+                        Image(nsImage: file.thumbnail).resizable().aspectRatio(contentMode: .fill)
+                            .frame(width: 40, height: 40)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .overlay(alignment: .topTrailing) {
+                                Button { ui.attachments[agent.id]?.removeAll { $0.id == file.id } } label: {
+                                    Image(systemName: "xmark.circle.fill").font(.system(size: 12))
+                                        .foregroundStyle(.white, .black.opacity(0.7))
+                                }
+                                .buttonStyle(.plain).offset(x: 4, y: -4)
+                            }
+                    }
+                }
+                .padding(.top, 3)
+            }
         HStack(alignment: .bottom, spacing: 6) {
             TextField(placeholder, text: draft, axis: .vertical)
                 .textFieldStyle(.plain).font(.system(size: 12)).lineLimit(1...3)
@@ -255,13 +275,26 @@ private struct ReplyField: View {
                 .disabled(busy)
             Button(action: send) {
                 Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
-                    .foregroundStyle(draft.wrappedValue.isEmpty || busy ? .white.opacity(0.2) : agent.color)
+                    .foregroundStyle(empty || busy ? .white.opacity(0.2) : agent.color)
             }
             .buttonStyle(.plain)
-            .disabled(draft.wrappedValue.isEmpty || busy)
+            .disabled(empty || busy)
+        }
         }
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onChange(of: focused) { _, on in if on { ui.focusedAgentID = agent.id } }
+        .onDrop(of: [.fileURL, .image], isTargeted: nil) { providers in
+            for provider in providers {
+                _ = provider.loadDataRepresentation(forTypeIdentifier: "public.image") { data, _ in
+                    guard let data, let image = NSImage(data: data) else { return }
+                    DispatchQueue.main.async {
+                        if let file = Attachment.from(image) { ui.attachments[agent.id, default: []].append(file) }
+                    }
+                }
+            }
+            return true
+        }
         .onAppear {
             guard autofocus, !busy else { return }
             DispatchQueue.main.async { focused = true }
@@ -269,10 +302,18 @@ private struct ReplyField: View {
     }
 
     private func send() {
-        let text = ui.drafts[agent.id] ?? ""
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !busy else { return }
+        let text = (ui.drafts[agent.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let files = ui.attachments[agent.id] ?? []
+        guard !(text.isEmpty && files.isEmpty), !busy else { return }
         ui.drafts[agent.id] = nil
-        if agent.source == .grok { GrokSource.shared.send(agent, text: text) } else { CodingSessions.shared.reply(agent, text: text) }
+        ui.attachments[agent.id] = nil
+        if agent.source == .grok {
+            GrokSource.shared.send(agent, text: text, files: files)
+        } else {
+            // Claude Code and Codex run on this Mac, so they can open the saved image themselves.
+            let notes = files.map { "[Image attached, saved at \($0.path)]" }
+            CodingSessions.shared.reply(agent, text: ([text] + notes).filter { !$0.isEmpty }.joined(separator: "\n\n"))
+        }
     }
 }
 

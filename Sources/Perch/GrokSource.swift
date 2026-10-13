@@ -118,18 +118,83 @@ final class GrokSource {
         for a in store.grokBots where !live.contains(a.id) { store.remove(a) }
     }
 
-    func send(_ agent: Agent, text: String) {
+    func send(_ agent: Agent, text: String, files: [Attachment] = []) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let node, let cli, !text.isEmpty else { return }
+        guard let node, let cli, !(text.isEmpty && files.isEmpty) else { return }
         agent.sending = true
         agent.status = .working
-        agent.detail = "You: \(oneLine(text))"
+        agent.detail = text.isEmpty ? "You sent an image" : "You: \(oneLine(text))"
+        guard files.isEmpty else {
+            upload(files, to: agent, done: []) { [weak self, weak agent] paths in
+                guard let self, let agent else { return }
+                guard let paths else {
+                    agent.sending = false
+                    agent.detail = "Image did not upload"
+                    return
+                }
+                let body: [String: Any] = [
+                    "agentId": agent.sessionID, "prompt": text.isEmpty ? "See the attached image." : text,
+                    "clientNonce": UUID().uuidString.lowercased(),
+                    "attachmentPaths": paths, "attachmentNames": files.map(\.name),
+                ]
+                self.call(["gw", "sendPrompt", Self.json(body)]) { [weak agent] code, _ in
+                    if code != 0 {
+                        agent?.sending = false
+                        agent?.detail = "Message did not send"
+                    }
+                    self.scheduleRefresh()
+                }
+            }
+            return
+        }
         Shell.run(node, [cli, "agents", "send", agent.sessionID, text]) { [weak self, weak agent] code, _ in
             if code != 0 {
                 agent?.sending = false
                 agent?.detail = "Message did not send"
             }
             self?.scheduleRefresh()
+        }
+    }
+
+    private func call(_ args: [String], completion: @escaping (Int32, String) -> Void) {
+        guard let node, let cli else { completion(-1, ""); return }
+        Shell.run(node, [cli] + args, completion: completion)
+    }
+
+    private static func json(_ object: [String: Any]) -> String {
+        (try? JSONSerialization.data(withJSONObject: object)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+    }
+
+    /// Uploads each image to the agent's box the way the Grok Bot app does, and hands back
+    /// the paths the host stored them at. `nil` if any upload fails.
+    private func upload(_ files: [Attachment], to agent: Agent, done: [String], completion: @escaping ([String]?) -> Void) {
+        guard done.count < files.count else { completion(done); return }
+        let file = files[done.count]
+        guard let data = FileManager.default.contents(atPath: file.path) else { completion(nil); return }
+        sendChunk(data, offset: 0, uploadID: UUID().uuidString.lowercased(), name: file.name, agent: agent) { [weak self] path in
+            guard let self, let path else { completion(nil); return }
+            self.upload(files, to: agent, done: done + [path], completion: completion)
+        }
+    }
+
+    private func sendChunk(_ data: Data, offset: Int, uploadID: String, name: String, agent: Agent,
+                           completion: @escaping (String?) -> Void) {
+        // Each chunk travels as a command line argument, so keep it well under the limit.
+        let size = 180 << 10
+        let chunk = data.subdata(in: offset..<min(data.count, offset + size))
+        let body: [String: Any] = [
+            "agentId": agent.sessionID, "uploadId": uploadID, "fileName": name,
+            "offset": String(offset), "totalSize": String(data.count), "data": chunk.base64EncodedString(),
+        ]
+        call(["cursor", "rpc", "UploadGrokBotAgentAttachmentChunk", Self.json(body)]) { [weak self] code, output in
+            guard code == 0, let self else { completion(nil); return }
+            let reply = (try? JSONSerialization.jsonObject(with: Data(output.utf8))) as? [String: Any]
+            let next = offset + chunk.count
+            if next >= data.count {
+                completion(reply?["path"] as? String)
+            } else {
+                self.sendChunk(data, offset: next, uploadID: uploadID, name: name, agent: agent, completion: completion)
+            }
         }
     }
 
