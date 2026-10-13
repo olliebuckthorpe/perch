@@ -595,8 +595,8 @@ private struct NoticeView: View {
 
 // MARK: Chrome profiles
 
-/// A profile as a circle: its Google picture ringed in Chrome's colour for it, with the profile's
-/// initial as a badge, or a plain coloured initial when it has no picture.
+/// A profile as a circle: a chosen icon, else its Google picture ringed in Chrome's colour for
+/// it, else a plain coloured initial.
 private struct ProfileAvatar: View {
     let profile: ChromeProfile
     let size: CGFloat
@@ -658,11 +658,6 @@ private struct ProfileAvatar: View {
                 Image(nsImage: picture).resizable().aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size).clipShape(Circle())
                     .overlay(Circle().strokeBorder(tint, lineWidth: max(1.5, size * 0.09)))
-                    .overlay(alignment: .bottomTrailing) {
-                        Text(initial).font(.system(size: size * 0.36, weight: .bold)).foregroundStyle(.black.opacity(0.85))
-                            .frame(width: size * 0.48, height: size * 0.48).background(tint, in: Circle())
-                            .overlay(Circle().stroke(.black, lineWidth: 1)).offset(x: size * 0.12, y: size * 0.12)
-                    }
             } else {
                 Text(initial).font(.system(size: size * 0.5, weight: .bold)).foregroundStyle(.black.opacity(0.8))
                     .frame(width: size, height: size).background(tint, in: Circle())
