@@ -78,6 +78,7 @@ private struct Ear: View {
 private struct ExpandedBody: View {
     @Environment(AgentStore.self) private var store
     @Environment(NotchUI.self) private var ui
+    @State private var showQuiet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -114,8 +115,15 @@ private struct ExpandedBody: View {
             if let error = store.grokError, store.grokBots.isEmpty {
                 Text(error).font(.system(size: 12)).foregroundStyle(.white.opacity(0.4)).padding(.horizontal, 8)
             } else {
+                // Quiet bots stay out of the way until asked for.
+                let bots = store.grokBots.filter { showQuiet || ui.inPill($0) }
+                let quiet = store.grokBots.count - store.grokBots.filter(ui.inPill).count
                 VStack(spacing: 0) {
-                    ForEach(store.grokBots) { AgentRow(agent: $0) }
+                    ForEach(bots) { AgentRow(agent: $0) }
+                }
+                if quiet > 0 {
+                    Button(showQuiet ? "Hide quiet bots" : "Show \(quiet) quiet") { showQuiet.toggle() }
+                        .buttonStyle(LinkButton()).padding(.horizontal, 6)
                 }
             }
 
@@ -247,7 +255,7 @@ private struct ReplyField: View {
                 .disabled(busy)
             Button(action: send) {
                 Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
-                    .foregroundStyle(draft.wrappedValue.isEmpty || busy ? .white.opacity(0.2) : Palette.color(agent.colorIndex))
+                    .foregroundStyle(draft.wrappedValue.isEmpty || busy ? .white.opacity(0.2) : agent.color)
             }
             .buttonStyle(.plain)
             .disabled(draft.wrappedValue.isEmpty || busy)
@@ -275,7 +283,7 @@ private struct PendingCard: View {
     @State private var picks: [UUID: Set<String>] = [:]
 
     var body: some View {
-        let tint = Palette.color(agent.colorIndex)
+        let tint = agent.color
         if let pending = agent.pending {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 7) {
@@ -328,7 +336,7 @@ private struct PendingCard: View {
                     ForEach(q.options, id: \.self) { option in
                         let on = picks[q.id]?.contains(option) ?? false
                         Button(option) { pick(option, for: q, in: questions) }
-                            .buttonStyle(ChipButton(fill: on ? Palette.color(agent.colorIndex) : nil, wide: true))
+                            .buttonStyle(ChipButton(fill: on ? agent.color : nil, wide: true))
                     }
                 }
             }

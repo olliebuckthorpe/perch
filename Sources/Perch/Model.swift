@@ -70,6 +70,8 @@ final class Agent: Identifiable {
     var cwd: String?
     var hostBundleID: String?
     var colorIndex = 0
+    /// Grok Bot's own avatar colour id ("violet", "brown", ...), when the agent has one.
+    var avatarColor: String?
     var pending: PendingRequest?
     var ended = false
     var sending = false

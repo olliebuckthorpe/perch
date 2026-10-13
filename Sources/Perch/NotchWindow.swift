@@ -174,6 +174,7 @@ final class NotchController {
 
         updateGeometry()
         panel.orderFrontRegardless()
+        TopSpace.adopt(panel)
 
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
@@ -245,6 +246,7 @@ final class NotchController {
         guard panel.isKeyWindow else { return }
         panel.orderOut(nil)
         panel.orderFrontRegardless()
+        TopSpace.adopt(panel)
     }
 }
 

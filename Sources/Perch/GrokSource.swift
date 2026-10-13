@@ -94,6 +94,7 @@ final class GrokSource {
             live.insert(agent.id)
             agent.name = name
             agent.hostBundleID = Self.bundleID
+            agent.avatarColor = raw["avatarColor"] as? String ?? Palette.grokDefault(for: id)
 
             let running = (raw["isRunning"] as? Bool ?? false) || (raw["isRunningTurn"] as? Bool ?? false)
             let awaiting = !(raw["awaitingUserResponse"] is NSNull) && raw["awaitingUserResponse"] != nil

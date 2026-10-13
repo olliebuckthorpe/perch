@@ -15,10 +15,42 @@ enum Palette {
 
     static func color(_ index: Int) -> Color { colors[index % colors.count] }
 
+    /// Grok Bot's avatar palette, in the app's own order.
+    static let grokIDs = ["brown", "red", "orange", "yellow", "green", "cyan", "blue", "violet", "magenta", "gray"]
+    static let grok: [String: Color] = [
+        // Black would vanish against the island, so it is drawn as charcoal with light features.
+        "black": Color(white: 0.24),
+        "brown": Color(red: 0.58, green: 0.39, blue: 0.22),
+        "red": Color(red: 1.00, green: 0.15, blue: 0.24),
+        "orange": Color(red: 1.00, green: 0.40, blue: 0.00),
+        "yellow": Color(red: 1.00, green: 0.60, blue: 0.00),
+        "green": Color(red: 0.00, green: 0.79, blue: 0.45),
+        "cyan": Color(red: 0.00, green: 0.74, blue: 0.65),
+        "blue": Color(red: 0.06, green: 0.52, blue: 1.00),
+        "violet": Color(red: 0.57, green: 0.35, blue: 1.00),
+        "magenta": Color(red: 1.00, green: 0.19, blue: 0.61),
+        "gray": Color(white: 0.47),
+    ]
+
+    /// The colour Grok Bot gives an agent that has none set: the app's own hash of the agent id.
+    static func grokDefault(for id: String) -> String {
+        var t: UInt32 = 2_166_136_261
+        for unit in id.utf16 { t = (t ^ UInt32(unit)) &* 16_777_619 }
+        t = t &+ 0x6D2B_79F5
+        var n = (t ^ (t >> 15)) &* (1 | t)
+        n = (n &+ ((n ^ (n >> 7)) &* (61 | n))) ^ n
+        let unit = Double(n ^ (n >> 14)) / 4_294_967_296
+        return grokIDs[Int(unit * Double(grokIDs.count))]
+    }
+
     static let amber = Color(red: 1.0, green: 0.72, blue: 0.2)
     static let green = Color(red: 0.3, green: 0.85, blue: 0.5)
     static let blue = Color(red: 0.4, green: 0.7, blue: 1.0)
     static let red = Color(red: 1.0, green: 0.33, blue: 0.33)
+}
+
+extension Agent {
+    var color: Color { avatarColor.flatMap { Palette.grok[$0] } ?? Palette.color(colorIndex) }
 }
 
 /// A scalloped circle. Claude Code sessions wear this one.
@@ -44,12 +76,12 @@ struct FaceView: View {
     let agent: Agent
     let size: CGFloat
 
-    private var ink: Color { .black.opacity(0.82) }
+    private var ink: Color { agent.avatarColor == "black" ? .white.opacity(0.9) : .black.opacity(0.82) }
 
     var body: some View {
         let quiet = agent.status == .idle
         ZStack {
-            bodyShape.fill(Palette.color(agent.colorIndex))
+            bodyShape.fill(agent.color)
             VStack(spacing: size * 0.07) {
                 eyes
                 if size >= 24 { mouth }
@@ -57,8 +89,8 @@ struct FaceView: View {
             .offset(y: size >= 24 ? size * 0.02 : 0)
         }
         .frame(width: size, height: size)
-        .saturation(quiet ? 0.5 : 1)
-        .opacity(quiet ? 0.7 : 1)
+        .saturation(quiet ? 0.75 : 1)
+        .opacity(quiet ? 0.8 : 1)
         .modifier(Bounce(active: agent.status == .needsYou))
         .overlay(alignment: .topTrailing) { badge.offset(x: size * 0.16, y: -size * 0.12) }
     }
