@@ -1346,8 +1346,9 @@ private struct ReplyField: View {
     }
 }
 
-/// The agent's bubble. In a Grok bot's chat, hovering it offers a few reactions; clicking one
-/// leaves it on the message in Grok Bot (clicking it again takes it back).
+/// The agent's bubble. In a Grok bot's chat, hovering it shows a small face beside it; that
+/// opens a menu of reactions. Picking one leaves it on the message in Grok Bot (picking it
+/// again takes it back).
 private struct AgentBubble: View {
     let text: String
     let react: ((String) -> Void)?
@@ -1360,22 +1361,20 @@ private struct AgentBubble: View {
             MessageBody(text: text)
                 .padding(.horizontal, 10).padding(.vertical, 7)
                 .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(alignment: .topTrailing) {
-                    if hovered, let react {
-                        HStack(spacing: 1) {
-                            ForEach(Self.quick, id: \.self) { emoji in
-                                Button { react(emoji) } label: {
-                                    Text(emoji).font(.system(size: 12)).frame(width: 22, height: 20).contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.horizontal, 3).padding(.vertical, 1)
-                        .background(Color(white: 0.16), in: Capsule())
-                        .overlay(Capsule().stroke(.white.opacity(0.15), lineWidth: 1))
-                        .offset(x: 6, y: -13)
+            // Only while the pointer is on the message: one small, dim face. Clicking it opens
+            // a menu of reactions.
+            if let react {
+                Menu {
+                    ForEach(Self.quick, id: \.self) { emoji in
+                        Button(emoji) { react(emoji) }
                     }
+                } label: {
+                    Image(systemName: "face.smiling").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
                 }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .padding(.leading, 5)
+                .opacity(hovered ? 1 : 0)
+            }
             Spacer(minLength: 28)
         }
         .onHover { hovered = $0 }
