@@ -567,7 +567,7 @@ private struct ChatView: View {
             } else if let email = message.email {
                 EmailCard(draft: email, agent: agent)
             } else {
-                text.foregroundStyle(.white.opacity(0.88)).frame(maxWidth: .infinity, alignment: .leading)
+                MessageBody(text: parts.text)
             }
             if !message.reactions.isEmpty {
                 // Reactions the agent (or you) left on this message in Grok Bot.
@@ -719,6 +719,122 @@ private struct ReplyField: View {
             let notes = files.map { "[Image attached, saved at \($0.path)]" }
             CodingSessions.shared.reply(agent, text: ([text] + notes).filter { !$0.isEmpty }.joined(separator: "\n\n"))
         }
+    }
+}
+
+/// An agent's message, with the parts plain text cannot carry drawn properly: tables as real
+/// tables and headings as headings. Everything else keeps its line breaks and inline styling.
+private struct MessageBody: View {
+    let text: String
+
+    private enum Block: Identifiable {
+        case prose(Int, String)
+        case table(Int, [String], [[String]])
+
+        var id: Int {
+            switch self {
+            case .prose(let i, _), .table(let i, _, _): return i
+            }
+        }
+    }
+
+    private static func cells(_ line: Substring) -> [String] {
+        var t = line.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("|") { t.removeFirst() }
+        if t.hasSuffix("|") { t.removeLast() }
+        return t.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    private static func isDivider(_ line: Substring) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        return t.contains("-") && t.allSatisfy { "|-: ".contains($0) }
+    }
+
+    private var blocks: [Block] {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var out: [Block] = []
+        var prose: [String] = []
+        var i = 0
+        func flush() {
+            let joined = prose.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !joined.isEmpty { out.append(.prose(out.count, joined)) }
+            prose = []
+        }
+        while i < lines.count {
+            let line = lines[i]
+            // A table is a row of cells followed by a divider row.
+            if line.contains("|"), i + 1 < lines.count, Self.isDivider(lines[i + 1]) {
+                flush()
+                let header = Self.cells(line)
+                var rows: [[String]] = []
+                i += 2
+                while i < lines.count, lines[i].contains("|"), !lines[i].trimmingCharacters(in: .whitespaces).isEmpty {
+                    rows.append(Self.cells(lines[i]))
+                    i += 1
+                }
+                out.append(.table(out.count, header, rows))
+                continue
+            }
+            // Headings become bold lines; there is no room for big type up here.
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#") {
+                let title = trimmed.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces)
+                prose.append(title.isEmpty ? "" : "**\(title.replacingOccurrences(of: "**", with: ""))**")
+            } else {
+                prose.append(String(line))
+            }
+            i += 1
+        }
+        flush()
+        return out
+    }
+
+    private static func inline(_ s: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(blocks) { block in
+                switch block {
+                case .prose(_, let s):
+                    Text(Self.inline(s)).font(.system(size: 12.5)).lineSpacing(2)
+                        .foregroundStyle(.white.opacity(0.88)).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case .table(_, let header, let rows):
+                    table(header, rows)
+                }
+            }
+        }
+    }
+
+    private func table(_ header: [String], _ rows: [[String]]) -> some View {
+        let columns = header.count
+        return Grid(alignment: .topLeading, horizontalSpacing: 10, verticalSpacing: 0) {
+            GridRow {
+                ForEach(0..<columns, id: \.self) { c in
+                    Text(Self.inline(header[c])).font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.6)).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+                }
+            }
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                Rectangle().fill(.white.opacity(0.1)).frame(height: 1).gridCellColumns(columns)
+                GridRow {
+                    ForEach(0..<columns, id: \.self) { c in
+                        Text(Self.inline(c < row.count ? row[c] : "")).font(.system(size: 11.5))
+                            .foregroundStyle(.white.opacity(0.88)).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 9).padding(.vertical, 3)
+        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.white.opacity(0.1), lineWidth: 1))
     }
 }
 
