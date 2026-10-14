@@ -31,6 +31,52 @@ final class NotchUI {
     /// Showing the Notion to-do list in the right-hand pane.
     var showingTasks = false
     var showingClips = false
+    /// The small shelf panel is showing.
+    var showingShelf = false
+    /// A file is being dragged somewhere on screen right now.
+    private(set) var fileInHand = false
+
+    /// The tray in the top bar: show what is being held.
+    func openShelf() {
+        cardsOnly = false
+        showingClips = false
+        showingTasks = false
+        showingShelf = true
+        expanded = true
+    }
+
+    /// A file has been picked up somewhere: drop the shelf down as a place to put it. Left
+    /// alone if the island is already open and in use.
+    func fileDrag(_ active: Bool) {
+        guard active != fileInHand else { return }
+        fileInHand = active
+        if active {
+            guard !expanded, pendingLinks.isEmpty else { return }
+            autoOpened = true
+            cardsOnly = false
+            showingClips = false
+            showingShelf = true
+            collapseWork?.cancel()
+            expanded = true
+        } else if showingShelf, autoOpened {
+            // Let go somewhere else: tuck away again, unless the pointer is on the shelf.
+            autoOpened = false
+            scheduleCollapse(after: 0.5)
+        }
+    }
+
+    /// Something was just dropped on the shelf: show it there for a moment, then tuck away.
+    func fileLanded() {
+        fileInHand = false
+        autoOpened = false
+        collapseWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.showingShelf, !self.hovering else { return }
+            self.collapse()
+        }
+        collapseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
+    }
     /// Which clipboard row the keyboard is on.
     var clipIndex = 0
 
@@ -45,8 +91,10 @@ final class NotchUI {
         browsing = false
         showingProfiles = false
         showingTasks = false
+        showingShelf = false
         showingClips = true
         clipIndex = 0
+        autoOpened = false
         expanded = true
         controller?.panel.makeKey()
     }
@@ -274,6 +322,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingClips = false
+        showingShelf = false
         browsing = true
         searchIndex = 0
         // Straight into typing: the search field takes the keyboard.
@@ -299,6 +348,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingClips = false
+        showingShelf = false
         focusReply = false
         Dictation.shared.stop()
         autoOpened = false
@@ -311,6 +361,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingClips = false
+        showingShelf = false
         selectedID = id
         focusReply = true
         UserDefaults.standard.set(id, forKey: "lastChat")
@@ -332,6 +383,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingClips = false
+        showingShelf = false
         focusReply = true
         UserDefaults.standard.set(id, forKey: "lastChat")
         expanded = true
@@ -512,12 +564,21 @@ final class NotchController {
         }) { monitors.append(m) }
         // While a mouse button is held (a file being dragged up from another app, say) the pointer
         // is followed on a timer, because ordinary movement events stop arriving during a drag.
+        // The drag clipboard changes when something is picked up; if that something is a file, the
+        // shelf drops down to take it.
         if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] _ in
+            let drag = NSPasteboard(name: .drag)
+            let before = drag.changeCount
             self?.dragWatch?.invalidate()
             self?.dragWatch = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] timer in
                 guard NSEvent.pressedMouseButtons & 1 == 1 else {
                     timer.invalidate()
+                    self?.ui.fileDrag(false)
                     return
+                }
+                if drag.changeCount != before,
+                   drag.types?.contains(where: { [.fileURL, .tiff, .png].contains($0) || $0.rawValue.contains("promise") }) == true {
+                    self?.ui.fileDrag(true)
                 }
                 self?.trackMouse()
             }

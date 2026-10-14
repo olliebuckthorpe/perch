@@ -25,14 +25,14 @@ struct NotchContent: View {
         let usage = Usage.shared
         // Only while the island is open in full; closed, and for a notification banner, the notch
         // stays as small as it can be.
-        let dials = ui.expanded && !ui.cardsOnly && ui.pendingLinks.isEmpty && ui.justOpened == nil
+        let dials = ui.expanded && !ui.cardsOnly && ui.pendingLinks.isEmpty && ui.justOpened == nil && !ui.showingClips && !ui.showingShelf
         let grokDial = dials && usage.grok.week != nil, claudeDial = dials && (usage.claude.short != nil || usage.claude.week != nil)
         let l = earWidth(left.count) + (grokDial ? dialWidth : 0), r = earWidth(right.count) + (claudeDial ? dialWidth : 0)
         // Opened, the island is at least 340 wide; the extra is shared between both sides
         // so the gap always stays lined up with the hardware notch.
         // A chat needs more room than the roster.
         let chatting = ui.selectedID != nil || ui.composing
-        let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : 680) - (l + ui.notch.width + r)) : 0
+        let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : ui.showingClips || ui.showingShelf ? 380 : 680) - (l + ui.notch.width + r)) : 0
         let side = max(l, r, extra > 0 ? (l + r + extra) / 2 : 0)
         let leftWidth = ui.expanded ? side : l, rightWidth = ui.expanded ? side : r
         let radius: CGFloat = ui.expanded ? 18 : 10
@@ -78,7 +78,8 @@ struct NotchContent: View {
         .animation(island, value: ui.expanded)
         .animation(island, value: ui.cardsOnly)
         .animation(tabSwitch, value: ui.showingTasks)
-        .animation(tabSwitch, value: ui.showingClips)
+        .animation(island, value: ui.showingClips)
+        .animation(island, value: ui.showingShelf)
         .animation(island, value: store.needing.count)
         .animation(island, value: l + r)
         .onChange(of: [openWidth, r - l], initial: true) {
@@ -119,15 +120,16 @@ private struct ExpandedBody: View {
                 LinkOpenedNote(site: opened.site, profile: opened.profile)
             } else if ui.cardsOnly, let id = ui.noticeID, let agent = store.find(id) {
                 NoticeView(agent: agent)
+            } else if ui.showingShelf {
+                // A small panel, not the whole island: for holding a file, or taking one back.
+                ShelfPanel()
+            } else if ui.showingClips {
+                ClipboardPanel()
             } else {
                 TopBar()
                 if ui.showingTasks {
                     // The board gets the full width; the island stays the same size either way.
                     TasksView()
-                        .transition(.asymmetric(insertion: .opacity.combined(with: .offset(x: 24)),
-                                                removal: .opacity.combined(with: .offset(x: 24))))
-                } else if ui.showingClips {
-                    ClipsView()
                         .transition(.asymmetric(insertion: .opacity.combined(with: .offset(x: 24)),
                                                 removal: .opacity.combined(with: .offset(x: 24))))
                 } else {
@@ -527,26 +529,26 @@ private struct TopBar: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            tab("Chats", on: !ui.showingTasks && !ui.showingClips) {
-                withAnimation(tabSwitch) {
-                    ui.showingTasks = false
-                    ui.showingClips = false
-                }
+            tab("Chats", on: !ui.showingTasks) {
+                withAnimation(tabSwitch) { ui.showingTasks = false }
             }
             tab("To-dos", count: NotionTasks.shared.connected ? NotionTasks.shared.tasks.count : nil, on: ui.showingTasks) {
                 ui.composing = false
-                withAnimation(tabSwitch) {
-                    ui.showingClips = false
-                    ui.showingTasks = true
-                }
+                withAnimation(tabSwitch) { ui.showingTasks = true }
             }
-            // The clipboard and the shelf of held files. The count is what is on the shelf.
-            tab("Clips", count: Clips.shared.shelf.count, on: ui.showingClips) {
-                ui.composing = false
-                withAnimation(tabSwitch) {
-                    ui.showingTasks = false
-                    ui.showingClips = true
+            // Only when something is being held: a small tray with how many. Click for the shelf.
+            if !Clips.shared.shelf.isEmpty {
+                Button { ui.openShelf() } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "tray.full.fill").font(.system(size: 11))
+                        Text("\(Clips.shared.shelf.count)").font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(.white.opacity(0.75))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(.white.opacity(0.08), in: Capsule())
                 }
+                .buttonStyle(Press()).help("Files you are holding")
+                .transition(.scale(scale: 0.7).combined(with: .opacity))
             }
             Spacer(minLength: 8)
             ForEach(profiles) { profile in
@@ -665,7 +667,7 @@ private struct Rail: View {
             .padding(.bottom, 5)
             ForEach(agents) { agent in
                 let star = agent.source == .grok && ui.pinned.contains(agent.name)
-                RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks && !ui.showingClips, star: star) { dragged in
+                RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks, star: star) { dragged in
                     // Pinned bots stay at the top; everything else can be dragged into any order.
                     guard !star else { return }
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
@@ -2091,6 +2093,8 @@ private struct AgentBubble: View {
     @State private var over: String?
     @State private var chosen: String?
     @State private var copied = false
+    @State private var overCopy = false
+    @State private var overFace = false
 
     private static let quick = ["👍", "❤️", "😂", "🙏", "👀", "🔥", "✅"]
     private static let pop = Animation.spring(response: 0.3, dampingFraction: 0.6)
@@ -2109,29 +2113,35 @@ private struct AgentBubble: View {
                 copied = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
             } label: {
-                Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 10.5, weight: copied ? .bold : .regular))
-                    .foregroundStyle(copied ? Palette.green : .white.opacity(0.45))
-                    .frame(width: 22, height: 24).contentShape(Rectangle())
+                Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 13, weight: copied ? .bold : .regular))
+                    .foregroundStyle(copied ? Palette.green : .white.opacity(overCopy ? 0.95 : 0.6))
+                    .frame(width: 30, height: 28)
+                    .background(.white.opacity(overCopy || copied ? 0.12 : 0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(Press(reach: 3))
-            .padding(.leading, 3)
+            .buttonStyle(Press(reach: 2))
+            .onHover { overCopy = $0 }
+            .padding(.leading, 6)
             .opacity(hovered || picking || copied ? 1 : 0)
             .help("Copy this message")
             if react != nil {
                 Button { withAnimation(Self.pop) { picking.toggle() } } label: {
-                    Image(systemName: picking ? "face.smiling.inverse" : "face.smiling").font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(picking ? 0.9 : 0.45))
+                    Image(systemName: picking ? "face.smiling.inverse" : "face.smiling").font(.system(size: 14))
+                        .foregroundStyle(.white.opacity(picking || overFace ? 0.95 : 0.6))
                         .rotationEffect(.degrees(picking ? -14 : 0))
-                        .scaleEffect(picking ? 1.2 : 1)
-                        .frame(width: 26, height: 24).contentShape(Rectangle())
+                        .scaleEffect(picking ? 1.15 : 1)
+                        .frame(width: 30, height: 28)
+                        .background(.white.opacity(overFace || picking ? 0.12 : 0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(Press(reach: 4))
-                .padding(.leading, 2)
+                .buttonStyle(Press(reach: 2))
+                .onHover { overFace = $0 }
+                .padding(.leading, 4)
                 .opacity(hovered || picking ? 1 : 0)
                 // The tray ends at the face and opens back over the message, so it can never
                 // run off the edge of the island however wide the message is.
                 .overlay(alignment: .bottomTrailing) {
-                    if picking { tray.offset(x: 14, y: -26).transition(.scale(scale: 0.4, anchor: .bottomTrailing).combined(with: .opacity)) }
+                    if picking { tray.offset(x: 14, y: -30).transition(.scale(scale: 0.4, anchor: .bottomTrailing).combined(with: .opacity)) }
                 }
             }
             Spacer(minLength: 28)
@@ -2946,13 +2956,11 @@ private func shelve(_ providers: [NSItemProvider]) {
     }
 }
 
-/// The third tab. The shelf across the top holds files until they are dragged out again;
-/// under it, what was copied recently, newest first. Type to filter, arrows to move, Return
-/// (or a click) pastes into the app that was in use.
-private struct ClipsView: View {
+/// The clipboard, on its shortcut only: a small panel of what was copied recently, newest
+/// first. Type to filter, arrows to move, Return (or a click) pastes into the app in use.
+private struct ClipboardPanel: View {
     @Environment(NotchUI.self) private var ui
     @State private var filter = ""
-    @State private var dropping = false
     @FocusState private var focused: Bool
 
     private var clips: [Clip] {
@@ -2963,11 +2971,10 @@ private struct ClipsView: View {
 
     var body: some View {
         let clips = clips
-        VStack(alignment: .leading, spacing: 10) {
-            shelf
+        VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
                 Image(systemName: "doc.on.clipboard").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
-                TextField("Filter what you copied", text: $filter)
+                TextField("Clipboard", text: $filter)
                     .textFieldStyle(.plain).font(.system(size: 12.5)).focused($focused)
                     .onKeyPress(.downArrow) {
                         ui.clipIndex = min(ui.clipIndex + 1, max(0, clips.count - 1))
@@ -2978,69 +2985,77 @@ private struct ClipsView: View {
                         return .handled
                     }
                     .onSubmit { if clips.indices.contains(ui.clipIndex) { Clips.shared.paste(clips[ui.clipIndex]) } }
-                Text("↑ ↓  Return pastes").font(.system(size: 10)).foregroundStyle(.white.opacity(0.28))
+                Text("Return pastes").font(.system(size: 10)).foregroundStyle(.white.opacity(0.28))
             }
             .padding(.horizontal, 9).padding(.vertical, 6)
             .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .contentShape(Rectangle())
-            .simultaneousGesture(TapGesture().onEnded {
-                ui.controller?.panel.makeKey()
-                focused = true
-            })
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(spacing: 2) {
+                    VStack(spacing: 1) {
                         ForEach(Array(clips.enumerated()), id: \.element.id) { index, clip in
                             ClipRow(clip: clip, selected: index == ui.clipIndex).id(clip.id)
                         }
                         if clips.isEmpty {
                             Text(filter.isEmpty ? "Things you copy will collect here." : "Nothing matches.")
                                 .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8).padding(.top, 6)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8).padding(.vertical, 6)
                         }
                     }
                 }
+                // Seven rows showing; the rest scroll.
+                .frame(height: min(CGFloat(max(clips.count, 1)) * 35, 245))
                 .onChange(of: ui.clipIndex) { _, i in
                     if clips.indices.contains(i) { proxy.scrollTo(clips[i].id) }
                 }
             }
         }
-        .frame(height: 452, alignment: .top)
         .onChange(of: filter) { ui.clipIndex = 0 }
         .onAppear {
             ui.controller?.panel.makeKey()
             DispatchQueue.main.async { focused = true }
         }
     }
+}
 
-    /// One quiet row. Empty, it is a single dashed line of a hint, so it costs almost nothing.
-    private var shelf: some View {
+/// The shelf. It drops down by itself while a file is being dragged, as somewhere to put it,
+/// and shows what is being held. Drag a file back out to use it.
+private struct ShelfPanel: View {
+    @Environment(NotchUI.self) private var ui
+    @State private var dropping = false
+
+    var body: some View {
         let items = Clips.shared.shelf
-        return Group {
-            if items.isEmpty {
-                HStack(spacing: 7) {
-                    Image(systemName: "tray").font(.system(size: 11))
-                    Text("Drag files up to the notch to hold them here").font(.system(size: 11.5))
-                }
-                .foregroundStyle(.white.opacity(dropping ? 0.9 : 0.4))
-                .frame(maxWidth: .infinity).frame(height: 38)
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(.white.opacity(dropping ? 0.6 : 0.16), style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
-            } else {
+        VStack(spacing: 8) {
+            if !items.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(items) { ShelfTile(item: $0) }
                     }
-                    .padding(.horizontal, 8).padding(.vertical, 7)
+                    .padding(.horizontal, 4).padding(.top, 6)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.white.opacity(dropping ? 0.1 : 0.045), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            }
+            if items.isEmpty || ui.fileInHand {
+                HStack(spacing: 8) {
+                    Image(systemName: dropping ? "tray.and.arrow.down.fill" : "tray.and.arrow.down").font(.system(size: 15))
+                        .scaleEffect(dropping ? 1.15 : 1)
+                    Text(ui.fileInHand ? "Drop it here to hold it" : "Nothing held. Drag a file here to keep it handy.")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundStyle(.white.opacity(dropping ? 1 : 0.6))
+                .frame(maxWidth: .infinity).frame(height: items.isEmpty ? 76 : 46)
+                .background(.white.opacity(dropping ? 0.12 : 0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(.white.opacity(dropping ? 0.7 : 0.2), style: StrokeStyle(lineWidth: 1.2, dash: [6, 4])))
+                .animation(.spring(response: 0.25, dampingFraction: 0.7), value: dropping)
             }
         }
+        .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
         .onDrop(of: [.fileURL, .image], isTargeted: $dropping) { providers in
             shelve(providers)
+            ui.fileLanded()
             return true
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: items.map(\.id))
