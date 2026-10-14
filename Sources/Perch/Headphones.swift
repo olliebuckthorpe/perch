@@ -72,6 +72,9 @@ final class Headphones {
 
     private func say(_ text: String, keep: Bool = false) {
         note = text
+        // Used from a shortcut with nothing on screen, so the outcome is a sound: a soft tick when
+        // it worked, the system's "no" when it did not.
+        if !keep { NSSound(named: text.hasPrefix("Could not") || text.contains("not paired") ? "Basso" : "Tink")?.play() }
         guard !keep else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { if self.note == text { self.note = nil } }
     }

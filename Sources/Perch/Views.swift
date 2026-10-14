@@ -520,38 +520,6 @@ private struct UsageDial: View {
     }
 }
 
-// MARK: Headphones
-
-/// One click to bring the headphones over to this Mac (and make them the speaker and mic), or
-/// to hand them back. What happened shows beside it for a moment.
-private struct HeadphonesButton: View {
-    var body: some View {
-        let phones = Headphones.shared
-        HStack(spacing: 6) {
-            if let note = phones.note {
-                Text(note).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.7))
-                    .lineLimit(1).fixedSize().transition(.opacity.combined(with: .move(edge: .trailing)))
-            }
-            Button { phones.toggle() } label: {
-                ZStack {
-                    Circle().fill(phones.connected ? Color.white : .white.opacity(0.1))
-                    if phones.busy {
-                        ProgressView().controlSize(.mini).tint(.white)
-                    } else {
-                        Image(systemName: "headphones").font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(phones.connected ? Color.black : .white.opacity(0.75))
-                    }
-                }
-                .frame(width: 22, height: 22)
-            }
-            .buttonStyle(Press(reach: 3))
-            .help(phones.connected ? "Hand \(phones.name) back to your phone (Control-Option-H)" : "Bring \(phones.name) to this Mac (Control-Option-H)")
-        }
-        .animation(.easeOut(duration: 0.18), value: phones.note)
-        .onAppear { phones.refresh() }
-    }
-}
-
 // MARK: Top bar
 
 /// What sits under the notch when the island is open: the two tabs on the left, and on the
@@ -586,7 +554,6 @@ private struct TopBar: View {
                 .transition(.scale(scale: 0.7).combined(with: .opacity))
             }
             Spacer(minLength: 8)
-            HeadphonesButton().padding(.trailing, 4)
             ForEach(profiles) { profile in
                 ProfileAvatar(profile: profile, size: 22)
                     .scaleEffect(hovered == profile.id ? 1.14 : 1)
