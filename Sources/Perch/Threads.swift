@@ -46,12 +46,12 @@ struct ChatMessage: Identifiable, Equatable {
     var choice: ChoiceWidget?
     var approval: GrokApproval?
     /// A bot asking for a secret (an API key, say): its label and what it is for.
-    var secret: (label: String, detail: String)?
+    var secret: (label: String, detail: String, provided: Bool)?
 
     static func == (a: ChatMessage, b: ChatMessage) -> Bool {
         a.id == b.id && a.fromUser == b.fromUser && a.text == b.text && a.reactions == b.reactions && a.email == b.email
             && a.choice == b.choice && a.approval == b.approval && a.fileName == b.fileName && a.filePath == b.filePath
-            && a.peerName == b.peerName && a.peerOutbound == b.peerOutbound && a.secret?.label == b.secret?.label
+            && a.peerName == b.peerName && a.peerOutbound == b.peerOutbound && a.secret?.label == b.secret?.label && a.secret?.provided == b.secret?.provided
     }
     /// Set when this is one agent talking to another, not part of the conversation with the user.
     /// A file the agent attached: its name, and where it lives on the agent's own computer.

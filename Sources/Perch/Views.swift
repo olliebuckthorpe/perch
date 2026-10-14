@@ -1922,7 +1922,7 @@ private struct ChatView: View {
             } else if let email = message.email {
                 EmailCard(draft: email, agent: agent)
             } else if let secret = message.secret {
-                SecretCard(label: secret.label, detail: secret.detail, entry: message.id, agent: agent)
+                SecretCard(label: secret.label, detail: secret.detail, entry: message.id, agent: agent, provided: secret.provided)
             } else if let approval = message.approval {
                 ApprovalCard(approval: approval, entry: message.id, agent: agent)
             } else if let choice = message.choice {
@@ -2513,9 +2513,12 @@ private struct SecretCard: View {
     let detail: String
     let entry: String
     let agent: Agent
+    /// Grok Bot's own record says it has been given, from here or from the app.
+    var provided = false
     @Environment(NotchUI.self) private var ui
     @State private var value = ""
-    @State private var state: String?
+    @State private var saved: String?
+    private var state: String? { provided ? "saved" : saved }
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -2531,7 +2534,7 @@ private struct SecretCard: View {
                     Text(detail).font(.system(size: 12)).foregroundStyle(.white.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
                 }
                 if state == "saved" {
-                    Text("Saved for \(agent.name). It never sees the value.").font(.system(size: 11)).foregroundStyle(Palette.green)
+                    Text("Saved securely").font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.green)
                 } else {
                     HStack(spacing: 7) {
                         SecureField("Paste it here", text: $value)
@@ -2556,9 +2559,12 @@ private struct SecretCard: View {
             }
             .padding(11)
             .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .opacity(state == "saved" ? 0.7 : 1)
             Spacer(minLength: 28)
         }
+        .animation(.easeOut(duration: 0.2), value: state)
         .onTapGesture {
+            guard state != "saved" else { return }
             ui.controller?.panel.makeKey()
             focused = true
         }
@@ -2567,10 +2573,13 @@ private struct SecretCard: View {
     private func save() {
         let secret = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !secret.isEmpty, state != "saving" else { return }
-        state = "saving"
+        saved = "saving"
         GrokSource.shared.submitSecret(secret, entry: entry, in: agent) { ok in
-            withAnimation(.easeOut(duration: 0.2)) { state = ok ? "saved" : "failed" }
-            if ok { value = "" }
+            withAnimation(.easeOut(duration: 0.2)) { saved = ok ? "saved" : "failed" }
+            if ok {
+                value = ""
+                GrokSource.shared.loadThread(agent)
+            }
         }
     }
 }

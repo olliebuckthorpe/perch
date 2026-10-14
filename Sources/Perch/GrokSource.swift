@@ -255,7 +255,7 @@ final class GrokSource {
                     if message["type"] as? String == "secret-request", let r = message["secretRequest"] as? [String: Any] {
                         let label = r["label"] as? String ?? "A secret"
                         return ChatMessage(id: id, fromUser: false, text: label, reactions: reactions,
-                                           secret: (label, r["description"] as? String ?? ""))
+                                           secret: (label, r["description"] as? String ?? "", e["secretProvided"] as? Bool == true))
                     }
                     if message["type"] as? String == "auto-review-approval", let a = message["approval"] as? [String: Any],
                        let requestId = a["requestId"] as? String {
