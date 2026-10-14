@@ -28,8 +28,10 @@ let gw = null;
 
 async function gateway() {
   if (!gw) {
+    // The app's own saved connection first: it is what the app itself is using right now.
+    // Asking Cursor for a fresh one is the fallback (it has been refusing since the app update).
     let found;
-    try { found = await resolveGatewaySession({}); } catch (err) { found = appSession(); }
+    try { found = appSession(); } catch { found = await resolveGatewaySession({}); }
     gw = new Gateway(found, { timeoutMs: 30_000 });
   }
   return gw;
