@@ -1659,6 +1659,23 @@ private struct NewChatView: View {
             Text("Starts in the background in auto mode and shows up in the Claude app once it has replied.")
                 .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.3))
                 .fixedSize(horizontal: false, vertical: true)
+            // Pictures and files pasted (Cmd+V) or dropped in go with the first message.
+            if let files = ui.attachments["new"], !files.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(files) { file in
+                        Image(nsImage: file.thumbnail).resizable().aspectRatio(contentMode: .fill)
+                            .frame(width: 40, height: 40)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .overlay(alignment: .topTrailing) {
+                                Button { ui.attachments["new"]?.removeAll { $0.id == file.id } } label: {
+                                    Image(systemName: "xmark.circle.fill").font(.system(size: 12))
+                                        .foregroundStyle(.white, .black.opacity(0.7))
+                                }
+                                .buttonStyle(Press()).offset(x: 4, y: -4)
+                            }
+                    }
+                }
+            }
             HStack(alignment: .bottom, spacing: 6) {
                 TextField("What do you want to work on?", text: draft, axis: .vertical)
                     .textFieldStyle(.plain).font(.system(size: 12.5)).lineLimit(3...12)
@@ -1673,9 +1690,9 @@ private struct NewChatView: View {
                 .buttonStyle(Press())
                 Button { start(chosen) } label: {
                     Image(systemName: "arrow.up.circle.fill").font(.system(size: 16))
-                        .foregroundStyle(draft.wrappedValue.isEmpty ? .white.opacity(0.2) : Palette.blue)
+                        .foregroundStyle(draft.wrappedValue.isEmpty && (ui.attachments["new"] ?? []).isEmpty ? .white.opacity(0.2) : Palette.blue)
                 }
-                .buttonStyle(Press()).disabled(draft.wrappedValue.isEmpty)
+                .buttonStyle(Press()).disabled(draft.wrappedValue.isEmpty && (ui.attachments["new"] ?? []).isEmpty)
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -1687,6 +1704,22 @@ private struct NewChatView: View {
         })
         }
         .frame(height: 452, alignment: .top)
+        .onDrop(of: [.fileURL, .image], isTargeted: nil) { providers in
+            for provider in providers {
+                if provider.hasItemConformingToTypeIdentifier("public.file-url") {
+                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                        guard let url else { return }
+                        DispatchQueue.main.async { if let f = Attachment.from(file: url) { ui.attachments["new", default: []].append(f) } }
+                    }
+                } else {
+                    _ = provider.loadDataRepresentation(forTypeIdentifier: "public.image") { data, _ in
+                        guard let data, let image = NSImage(data: data) else { return }
+                        DispatchQueue.main.async { if let f = Attachment.from(image) { ui.attachments["new", default: []].append(f) } }
+                    }
+                }
+            }
+            return true
+        }
         .padding(.top, 2)
         .onAppear {
             SessionIndex.shared.refresh()
@@ -1696,10 +1729,12 @@ private struct NewChatView: View {
     }
 
     private func start(_ folder: String) {
-        let prompt = ui.drafts["new"] ?? ""
-        guard let agent = CodingSessions.shared.startChat(prompt: prompt, folder: folder) else { return }
+        let files = ui.attachments["new"] ?? []
+        let prompt = ([ui.drafts["new"] ?? ""] + files.map(\.note)).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        guard !prompt.isEmpty, let agent = CodingSessions.shared.startChat(prompt: prompt, folder: folder) else { return }
         Dictation.shared.stop()
         ui.drafts["new"] = nil
+        ui.attachments["new"] = nil
         ui.select(agent.id)
     }
 }

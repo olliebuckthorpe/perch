@@ -273,8 +273,9 @@ final class NotchUI {
     func pasteImages() -> Bool {
         // The chat on screen is the one being written to. (Going by which box last had the
         // cursor could point at a chat that is no longer showing, and the picture vanished.)
-        guard expanded, !showingClips, !showingShelf, !showingTasks, !composing,
-              let id = selectedID ?? focusedAgentID else { return false }
+        // Starting a new chat collects them under "new"; otherwise the chat on screen.
+        guard expanded, !showingClips, !showingShelf, !showingTasks,
+              let id = composing ? "new" : (selectedID ?? focusedAgentID) else { return false }
         let images = Attachment.fromPasteboard()
         guard !images.isEmpty else { return false }
         attachments[id, default: []].append(contentsOf: images)
