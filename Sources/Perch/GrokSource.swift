@@ -252,6 +252,11 @@ final class GrokSource {
                         let name = message["file_name"] as? String ?? URL(fileURLWithPath: path).lastPathComponent
                         return ChatMessage(id: id, fromUser: false, text: name, reactions: reactions, fileName: name, filePath: path)
                     }
+                    if message["type"] as? String == "secret-request", let r = message["secretRequest"] as? [String: Any] {
+                        let label = r["label"] as? String ?? "A secret"
+                        return ChatMessage(id: id, fromUser: false, text: label, reactions: reactions,
+                                           secret: (label, r["description"] as? String ?? ""))
+                    }
                     if message["type"] as? String == "auto-review-approval", let a = message["approval"] as? [String: Any],
                        let requestId = a["requestId"] as? String {
                         let params = (a["summaryCopy"] as? [String: Any])?["params"] as? [String: Any]

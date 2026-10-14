@@ -1921,6 +1921,8 @@ private struct ChatView: View {
                 FileCard(name: name, path: path, agent: agent, messageID: message.id)
             } else if let email = message.email {
                 EmailCard(draft: email, agent: agent)
+            } else if let secret = message.secret {
+                SecretCard(label: secret.label, detail: secret.detail, agent: agent)
             } else if let approval = message.approval {
                 ApprovalCard(approval: approval, entry: message.id, agent: agent)
             } else if let choice = message.choice {
@@ -2500,6 +2502,41 @@ private struct SwipeToReply: ViewModifier {
                     ui.hoveredMessage = nil
                 }
             }
+    }
+}
+
+/// A bot asking for a key or password. It is pasted in Grok Bot itself, which stores it
+/// without the bot ever seeing it; Perch deliberately does not handle secrets.
+private struct SecretCard: View {
+    let label: String
+    let detail: String
+    let agent: Agent
+    @Environment(NotchUI.self) private var ui
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 6) {
+                    Image(systemName: "key.fill").font(.system(size: 11)).foregroundStyle(.white.opacity(0.6))
+                    Text(label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !detail.isEmpty {
+                    Text(detail).font(.system(size: 12)).foregroundStyle(.white.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 8) {
+                    Button("Paste it in Grok Bot") {
+                        GrokSource.shared.open(agent)
+                        ui.collapse()
+                    }
+                    .buttonStyle(ChipButton(fill: .white))
+                    Text("Keys stay out of Perch").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+                }
+            }
+            .padding(11)
+            .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            Spacer(minLength: 28)
+        }
     }
 }
 
