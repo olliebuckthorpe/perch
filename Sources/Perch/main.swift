@@ -63,6 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Control+Option+V: the clipboard. Control+Option+R: the pinned bot (Remmi).
         Hotkeys.shared.register(key: kVK_ANSI_V, modifiers: controlKey | optionKey) { NotchUI.shared.toggleClips() }
         Hotkeys.shared.register(key: kVK_ANSI_R, modifiers: controlKey | optionKey) { NotchUI.shared.openPinned() }
+        // Control+Option+H: headphones to this Mac, or back again.
+        Hotkeys.shared.register(key: kVK_ANSI_H, modifiers: controlKey | optionKey) { Headphones.shared.toggle() }
         Usage.shared.start()
         // The top-edge guard is retired: holding the pointer off the top edge meant pinning it
         // behind the notch, where it cannot be seen. Make sure it is off for good.
