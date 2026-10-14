@@ -1922,7 +1922,7 @@ private struct ChatView: View {
             } else if let email = message.email {
                 EmailCard(draft: email, agent: agent)
             } else if let secret = message.secret {
-                SecretCard(label: secret.label, detail: secret.detail, agent: agent)
+                SecretCard(label: secret.label, detail: secret.detail, entry: message.id, agent: agent)
             } else if let approval = message.approval {
                 ApprovalCard(approval: approval, entry: message.id, agent: agent)
             } else if let choice = message.choice {
@@ -2505,37 +2505,72 @@ private struct SwipeToReply: ViewModifier {
     }
 }
 
-/// A bot asking for a key or password. It is pasted in Grok Bot itself, which stores it
-/// without the bot ever seeing it; Perch deliberately does not handle secrets.
+/// A bot asking for a key or password. It is typed into a hidden field and handed straight
+/// to the host with the same call Grok Bot's own field uses; the bot never sees it and Perch
+/// keeps no copy. Grok Bot is still there as a fallback.
 private struct SecretCard: View {
     let label: String
     let detail: String
+    let entry: String
     let agent: Agent
     @Environment(NotchUI.self) private var ui
+    @State private var value = ""
+    @State private var state: String?
+    @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
-                    Image(systemName: "key.fill").font(.system(size: 11)).foregroundStyle(.white.opacity(0.6))
+                    Image(systemName: state == "saved" ? "checkmark.seal.fill" : "key.fill").font(.system(size: 11))
+                        .foregroundStyle(state == "saved" ? Palette.green : .white.opacity(0.6))
                     Text(label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !detail.isEmpty {
                     Text(detail).font(.system(size: 12)).foregroundStyle(.white.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
                 }
-                HStack(spacing: 8) {
-                    Button("Paste it in Grok Bot") {
-                        GrokSource.shared.open(agent)
-                        ui.collapse()
+                if state == "saved" {
+                    Text("Saved for \(agent.name). It never sees the value.").font(.system(size: 11)).foregroundStyle(Palette.green)
+                } else {
+                    HStack(spacing: 7) {
+                        SecureField("Paste it here", text: $value)
+                            .textFieldStyle(.plain).font(.system(size: 12.5)).focused($focused)
+                            .padding(.horizontal, 9).padding(.vertical, 6)
+                            .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(.white.opacity(focused ? 0.35 : 0.15), lineWidth: 1))
+                            .onSubmit(save)
+                        Button(state == "saving" ? "Saving…" : "Save securely", action: save)
+                            .buttonStyle(ChipButton(fill: value.isEmpty ? nil : .white))
+                            .disabled(value.isEmpty || state == "saving")
                     }
-                    .buttonStyle(ChipButton(fill: .white))
-                    Text("Keys stay out of Perch").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+                    HStack(spacing: 5) {
+                        Image(systemName: "lock.shield").font(.system(size: 10))
+                        Text(state == "failed" ? "Grok Bot did not take it from here." : "Goes straight to Grok Bot's secure store")
+                        if state == "failed" {
+                            Button("Use Grok Bot") { GrokSource.shared.open(agent); ui.collapse() }.buttonStyle(LinkButton())
+                        }
+                    }
+                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                 }
             }
             .padding(11)
             .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             Spacer(minLength: 28)
+        }
+        .onTapGesture {
+            ui.controller?.panel.makeKey()
+            focused = true
+        }
+    }
+
+    private func save() {
+        let secret = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !secret.isEmpty, state != "saving" else { return }
+        state = "saving"
+        GrokSource.shared.submitSecret(secret, entry: entry, in: agent) { ok in
+            withAnimation(.easeOut(duration: 0.2)) { state = ok ? "saved" : "failed" }
+            if ok { value = "" }
         }
     }
 }

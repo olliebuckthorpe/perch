@@ -380,6 +380,14 @@ final class GrokSource {
     }
 
     /// Adds (or, if it is already there, removes) the user's reaction on one of the bot's messages.
+    /// Hands a requested secret to the host, the same call Grok Bot's own field makes. The value
+    /// goes straight to the host to be stored for the bot's box; Perch keeps no copy.
+    func submitSecret(_ value: String, entry: String, in agent: Agent, done: @escaping (Bool) -> Void) {
+        request("submitSecret", ["entryId": entry, "value": value, "agentId": agent.sessionID]) { reply in
+            done(reply != nil)
+        }
+    }
+
     /// Answers a bot's request for permission, as the Allow and Deny buttons in Grok Bot do.
     func resolve(_ approval: GrokApproval, entry: String, in agent: Agent, as resolution: String,
                  done: @escaping (Bool) -> Void) {
