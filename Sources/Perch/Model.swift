@@ -229,7 +229,7 @@ final class AgentStore {
 
     func prune() {
         let now = Date()
-        for a in agents where a.source != .grok && a.pending == nil && !a.kept {
+        for a in agents where a.source != .grok && a.pending == nil && !a.kept && !NotchUI.shared.pinnedChats.contains(a.id) {
             let age = now.timeIntervalSince(a.lastActivity)
             // A session that died mid-turn never says so.
             if a.status == .working, age > 30 * 60 { a.status = .idle }

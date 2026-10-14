@@ -631,12 +631,14 @@ private struct Rail: View {
         // Chats the user added on purpose always show; other quiet ones only fill spare room.
         let kept = sessions.filter { $0.status == .idle && $0.kept }
         let quiet = kept + sessions.filter { $0.status == .idle && !$0.kept }.prefix(max(0, 5 - active.count - kept.count))
-        // Pinned bots lead the rail; the rest only join when they have something.
-        let pinned = store.grokBots.filter { ui.pinned.contains($0.name) }
-        let bots = store.grokBots.filter(ui.inPill)
+        // Remmi leads, then any other bot with something to say, then pinned chats, then the rest.
+        let lead = store.grokBots.filter { ui.pinned.contains($0.name) }
+        let bots = store.grokBots.filter { ui.inPill($0) && !ui.pinned.contains($0.name) }
+        let pinnedChats = store.sessions.filter { ui.pinnedChats.contains($0.id) }
+        let pinned = lead + bots + pinnedChats
         // Whatever is open stays on the rail even if it has gone quiet.
         let open = ui.selectedID.flatMap { store.find($0) }.map { [$0] } ?? []
-        let rest = (store.needing + active + quiet + bots + open)
+        let rest = (store.needing + active + quiet + open)
             .filter { a in !pinned.contains { $0.id == a.id } }
         // A dragged order wins; anything not yet placed keeps its usual position after those.
         let rank = Dictionary(ui.order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
@@ -760,6 +762,19 @@ private struct RailRow: View {
                 .foregroundStyle(.white.opacity(agent.status == .idle && !selected ? 0.6 : 0.95))
                 .lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 0)
+            if hovered && agent.source != .grok {
+                // Pin it so it always stays in the notch.
+                Button { withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { ui.togglePin(agent) } } label: {
+                    Image(systemName: ui.pinnedChats.contains(agent.id) ? "pin.slash.fill" : "pin.fill")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.6)).frame(width: 16, height: 16)
+                        .background(.white.opacity(0.12), in: Circle()).contentShape(Rectangle())
+                }
+                .buttonStyle(Press()).help(ui.pinnedChats.contains(agent.id) ? "Unpin" : "Pin to the notch")
+            } else if ui.pinnedChats.contains(agent.id) {
+                Image(systemName: "pin.fill").font(.system(size: 8.5)).foregroundStyle(.white.opacity(0.4))
+                    .rotationEffect(.degrees(45))
+            }
             if hovered && !star {
                 // Clears it from the notch. It returns by itself if it does something new.
                 Button {

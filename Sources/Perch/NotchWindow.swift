@@ -215,7 +215,7 @@ final class NotchUI {
     }
 
     func isDismissed(_ agent: Agent) -> Bool {
-        guard let at = dismissed[agent.id] else { return false }
+        guard !pinnedChats.contains(agent.id), let at = dismissed[agent.id] else { return false }
         // It stays cleared through restarts and background housekeeping. Only something the user
         // would care about brings it back: it is working, it needs them, it has a new message,
         // or a turn started or finished after it was cleared.
@@ -224,6 +224,7 @@ final class NotchUI {
     }
 
     func dismiss(_ agent: Agent) {
+        pinnedChats.remove(agent.id)
         agent.kept = false
         defer { AgentStore.shared.save() }
         dismissed[agent.id] = Date().timeIntervalSince1970
@@ -248,6 +249,22 @@ final class NotchUI {
         var list = shown.filter { $0 != id }
         list.insert(id, at: list.firstIndex(of: target) ?? list.count)
         order = list + order.filter { !list.contains($0) }.prefix(200)
+    }
+
+    /// Chats pinned to the notch: always shown, never tidied away, sat under the bots.
+    var pinnedChats: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "pinnedChats") ?? []) {
+        didSet { UserDefaults.standard.set(Array(pinnedChats), forKey: "pinnedChats") }
+    }
+
+    func togglePin(_ agent: Agent) {
+        if pinnedChats.contains(agent.id) {
+            pinnedChats.remove(agent.id)
+        } else {
+            pinnedChats.insert(agent.id)
+            agent.kept = true
+            dismissed[agent.id] = nil
+        }
+        AgentStore.shared.save()
     }
 
     func inPill(_ agent: Agent) -> Bool {
