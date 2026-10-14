@@ -252,6 +252,17 @@ final class GrokSource {
                         let name = message["file_name"] as? String ?? URL(fileURLWithPath: path).lastPathComponent
                         return ChatMessage(id: id, fromUser: false, text: name, reactions: reactions, fileName: name, filePath: path)
                     }
+                    if message["type"] as? String == "auto-review-approval", let a = message["approval"] as? [String: Any],
+                       let requestId = a["requestId"] as? String {
+                        let params = (a["summaryCopy"] as? [String: Any])?["params"] as? [String: Any]
+                        let status = a["status"] as? String
+                        let approval = GrokApproval(requestId: requestId,
+                                                    tool: params?["serverDisplayName"] as? String ?? (a["surface"] as? String ?? "a tool"),
+                                                    summary: a["summary"] as? String ?? "", reason: a["reason"] as? String ?? "",
+                                                    command: a["command"] as? String ?? "",
+                                                    status: ["approved", "denied", "always"].contains(status ?? "") ? status : nil)
+                        return ChatMessage(id: id, fromUser: false, text: approval.summary, reactions: reactions, approval: approval)
+                    }
                     if message["type"] as? String == "widget", let w = message["widget"] as? [String: Any],
                        let raw = w["options"] as? [[String: Any]], !raw.isEmpty {
                         let options = raw.compactMap { o -> ChoiceWidget.Option? in
@@ -364,6 +375,16 @@ final class GrokSource {
     }
 
     /// Adds (or, if it is already there, removes) the user's reaction on one of the bot's messages.
+    /// Answers a bot's request for permission, as the Allow and Deny buttons in Grok Bot do.
+    func resolve(_ approval: GrokApproval, entry: String, in agent: Agent, as resolution: String,
+                 done: @escaping (Bool) -> Void) {
+        request("resolveAutoReviewApproval", ["entryId": entry, "requestId": approval.requestId,
+                                              "resolution": resolution, "agentId": agent.sessionID]) { [weak self, weak agent] reply in
+            done(reply != nil)
+            if let agent { self?.loadThread(agent) }
+        }
+    }
+
     func react(_ emoji: String, to messageID: String, in agent: Agent) {
         if let i = agent.thread.firstIndex(where: { $0.id == messageID }) {
             // Show it straight away; the reload below brings back the host's version.

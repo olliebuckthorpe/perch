@@ -26,6 +26,17 @@ struct ChoiceWidget: Equatable {
     var options: [Option] = []
 }
 
+/// A Grok bot asking permission before it does something (delete a calendar event, say).
+struct GrokApproval: Equatable {
+    var requestId: String
+    var tool: String
+    var summary: String
+    var reason: String
+    var command: String
+    /// "approved", "denied", "always", or nil while it is still waiting.
+    var status: String?
+}
+
 struct ChatMessage: Identifiable, Equatable {
     var id: String
     let fromUser: Bool
@@ -33,6 +44,7 @@ struct ChatMessage: Identifiable, Equatable {
     var reactions: [String] = []
     var email: EmailDraft?
     var choice: ChoiceWidget?
+    var approval: GrokApproval?
     /// Set when this is one agent talking to another, not part of the conversation with the user.
     /// A file the agent attached: its name, and where it lives on the agent's own computer.
     var fileName: String?
@@ -95,9 +107,13 @@ enum Threads {
             read[agent.id] = stamp
             let codex = agent.source == .codex
             queue.async {
-                let messages = parse(path, codex: codex)
+                let (messages, context) = parse(path, codex: codex)
                 DispatchQueue.main.async { [weak agent] in
                     guard let agent, !messages.isEmpty else { return }
+                    if let context {
+                        if agent.contextUsed != context.used { agent.contextUsed = context.used }
+                        agent.contextModel = context.model
+                    }
                     let messages = keepingLocalIDs(messages, from: agent.thread)
                     // Keep anything just sent from the notch that the file has not caught up with.
                     let unsent = unsent(in: agent.thread, loaded: messages)
@@ -115,25 +131,33 @@ enum Threads {
         }
     }
 
-    private static func parse(_ path: String, codex: Bool) -> [ChatMessage] {
-        guard let h = FileHandle(forReadingAtPath: path) else { return [] }
+    private static func parse(_ path: String, codex: Bool) -> ([ChatMessage], (used: Int, model: String?)?) {
+        guard let h = FileHandle(forReadingAtPath: path) else { return ([], nil) }
         defer { try? h.close() }
         let size = (try? h.seekToEnd()) ?? 0
         let span: UInt64 = 1 << 20
         try? h.seek(toOffset: size > span ? size - span : 0)
-        guard let data = try? h.readToEnd() else { return [] }
+        guard let data = try? h.readToEnd() else { return ([], nil) }
         var out: [ChatMessage] = []
+        var context: (used: Int, model: String?)?
         for (i, line) in String(decoding: data, as: UTF8.self).split(separator: "\n").enumerated() {
             guard line.count < 400_000,
                   let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
             let id = o["uuid"] as? String ?? "line-\(i)"
+            // Each main-thread reply records what it was sent: that total is the context in use.
+            if !codex, o["type"] as? String == "assistant", o["isSidechain"] as? Bool != true,
+               let message = o["message"] as? [String: Any], let usage = message["usage"] as? [String: Any] {
+                let parts = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
+                let used = parts.compactMap { (usage[$0] as? NSNumber)?.intValue }.reduce(0, +)
+                if used > 0 { context = (used, message["model"] as? String) }
+            }
             if let m = codex ? codexMessage(o) : claudeMessage(o, raw: line) {
                 // One message can be logged twice; show it once.
                 if m.user, out.suffix(4).contains(where: { $0.fromUser && $0.text == m.text }) { continue }
                 out.append(ChatMessage(id: id, fromUser: m.user, text: m.text))
             }
         }
-        return Array(out.suffix(40))
+        return (Array(out.suffix(40)), context)
     }
 
     private static func claudeMessage(_ o: [String: Any], raw: Substring) -> (user: Bool, text: String)? {

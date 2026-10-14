@@ -68,6 +68,9 @@ final class Agent: Identifiable {
     var lastMessage = ""
     var status: AgentStatus = .idle
     var unread = 0
+    /// How much of the context window the session's last turn used, and the model it ran on.
+    var contextUsed: Int?
+    var contextModel: String?
     /// The user has had this chat open since it last finished, so it stops asking for attention.
     var seen = false
     var lastActivity = Date()

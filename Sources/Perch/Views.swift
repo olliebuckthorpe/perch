@@ -1736,13 +1736,13 @@ private struct ChatView: View {
                     }
                 }
             }
-            if agent.status == .needsYou, agent.pending == nil {
+            if agent.status == .needsYou, agent.pending == nil, agent.source != .grok {
                 // It asked for something, but the request itself is not open here (answered or
                 // timed out elsewhere, or Perch restarted while it was waiting).
                 VStack(alignment: .leading, spacing: 5) {
                     Text(agent.askElsewhere.map { "Waiting for your answer in its own app. It wants to use \($0)" }
                          ?? "It asked for something, but that request is not open here. Check it in its own app, or tell it to carry on.")
-                        .font(.system(size: 11)).foregroundStyle(Palette.amber.opacity(0.9))
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.6))
                         .fixedSize(horizontal: false, vertical: true)
                     Button("Open it there") { open() }.buttonStyle(ChipButton())
                 }
@@ -1815,6 +1815,7 @@ private struct ChatView: View {
                 Text(agent.source.label).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
             }
             Spacer(minLength: 4)
+            if agent.source != .grok, let used = agent.contextUsed { ContextMeter(used: used, model: agent.contextModel) }
             StatusChip(agent: agent)
             Button(action: open) {
                 Image(systemName: "arrow.up.forward.app").font(.system(size: 12))
@@ -1920,6 +1921,8 @@ private struct ChatView: View {
                 FileCard(name: name, path: path, agent: agent, messageID: message.id)
             } else if let email = message.email {
                 EmailCard(draft: email, agent: agent)
+            } else if let approval = message.approval {
+                ApprovalCard(approval: approval, entry: message.id, agent: agent)
             } else if let choice = message.choice {
                 // Answered once you have said anything after it, by picking or by typing.
                 let asked = messages.firstIndex { $0.id == message.id } ?? 0
@@ -1963,6 +1966,35 @@ private struct ChatView: View {
     }
 }
 
+/// How full the session's context window is: a small ring and the percentage. It fills
+/// towards red as the session nears the point where Claude Code will compact it.
+private struct ContextMeter: View {
+    let used: Int
+    let model: String?
+
+    private var limit: Int {
+        // Long-context sessions run to a million tokens; anything already past 200k must be one.
+        (model ?? "").lowercased().contains("1m") || used > 200_000 ? 1_000_000 : 200_000
+    }
+
+    var body: some View {
+        let part = min(1, Double(used) / Double(limit))
+        let color: Color = part > 0.85 ? Palette.red : part > 0.65 ? .white : .white.opacity(0.55)
+        HStack(spacing: 4) {
+            ZStack {
+                Circle().stroke(.white.opacity(0.15), lineWidth: 2)
+                Circle().trim(from: 0, to: max(0.01, part)).stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 11, height: 11)
+            Text("\(Int((part * 100).rounded()))%").font(.system(size: 10, weight: .medium)).monospacedDigit()
+                .foregroundStyle(color)
+        }
+        .help("Context: \(used / 1000)k of \(limit / 1000)k tokens")
+        .animation(.easeOut(duration: 0.3), value: part)
+    }
+}
+
 private struct StatusChip: View {
     let agent: Agent
 
@@ -1996,7 +2028,14 @@ private struct ReplyField: View {
     let agent: Agent
     var autofocus = false
     @Environment(NotchUI.self) private var ui
-    @FocusState private var focused: Bool
+    @State private var focused = false
+    /// Bumped to put the cursor in the box.
+    @State private var focusAsk = 0
+
+    private func focus() {
+        focused = true
+        focusAsk += 1
+    }
 
     /// Nothing blocks a reply any more: mid-turn messages are delivered at the next step.
     private var busy: Bool { false }
@@ -2070,18 +2109,21 @@ private struct ReplyField: View {
             .transition(.opacity.combined(with: .offset(y: 4)))
         }
         HStack(alignment: .bottom, spacing: 6) {
-            TextField(placeholder, text: draft, axis: .vertical)
-                .textFieldStyle(.plain).font(.system(size: 13)).lineLimit(1...4)
-                .focused($focused)
-                .onSubmit { send() }
-                .onKeyPress(.tab) {
-                    if let first = offers.first {
-                        ui.drafts[agent.id] = "/\(first.id) "
-                        return .handled
+            // A real text view: it grows with what is written, up to about eight lines, then
+            // scrolls smoothly. Return sends; Shift+Return starts a new line.
+            GrowingText(text: draft, placeholder: placeholder, focusAsk: focusAsk,
+                        onFocus: { focused = $0 }, onSubmit: send, onTab: {
+                            guard let first = offers.first else { return false }
+                            ui.drafts[agent.id] = "/\(first.id) "
+                            return true
+                        })
+                .fixedSize(horizontal: false, vertical: true)
+                .overlay(alignment: .topLeading) {
+                    if draft.wrappedValue.isEmpty {
+                        Text(placeholder).font(.system(size: 13)).foregroundStyle(.white.opacity(0.35))
+                            .lineLimit(1).allowsHitTesting(false)
                     }
-                    return .ignored
                 }
-                .disabled(busy)
             Button { Dictation.shared.toggle(for: agent.id) } label: {
                 Image(systemName: listening ? "mic.fill" : "mic").font(.system(size: 13))
                     .foregroundStyle(listening ? Palette.red : .white.opacity(0.45))
@@ -2106,7 +2148,7 @@ private struct ReplyField: View {
         .simultaneousGesture(TapGesture().onEnded {
             guard !busy else { return }
             ui.controller?.panel.makeKey()
-            focused = true
+            focus()
         })
         .onChange(of: focused) { _, on in
             if on {
@@ -2127,10 +2169,10 @@ private struct ReplyField: View {
         }
         .onAppear {
             guard autofocus, !busy else { return }
-            DispatchQueue.main.async { focused = true }
+            DispatchQueue.main.async { focus() }
         }
         // Aiming a reply at a message puts the cursor in the box.
-        .onChange(of: ui.replyTo[agent.id]?.id) { _, id in if id != nil { focused = true } }
+        .onChange(of: ui.replyTo[agent.id]?.id) { _, id in if id != nil { focus() } }
         .animation(.easeOut(duration: 0.15), value: ui.replyTo[agent.id]?.id)
     }
 
@@ -2458,6 +2500,91 @@ private struct SwipeToReply: ViewModifier {
                     ui.hoveredMessage = nil
                 }
             }
+    }
+}
+
+/// A Grok bot asking before it acts. Allow once, always allow, or deny, right here; once
+/// answered it folds down to a line saying what was decided.
+private struct ApprovalCard: View {
+    let approval: GrokApproval
+    let entry: String
+    let agent: Agent
+    @State private var showCommand = false
+    @State private var sending: String?
+    @State private var failed = false
+
+    private var settled: String? { approval.status ?? sending }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("Allow \(agent.name) to use \(approval.tool)?").font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(.white).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    badge
+                }
+                if !approval.summary.isEmpty {
+                    Text(approval.summary).font(.system(size: 12)).foregroundStyle(.white.opacity(0.8))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !approval.command.isEmpty {
+                    Button { withAnimation(.easeOut(duration: 0.18)) { showCommand.toggle() } } label: {
+                        HStack(spacing: 4) {
+                            Text(showCommand ? "Hide the full request" : "View the full request")
+                            Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .semibold))
+                                .rotationEffect(.degrees(showCommand ? 90 : 0))
+                        }
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                    }
+                    .buttonStyle(Press(reach: 4))
+                    if showCommand {
+                        Text(approval.command).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.white.opacity(0.65))
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+                }
+                if settled == nil {
+                    HStack(spacing: 6) {
+                        Button("Allow once") { answer("approved") }.buttonStyle(ChipButton(fill: .white))
+                        Button("Always") { answer("always") }.buttonStyle(ChipButton())
+                        Spacer()
+                        Button("Deny") { answer("denied") }.buttonStyle(ChipButton())
+                    }
+                }
+                if failed {
+                    HStack(spacing: 6) {
+                        Text("Grok Bot did not take that from here.").font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
+                        Button("Answer in Grok Bot") { GrokSource.shared.open(agent) }.buttonStyle(LinkButton())
+                    }
+                }
+            }
+            .padding(11)
+            .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .opacity(settled == nil ? 1 : 0.75)
+            Spacer(minLength: 28)
+        }
+    }
+
+    @ViewBuilder private var badge: some View {
+        let (text, color): (String, Color) = switch settled {
+        case "approved": ("Allowed", Palette.green)
+        case "always": ("Always allowed", Palette.green)
+        case "denied": ("Denied", .white.opacity(0.5))
+        default: ("Needs approval", .white)
+        }
+        Text(text).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(color)
+            .padding(.horizontal, 7).padding(.vertical, 2.5)
+            .background(color.opacity(0.15), in: Capsule())
+    }
+
+    private func answer(_ resolution: String) {
+        failed = false
+        withAnimation(.easeOut(duration: 0.18)) { sending = resolution }
+        GrokSource.shared.resolve(approval, entry: entry, in: agent, as: resolution) { ok in
+            if !ok { withAnimation { sending = nil; failed = true } }
+        }
     }
 }
 
@@ -3398,6 +3525,118 @@ private struct SlackBanner: View {
         .onTapGesture {
             if let link = alert.link { NSWorkspace.shared.open(link) }
             ui.collapse()
+        }
+    }
+}
+
+// MARK: Growing text box
+
+/// A multi-line text box built on AppKit's own text view, so long messages type and scroll the
+/// way they do in any Mac app. It grows to fit, up to `maxHeight`, then scrolls.
+struct GrowingText: NSViewRepresentable {
+    @Binding var text: String
+    var placeholder: String
+    var focusAsk: Int
+    var onFocus: (Bool) -> Void
+    var onSubmit: () -> Void
+    var onTab: () -> Bool
+    var maxHeight: CGFloat = 150
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: GrowingText
+        var asked = 0
+        weak var view: NSTextView?
+        init(_ parent: GrowingText) { self.parent = parent }
+
+        func textDidChange(_ note: Notification) {
+            guard let view else { return }
+            parent.text = view.string
+            view.invalidateIntrinsicContentSize()
+        }
+        func textDidBeginEditing(_ note: Notification) { parent.onFocus(true) }
+        func textDidEndEditing(_ note: Notification) { parent.onFocus(false) }
+
+        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            if selector == #selector(NSResponder.insertNewline(_:)) {
+                if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                    textView.insertNewlineIgnoringFieldEditor(nil)
+                } else {
+                    parent.onSubmit()
+                }
+                return true
+            }
+            if selector == #selector(NSResponder.insertTab(_:)) { return parent.onTab() }
+            return false
+        }
+    }
+
+    final class Box: NSScrollView {
+        var maxHeight: CGFloat = 150
+        override var intrinsicContentSize: NSSize {
+            guard let view = documentView as? NSTextView, let layout = view.layoutManager, let container = view.textContainer else {
+                return NSSize(width: NSView.noIntrinsicMetric, height: 18)
+            }
+            layout.ensureLayout(for: container)
+            let h = layout.usedRect(for: container).height
+            return NSSize(width: NSView.noIntrinsicMetric, height: min(max(h, 17), maxHeight))
+        }
+    }
+
+    final class Field: NSTextView {
+        override func didChangeText() {
+            super.didChangeText()
+            enclosingScrollView?.invalidateIntrinsicContentSize()
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> Box {
+        let box = Box()
+        box.maxHeight = maxHeight
+        box.drawsBackground = false
+        box.hasVerticalScroller = true
+        box.autohidesScrollers = true
+        box.borderType = .noBorder
+        box.verticalScrollElasticity = .allowed
+
+        let view = Field()
+        view.delegate = context.coordinator
+        view.drawsBackground = false
+        view.isRichText = false
+        view.allowsUndo = true
+        view.font = .systemFont(ofSize: 13)
+        view.textColor = .white
+        view.insertionPointColor = .white
+        view.textContainerInset = .zero
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainer?.widthTracksTextView = true
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.autoresizingMask = [.width]
+        // Plain typing: no curly quotes or dashes swapped in behind your back.
+        view.isAutomaticQuoteSubstitutionEnabled = false
+        view.isAutomaticDashSubstitutionEnabled = false
+        view.isAutomaticTextReplacementEnabled = false
+        view.string = text
+        box.documentView = view
+        context.coordinator.view = view
+        return box
+    }
+
+    func updateNSView(_ box: Box, context: Context) {
+        context.coordinator.parent = self
+        guard let view = context.coordinator.view else { return }
+        if view.string != text {
+            // Changed from outside (dictation, a suggestion, sending): keep the cursor at the end.
+            view.string = text
+            view.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+            view.scrollToEndOfDocument(nil)
+            box.invalidateIntrinsicContentSize()
+        }
+        if context.coordinator.asked != focusAsk {
+            context.coordinator.asked = focusAsk
+            DispatchQueue.main.async { view.window?.makeFirstResponder(view) }
         }
     }
 }

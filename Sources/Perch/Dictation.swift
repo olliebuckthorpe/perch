@@ -45,6 +45,7 @@ final class Dictation {
     @ObservationIgnored private var committed = ""
     @ObservationIgnored private var current = ""
     @ObservationIgnored private var existing = ""
+    @ObservationIgnored private var failures = 0
 
     private func begin(_ agentID: String) {
         guard let recognizer, recognizer.isAvailable else {
@@ -78,6 +79,8 @@ final class Dictation {
     private func listen(_ recognizer: SFSpeechRecognizer, for agentID: String) {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
+        request.taskHint = .dictation
+        request.addsPunctuation = true
         if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
         self.request = request
         let began = Date()
@@ -85,6 +88,7 @@ final class Dictation {
             DispatchQueue.main.async {
                 guard let self, self.activeAgentID == agentID, self.request === request else { return }
                 if let result {
+                    self.failures = 0
                     let spoken = result.bestTranscription.formattedString
                     // Some versions restart the text mid-request after a pause: much shorter,
                     // and not a continuation of what was there. Keep the earlier part.
@@ -100,10 +104,19 @@ final class Dictation {
                     self.current = ""
                     self.write(agentID)
                     self.task = nil
-                    // Failing straight away means it will not work at all; do not spin on it.
-                    if error != nil, Date().timeIntervalSince(began) < 0.6 {
-                        self.problem = "Dictation stopped. Press the microphone to try again."
-                        self.stop()
+                    // A long silence can end a stretch with an error; that is not a reason to stop
+                    // listening. Only many failures in a row with nothing heard means give up.
+                    if error != nil, Date().timeIntervalSince(began) < 1 {
+                        self.failures += 1
+                        if self.failures > 8 {
+                            self.problem = "Dictation stopped. Press the microphone to try again."
+                            self.stop()
+                            return
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                            guard let self, self.activeAgentID == agentID else { return }
+                            self.listen(recognizer, for: agentID)
+                        }
                         return
                     }
                     // Carry on listening for the next thing said.
