@@ -2133,6 +2133,9 @@ private struct ChatView: View {
                 FileCard(name: name, path: path, agent: agent, messageID: message.id)
             } else if let email = message.email {
                 EmailCard(draft: email, agent: agent)
+            } else if let handoff = message.handoff {
+                HandoffCard(instruction: handoff.instruction, resolution: handoff.resolution, agent: agent,
+                            picture: messages.prefix { $0.id != message.id }.last { !$0.boxImages.isEmpty }?.boxImages.first)
             } else if let secret = message.secret {
                 SecretCard(label: secret.label, detail: secret.detail, entry: message.id, agent: agent, provided: secret.provided)
             } else if let approval = message.approval {
@@ -2143,6 +2146,7 @@ private struct ChatView: View {
                 ChoiceCard(choice: choice, agent: agent, answered: messages.dropFirst(asked + 1).contains { $0.fromUser })
             } else {
                 // The agent's side: a quieter bubble on the left, yours brighter on the right.
+                ForEach(message.boxImages, id: \.self) { BoxPicture(path: $0) }
                 AgentBubble(text: parts.text, reactions: message.reactions,
                             react: agent.source == .grok && !message.id.hasPrefix("local-") ? { emoji in
                     GrokSource.shared.react(emoji, to: message.id, in: agent)
@@ -2760,6 +2764,89 @@ private struct SwipeToReply: ViewModifier {
                     ui.hoveredMessage = nil
                 }
             }
+    }
+}
+
+/// A picture from a bot's own computer, fetched through Grok Bot. Click to see it full size.
+private struct BoxPicture: View {
+    let path: String
+    var maxWidth: CGFloat = 300
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+            } else {
+                Color.white.opacity(0.06).frame(width: 220, height: 130)
+                    .overlay(ProgressView().controlSize(.small))
+            }
+        }
+        .frame(maxWidth: maxWidth, maxHeight: 260, alignment: .leading)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onTapGesture {
+            // Saved to a temporary file so Preview can open it full size.
+            guard let image, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+                  let png = rep.representation(using: .png, properties: [:]) else { return }
+            let file = FileManager.default.temporaryDirectory.appendingPathComponent(URL(fileURLWithPath: path).lastPathComponent)
+            try? png.write(to: file)
+            NSWorkspace.shared.open(file)
+        }
+        .help("Open full size")
+        .task(id: path) { GrokSource.shared.boxImage(path) { image = $0 } }
+    }
+}
+
+/// A bot handing its computer over for a step only the user can do, like scanning a QR code
+/// to sign in. Taking over happens in Grok Bot, which shows the live screen.
+private struct HandoffCard: View {
+    let instruction: String
+    let resolution: String?
+    let agent: Agent
+    let picture: String?
+    @Environment(NotchUI.self) private var ui
+
+    private var status: String? {
+        switch resolution {
+        case nil, "": return nil
+        case "handed_back", "done", "completed": return "Done"
+        case "skipped": return "Skipped"
+        default: return resolution!.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "desktopcomputer").font(.system(size: 11)).foregroundStyle(.white.opacity(0.6))
+                    Text("Computer").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                    Spacer()
+                    if let status {
+                        Text(status).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Palette.green)
+                            .padding(.horizontal, 7).padding(.vertical, 2.5).background(Palette.green.opacity(0.15), in: Capsule())
+                    }
+                }
+                Text(instruction).font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+                if status == nil {
+                    if let picture { BoxPicture(path: picture, maxWidth: .infinity) }
+                    HStack(spacing: 8) {
+                        Button("Take over in Grok Bot") {
+                            GrokSource.shared.open(agent)
+                            ui.collapse()
+                        }
+                        .buttonStyle(ChipButton(fill: .white))
+                        Text("Signing in happens on \(agent.name)'s computer").font(.system(size: 10.5))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                }
+            }
+            .padding(11)
+            .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .opacity(status == nil ? 1 : 0.7)
+            Spacer(minLength: 28)
+        }
     }
 }
 

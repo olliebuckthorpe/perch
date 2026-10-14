@@ -238,8 +238,17 @@ final class GrokSource {
                     return ChatMessage(id: id, fromUser: user, text: text, reactions: reactions)
                 case "send-message":
                     let message = e["message"] as? [String: Any] ?? [:]
+                    if let instruction = e["boxInstruction"] as? String, !instruction.isEmpty {
+                        var m = ChatMessage(id: id, fromUser: false, text: instruction, reactions: reactions)
+                        m.handoff = (instruction, e["boxResolution"] as? String)
+                        return m
+                    }
                     if let text = message["content"] as? String, !text.isEmpty {
-                        return ChatMessage(id: id, fromUser: false, text: text, reactions: reactions)
+                        var m = ChatMessage(id: id, fromUser: false, text: text, reactions: reactions)
+                        m.boxImages = (message["images"] as? [[String: Any]] ?? []).compactMap { img in
+                            (img["url"] as? String).map { $0.hasPrefix("file://") ? String($0.dropFirst(7)) : $0 }
+                        }
+                        return m
                     }
                     if message["type"] as? String == "email-draft", let d = message["draft"] as? [String: Any] {
                         let draft = EmailDraft(from: d["from"] as? String ?? "", to: d["to"] as? [String] ?? [],
@@ -397,6 +406,21 @@ final class GrokSource {
 
     /// The text of a file an agent attached, fetched from its box. `nil` if it is not a text file
     /// or cannot be read.
+    private let boxPictures = NSCache<NSString, NSImage>()
+
+    /// A picture from the bot's own computer (a screenshot it took, say).
+    func boxImage(_ path: String, completion: @escaping (NSImage?) -> Void) {
+        if let cached = boxPictures.object(forKey: path as NSString) { return completion(cached) }
+        request("readAttachmentImage", ["path": path]) { [weak self] reply in
+            guard let url = (reply as? [String: Any])?["dataUrl"] as? String, let comma = url.firstIndex(of: ","),
+                  let data = Data(base64Encoded: String(url[url.index(after: comma)...])), let image = NSImage(data: data) else {
+                return completion(nil)
+            }
+            self?.boxPictures.setObject(image, forKey: path as NSString)
+            completion(image)
+        }
+    }
+
     func readAttachment(_ path: String, completion: @escaping (String?) -> Void) {
         if let cached = attachmentText[path] { completion(cached); return }
         request("readAttachmentText", ["path": path]) { [weak self] reply in

@@ -47,11 +47,17 @@ struct ChatMessage: Identifiable, Equatable {
     var approval: GrokApproval?
     /// A bot asking for a secret (an API key, say): its label and what it is for.
     var secret: (label: String, detail: String, provided: Bool)?
+    /// Pictures a bot attached to a message, as paths on its own computer.
+    var boxImages: [String] = []
+    /// The bot handing its computer over for a step it needs the user for (scanning a QR code,
+    /// signing in): what to do, and how it ended ("handed_back" and so on), nil while waiting.
+    var handoff: (instruction: String, resolution: String?)?
 
     static func == (a: ChatMessage, b: ChatMessage) -> Bool {
         a.id == b.id && a.fromUser == b.fromUser && a.text == b.text && a.reactions == b.reactions && a.email == b.email
             && a.choice == b.choice && a.approval == b.approval && a.fileName == b.fileName && a.filePath == b.filePath
             && a.peerName == b.peerName && a.peerOutbound == b.peerOutbound && a.secret?.label == b.secret?.label && a.secret?.provided == b.secret?.provided
+            && a.boxImages == b.boxImages && a.handoff?.instruction == b.handoff?.instruction && a.handoff?.resolution == b.handoff?.resolution
     }
     /// Set when this is one agent talking to another, not part of the conversation with the user.
     /// A file the agent attached: its name, and where it lives on the agent's own computer.
