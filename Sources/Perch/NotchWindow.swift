@@ -620,6 +620,9 @@ final class NotchController {
 struct NotchRoot: View {
     var body: some View {
         NotchContent()
+            // Links Perch made itself (a file, a session) are handled here; real web links go on
+            // to the browser as usual.
+            .environment(\.openURL, OpenURLAction { url in References.open(url) ? .handled : .systemAction })
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .ignoresSafeArea()
             .preferredColorScheme(.dark)

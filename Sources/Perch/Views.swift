@@ -2299,7 +2299,8 @@ private struct MessageBody: View {
     private static func inline(_ s: String) -> AttributedString {
         if let done = formatted[s] { return done }
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        let result = (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+        var result = (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+        References.link(&result)
         if formatted.count > 600 { formatted.removeAll() }
         formatted[s] = result
         return result
@@ -3148,5 +3149,89 @@ private struct ClipRow: View {
         if s < 3600 { return "\(s / 60)m" }
         if s < 86400 { return "\(s / 3600)h" }
         return "\(s / 86400)d"
+    }
+}
+
+// MARK: Clickable references
+
+/// Turns the things an agent mentions in `code` into links: a file name, a folder, a Claude
+/// Code session to reopen. Clicking a file shows it in Finder; a session opens in the Claude app.
+enum References {
+    private static let session = try! NSRegularExpression(pattern: "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+    private static let fileName = try! NSRegularExpression(pattern: #"^[^\s/]+\.[A-Za-z0-9]{1,6}$"#)
+
+    static func link(_ text: inout AttributedString) {
+        for run in text.runs where run.inlinePresentationIntent?.contains(.code) == true && run.link == nil {
+            let piece = String(text[run.range].characters).trimmingCharacters(in: .whitespaces)
+            guard let url = target(piece) else { continue }
+            text[run.range].link = url
+            text[run.range].foregroundColor = Color(red: 0.56, green: 0.74, blue: 1)
+            text[run.range].underlineStyle = Text.LineStyle(pattern: .dot, color: Color(red: 0.56, green: 0.74, blue: 1).opacity(0.6))
+        }
+    }
+
+    private static func target(_ piece: String) -> URL? {
+        var parts = URLComponents()
+        parts.scheme = "perch"
+        let whole = NSRange(piece.startIndex..., in: piece)
+        if piece.contains("claude") || piece.count == 36, let m = session.firstMatch(in: piece, range: whole), let r = Range(m.range, in: piece) {
+            parts.host = "session"
+            parts.queryItems = [URLQueryItem(name: "id", value: String(piece[r]))]
+            return parts.url
+        }
+        if piece.hasPrefix("~/") || piece == "~" || piece.hasPrefix("/") {
+            let path = (piece as NSString).expandingTildeInPath
+            guard !piece.contains(" --"), FileManager.default.fileExists(atPath: path) else { return nil }
+            parts.host = "path"
+            parts.queryItems = [URLQueryItem(name: "p", value: path)]
+            return parts.url
+        }
+        if fileName.firstMatch(in: piece, range: whole) != nil, piece.count > 4 {
+            parts.host = "find"
+            parts.queryItems = [URLQueryItem(name: "name", value: piece)]
+            return parts.url
+        }
+        return nil
+    }
+
+    /// Handles a click on one of these links. Returns false for anything that is not one.
+    static func open(_ url: URL) -> Bool {
+        guard url.scheme == "perch", let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return false }
+        let value = items.first?.value ?? ""
+        switch url.host {
+        case "session":
+            if let link = URL(string: "claude://resume?session=\(value)") { NSWorkspace.shared.open(link) }
+            NotchUI.shared.collapse()
+        case "path":
+            show(value)
+        case "find":
+            // Ask Spotlight where a file of that name is, newest first, and show the first hit.
+            guard let mdfind = Shell.find("mdfind") else { break }
+            Shell.run(mdfind, ["-onlyin", Shell.home, "-name", value]) { _, out in
+                let fm = FileManager.default
+                let hits = out.split(separator: "\n").map(String.init)
+                    .filter { URL(fileURLWithPath: $0).lastPathComponent == value && !$0.contains("/Library/") }
+                    .sorted { a, b in
+                        let da = (try? fm.attributesOfItem(atPath: a))?[.modificationDate] as? Date ?? .distantPast
+                        let db = (try? fm.attributesOfItem(atPath: b))?[.modificationDate] as? Date ?? .distantPast
+                        return da > db
+                    }
+                if let first = hits.first { show(first) } else { NSSound.beep() }
+            }
+        default:
+            return false
+        }
+        return true
+    }
+
+    private static func show(_ path: String) {
+        var folder: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &folder) else { NSSound.beep(); return }
+        if folder.boolValue {
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        }
+        NotchUI.shared.collapse()
     }
 }
