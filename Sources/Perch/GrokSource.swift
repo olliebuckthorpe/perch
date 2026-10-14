@@ -258,6 +258,22 @@ final class GrokSource {
                         return ChatMessage(id: id, fromUser: false, text: prompt, reactions: reactions,
                                            choice: ChoiceWidget(prompt: prompt, options: options))
                     }
+                    // Any other draft (a Slack message, a meeting chat message): where it is going
+                    // and what it says, the same way an email draft is shown.
+                    if let type = message["type"] as? String, type.hasSuffix("-draft"), let d = message["draft"] as? [String: Any] {
+                        func first(_ keys: [String]) -> String {
+                            for k in keys { if let v = d[k] as? String, !v.isEmpty { return v } }
+                            return ""
+                        }
+                        let body = first(["body", "text", "message", "content", "markdown"])
+                        let to = first(["channelName", "channel", "conversationName", "recipientName", "recipient", "to", "meetingTitle", "title"])
+                        if !body.isEmpty {
+                            let noun = type == "slack-draft" ? "Slack message" : type.dropLast(6).replacingOccurrences(of: "-", with: " ") + " message"
+                            let draft = EmailDraft(noun: noun, to: to.isEmpty ? [] : [to], subject: "", body: body,
+                                                   sendState: e["draftSendState"] as? String)
+                            return ChatMessage(id: id, fromUser: false, text: body, reactions: reactions, email: draft)
+                        }
+                    }
                     // Some other kind of card the notch cannot draw yet: say so, do not hide it.
                     guard let type = message["type"] as? String else { return nil }
                     return ChatMessage(id: id, fromUser: false, text: "_Sent a \(type.replacingOccurrences(of: "-", with: " ")). Open Grok Bot to see it._", reactions: reactions)

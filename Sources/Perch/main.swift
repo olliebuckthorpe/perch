@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var server: HookServer?
@@ -57,6 +58,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller = NotchController(store: AgentStore.shared)
         AgentStore.shared.restore()
         CodingSessions.shared.start()
+        Clips.shared.start()
+        // Control+Option+V: the clipboard. Control+Option+R: the pinned bot (Remmi).
+        Hotkeys.shared.register(key: kVK_ANSI_V, modifiers: controlKey | optionKey) { NotchUI.shared.toggleClips() }
+        Hotkeys.shared.register(key: kVK_ANSI_R, modifiers: controlKey | optionKey) { NotchUI.shared.openPinned() }
         Usage.shared.start()
         if EdgeGuard.wanted { EdgeGuard.shared.start(prompt: false) }
         codex.start()

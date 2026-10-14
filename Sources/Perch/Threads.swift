@@ -2,6 +2,8 @@ import Foundation
 
 /// An email an agent has drafted for the user to check before it goes out.
 struct EmailDraft: Equatable {
+    /// What kind of thing this is a draft of: "email", "Slack message", and so on.
+    var noun = "email"
     var from = ""
     var to: [String] = []
     var cc: [String] = []

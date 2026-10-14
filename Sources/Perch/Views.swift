@@ -33,6 +33,8 @@ struct NotchContent: View {
         // A chat needs more room than the roster.
         let chatting = ui.selectedID != nil || ui.composing
         let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : 680) - (l + ui.notch.width + r)) : 0
+        let side = max(l, r, extra > 0 ? (l + r + extra) / 2 : 0)
+        let leftWidth = ui.expanded ? side : l, rightWidth = ui.expanded ? side : r
         let radius: CGFloat = ui.expanded ? 18 : 10
         let openWidth = max(l + ui.notch.width + r, 340)
         let shape = UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
@@ -43,7 +45,7 @@ struct NotchContent: View {
                     if grokDial { UsageDial(plan: usage.grok, name: "Grok Bot", color: .white, labelOnLeft: true).padding(.leading, 10) }
                     Ear(agents: left)
                 }
-                .frame(width: l + extra / 2, alignment: .trailing)
+                .frame(width: leftWidth, alignment: .trailing)
                 Color.clear.frame(width: ui.notch.width)
                 HStack(spacing: 0) {
                     Ear(agents: right)
@@ -51,7 +53,7 @@ struct NotchContent: View {
                         UsageDial(plan: usage.claude, name: "Claude", color: Color(red: 0.85, green: 0.47, blue: 0.34)).padding(.trailing, 10)
                     }
                 }
-                .frame(width: r + extra / 2, alignment: .leading)
+                .frame(width: rightWidth, alignment: .leading)
             }
             .frame(height: ui.notch.height)
 
@@ -60,7 +62,7 @@ struct NotchContent: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
             }
         }
-        .frame(width: max(l + ui.notch.width + r + extra, 60))
+        .frame(width: max(leftWidth + ui.notch.width + rightWidth, 60))
         .background(.black)
         .clipShape(shape)
         .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
@@ -69,11 +71,14 @@ struct NotchContent: View {
         .shadow(color: .black.opacity(ui.expanded ? 0.35 : 0), radius: 12, y: 5)
         // Faces sit either side of the notch, so the island is only as wide as it needs to be.
         // Padding (not an offset) shifts it, so the clickable area moves with what is drawn.
-        .padding(.leading, max(0, r - l))
-        .padding(.trailing, max(0, l - r))
+        // Open, both sides are the same width, so the island is centred on the notch and does
+        // not slide sideways when a chat is added or cleared.
+        .padding(.leading, ui.expanded ? 0 : max(0, r - l))
+        .padding(.trailing, ui.expanded ? 0 : max(0, l - r))
         .animation(island, value: ui.expanded)
         .animation(island, value: ui.cardsOnly)
         .animation(tabSwitch, value: ui.showingTasks)
+        .animation(tabSwitch, value: ui.showingClips)
         .animation(island, value: store.needing.count)
         .animation(island, value: l + r)
         .onChange(of: [openWidth, r - l], initial: true) {
@@ -119,6 +124,10 @@ private struct ExpandedBody: View {
                 if ui.showingTasks {
                     // The board gets the full width; the island stays the same size either way.
                     TasksView()
+                        .transition(.asymmetric(insertion: .opacity.combined(with: .offset(x: 24)),
+                                                removal: .opacity.combined(with: .offset(x: 24))))
+                } else if ui.showingClips {
+                    ClipsView()
                         .transition(.asymmetric(insertion: .opacity.combined(with: .offset(x: 24)),
                                                 removal: .opacity.combined(with: .offset(x: 24))))
                 } else {
@@ -518,12 +527,26 @@ private struct TopBar: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            tab("Chats", on: !ui.showingTasks) {
-                withAnimation(tabSwitch) { ui.showingTasks = false }
+            tab("Chats", on: !ui.showingTasks && !ui.showingClips) {
+                withAnimation(tabSwitch) {
+                    ui.showingTasks = false
+                    ui.showingClips = false
+                }
             }
             tab("To-dos", count: NotionTasks.shared.connected ? NotionTasks.shared.tasks.count : nil, on: ui.showingTasks) {
                 ui.composing = false
-                withAnimation(tabSwitch) { ui.showingTasks = true }
+                withAnimation(tabSwitch) {
+                    ui.showingClips = false
+                    ui.showingTasks = true
+                }
+            }
+            // The clipboard and the shelf of held files. The count is what is on the shelf.
+            tab("Clips", count: Clips.shared.shelf.count, on: ui.showingClips) {
+                ui.composing = false
+                withAnimation(tabSwitch) {
+                    ui.showingTasks = false
+                    ui.showingClips = true
+                }
             }
             Spacer(minLength: 8)
             ForEach(profiles) { profile in
@@ -540,7 +563,28 @@ private struct TopBar: View {
             Footer().frame(width: 24).padding(.leading, 2)
         }
         .onAppear { profiles = ChromeProfile.shown() }
+        // Anything dragged up to the bar is held on the shelf.
+        .overlay {
+            if dropping {
+                HStack(spacing: 7) {
+                    Image(systemName: "tray.and.arrow.down.fill").font(.system(size: 11))
+                    Text("Drop to hold on the shelf").font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(white: 0.16), in: Capsule())
+                .overlay(Capsule().strokeBorder(.white.opacity(0.5), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4])))
+                .transition(.opacity.combined(with: .scale(scale: 0.97)))
+            }
+        }
+        .animation(.easeOut(duration: 0.14), value: dropping)
+        .onDrop(of: [.fileURL, .image], isTargeted: $dropping) { providers in
+            shelve(providers)
+            return true
+        }
     }
+
+    @State private var dropping = false
 
     private func tab(_ title: String, count: Int? = nil, on: Bool, action: @escaping () -> Void) -> some View {
         HStack(spacing: 5) {
@@ -621,7 +665,7 @@ private struct Rail: View {
             .padding(.bottom, 5)
             ForEach(agents) { agent in
                 let star = agent.source == .grok && ui.pinned.contains(agent.name)
-                RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks, star: star) { dragged in
+                RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks && !ui.showingClips, star: star) { dragged in
                     // Pinned bots stay at the top; everything else can be dragged into any order.
                     guard !star else { return }
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
@@ -2548,16 +2592,17 @@ private struct EmailCard: View {
     private var settled: Bool { sent || draft.superseded || draft.sendState != nil }
 
     private var label: String {
-        if sent { return "Email sent" }
+        let noun = draft.noun.prefix(1).uppercased() + draft.noun.dropFirst()
+        if sent { return "\(noun) sent" }
         if draft.superseded { return "Earlier draft, replaced" }
-        if let state = draft.sendState { return "Email \(state)" }
-        return "Draft email"
+        if let state = draft.sendState { return "\(noun) \(state)" }
+        return "Draft \(draft.noun)"
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 5) {
-                Image(systemName: sent ? "checkmark.circle.fill" : "envelope.fill").font(.system(size: 10))
+                Image(systemName: sent ? "checkmark.circle.fill" : draft.noun == "email" ? "envelope.fill" : "bubble.left.fill").font(.system(size: 10))
                     .foregroundStyle(sent ? Palette.green : .white.opacity(0.55))
                 Text(label).font(.system(size: 10.5, weight: .semibold))
                     .foregroundStyle(sent ? Palette.green : .white.opacity(0.55))
@@ -2568,14 +2613,16 @@ private struct EmailCard: View {
                 }
             }
             VStack(alignment: .leading, spacing: 2) {
-                field("To", draft.to.joined(separator: ", "))
+                if !draft.to.isEmpty { field("To", draft.to.joined(separator: ", ")) }
                 if !settled || expanded {
                     if !draft.cc.isEmpty { field("Cc", draft.cc.joined(separator: ", ")) }
                     if !draft.from.isEmpty { field("From", draft.from) }
                 }
             }
-            Text(draft.subject).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white.opacity(settled ? 0.7 : 1))
-                .fixedSize(horizontal: false, vertical: true)
+            if !draft.subject.isEmpty {
+                Text(draft.subject).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white.opacity(settled ? 0.7 : 1))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if !settled || expanded {
                 Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
                 Text(draft.body).font(.system(size: 12.5)).lineSpacing(2).foregroundStyle(.white.opacity(0.9))
@@ -2876,5 +2923,230 @@ extension Agent {
         case .codex: return Color(red: 0.40, green: 0.36, blue: 0.93)
         case .grok: return Color(white: 0.96)
         }
+    }
+}
+
+// MARK: Clips
+
+/// Takes whatever was dropped (files, or a picture with no file of its own) onto the shelf.
+private func shelve(_ providers: [NSItemProvider]) {
+    for provider in providers {
+        if provider.hasItemConformingToTypeIdentifier("public.file-url") {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                DispatchQueue.main.async { Clips.shared.hold([url]) }
+            }
+        } else {
+            _ = provider.loadDataRepresentation(forTypeIdentifier: "public.image") { data, _ in
+                guard let data, let image = NSImage(data: data) else { return }
+                DispatchQueue.main.async { Clips.shared.hold(image) }
+            }
+        }
+    }
+}
+
+/// The third tab. The shelf across the top holds files until they are dragged out again;
+/// under it, what was copied recently, newest first. Type to filter, arrows to move, Return
+/// (or a click) pastes into the app that was in use.
+private struct ClipsView: View {
+    @Environment(NotchUI.self) private var ui
+    @State private var filter = ""
+    @State private var dropping = false
+    @FocusState private var focused: Bool
+
+    private var clips: [Clip] {
+        let all = Clips.shared.history
+        let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
+        return q.isEmpty ? all : all.filter { ($0.text ?? "picture image").lowercased().contains(q) }
+    }
+
+    var body: some View {
+        let clips = clips
+        VStack(alignment: .leading, spacing: 10) {
+            shelf
+            HStack(spacing: 6) {
+                Image(systemName: "doc.on.clipboard").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+                TextField("Filter what you copied", text: $filter)
+                    .textFieldStyle(.plain).font(.system(size: 12.5)).focused($focused)
+                    .onKeyPress(.downArrow) {
+                        ui.clipIndex = min(ui.clipIndex + 1, max(0, clips.count - 1))
+                        return .handled
+                    }
+                    .onKeyPress(.upArrow) {
+                        ui.clipIndex = max(ui.clipIndex - 1, 0)
+                        return .handled
+                    }
+                    .onSubmit { if clips.indices.contains(ui.clipIndex) { Clips.shared.paste(clips[ui.clipIndex]) } }
+                Text("↑ ↓  Return pastes").font(.system(size: 10)).foregroundStyle(.white.opacity(0.28))
+            }
+            .padding(.horizontal, 9).padding(.vertical, 6)
+            .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Rectangle())
+            .simultaneousGesture(TapGesture().onEnded {
+                ui.controller?.panel.makeKey()
+                focused = true
+            })
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 2) {
+                        ForEach(Array(clips.enumerated()), id: \.element.id) { index, clip in
+                            ClipRow(clip: clip, selected: index == ui.clipIndex).id(clip.id)
+                        }
+                        if clips.isEmpty {
+                            Text(filter.isEmpty ? "Things you copy will collect here." : "Nothing matches.")
+                                .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8).padding(.top, 6)
+                        }
+                    }
+                }
+                .onChange(of: ui.clipIndex) { _, i in
+                    if clips.indices.contains(i) { proxy.scrollTo(clips[i].id) }
+                }
+            }
+        }
+        .frame(height: 452, alignment: .top)
+        .onChange(of: filter) { ui.clipIndex = 0 }
+        .onAppear {
+            ui.controller?.panel.makeKey()
+            DispatchQueue.main.async { focused = true }
+        }
+    }
+
+    /// One quiet row. Empty, it is a single dashed line of a hint, so it costs almost nothing.
+    private var shelf: some View {
+        let items = Clips.shared.shelf
+        return Group {
+            if items.isEmpty {
+                HStack(spacing: 7) {
+                    Image(systemName: "tray").font(.system(size: 11))
+                    Text("Drag files up to the notch to hold them here").font(.system(size: 11.5))
+                }
+                .foregroundStyle(.white.opacity(dropping ? 0.9 : 0.4))
+                .frame(maxWidth: .infinity).frame(height: 38)
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(.white.opacity(dropping ? 0.6 : 0.16), style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(items) { ShelfTile(item: $0) }
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 7)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.white.opacity(dropping ? 0.1 : 0.045), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            }
+        }
+        .contentShape(Rectangle())
+        .onDrop(of: [.fileURL, .image], isTargeted: $dropping) { providers in
+            shelve(providers)
+            return true
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: items.map(\.id))
+    }
+}
+
+/// A held file: its picture or icon with the name under it. Drag it out to use it, double
+/// click to open it, and the small cross lets it go.
+private struct ShelfTile: View {
+    let item: ShelfItem
+    @State private var hovered = false
+    @State private var picture: NSImage?
+
+    var body: some View {
+        VStack(spacing: 3) {
+            Group {
+                if let picture {
+                    Image(nsImage: picture).resizable().aspectRatio(contentMode: .fill)
+                        .frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                } else {
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: item.path)).resizable().frame(width: 40, height: 40)
+                        .frame(width: 44, height: 44)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if hovered {
+                    Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { Clips.shared.drop(item) } } label: {
+                        Image(systemName: "xmark").font(.system(size: 7.5, weight: .bold)).foregroundStyle(.white)
+                            .frame(width: 15, height: 15).background(Color(white: 0.25), in: Circle())
+                    }
+                    .buttonStyle(Press()).offset(x: 5, y: -5)
+                }
+            }
+            Text(item.name).font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.65))
+                .lineLimit(1).truncationMode(.middle).frame(width: 58)
+        }
+        .scaleEffect(hovered ? 1.05 : 1)
+        .animation(.easeOut(duration: 0.12), value: hovered)
+        .onHover { hovered = $0 }
+        .onDrag { NSItemProvider(contentsOf: URL(fileURLWithPath: item.path)) ?? NSItemProvider() }
+        .onTapGesture(count: 2) { NSWorkspace.shared.open(URL(fileURLWithPath: item.path)) }
+        .help(item.name)
+        .transition(.scale(scale: 0.6).combined(with: .opacity))
+        .task(id: item.path) {
+            let ext = URL(fileURLWithPath: item.path).pathExtension.lowercased()
+            guard ["png", "jpg", "jpeg", "gif", "heic", "webp", "tiff", "bmp"].contains(ext) else { return }
+            ChatView.thumbnail(item.path) { picture = $0 }
+        }
+    }
+}
+
+private struct ClipRow: View {
+    let clip: Clip
+    let selected: Bool
+    @State private var hovered = false
+    @State private var picture: NSImage?
+    @State private var copied = false
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Group {
+                if let picture {
+                    Image(nsImage: picture).resizable().aspectRatio(contentMode: .fill)
+                        .frame(width: 30, height: 22).clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                } else {
+                    Image(systemName: clip.imagePath != nil ? "photo" : clip.isLink ? "link" : "text.alignleft")
+                        .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4)).frame(width: 30, height: 22)
+                }
+            }
+            Text(clip.text.map { oneLine($0, max: 140) } ?? "Picture")
+                .font(.system(size: 12)).foregroundStyle(.white.opacity(selected || hovered ? 0.95 : 0.8)).lineLimit(1)
+            Spacer(minLength: 6)
+            if hovered {
+                Button {
+                    Clips.shared.copy(clip)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { copied = false }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 10.5))
+                        .foregroundStyle(copied ? Palette.green : .white.opacity(0.55)).frame(width: 20, height: 18)
+                }
+                .buttonStyle(Press()).help("Copy without pasting")
+                Button { withAnimation(.easeOut(duration: 0.18)) { Clips.shared.remove(clip) } } label: {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold)).foregroundStyle(.white.opacity(0.55))
+                        .frame(width: 20, height: 18)
+                }
+                .buttonStyle(Press()).help("Forget this")
+            } else {
+                Text(ago).font(.system(size: 10)).foregroundStyle(.white.opacity(0.28)).monospacedDigit()
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(.white.opacity(selected ? 0.12 : hovered ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture { Clips.shared.paste(clip) }
+        .onHover { hovered = $0 }
+        .task(id: clip.imagePath) {
+            guard let path = clip.imagePath else { return }
+            ChatView.thumbnail(path) { picture = $0 }
+        }
+    }
+
+    private var ago: String {
+        let s = Int(Date().timeIntervalSince(clip.at))
+        if s < 60 { return "now" }
+        if s < 3600 { return "\(s / 60)m" }
+        if s < 86400 { return "\(s / 3600)h" }
+        return "\(s / 86400)d"
     }
 }

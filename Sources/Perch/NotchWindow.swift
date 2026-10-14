@@ -30,6 +30,37 @@ final class NotchUI {
     var showingProfiles = false
     /// Showing the Notion to-do list in the right-hand pane.
     var showingTasks = false
+    var showingClips = false
+    /// Which clipboard row the keyboard is on.
+    var clipIndex = 0
+
+    /// The keyboard shortcut for the clipboard: opens straight onto it, or closes it again.
+    func toggleClips() {
+        if expanded, showingClips {
+            collapse()
+            return
+        }
+        cardsOnly = false
+        composing = false
+        browsing = false
+        showingProfiles = false
+        showingTasks = false
+        showingClips = true
+        clipIndex = 0
+        expanded = true
+        controller?.panel.makeKey()
+    }
+
+    /// The keyboard shortcut for the pinned bot: opens on its chat with the cursor in the reply box.
+    func openPinned() {
+        let bots = AgentStore.shared.grokBots
+        guard let bot = bots.first(where: { pinned.contains($0.name) }) ?? bots.first else { return }
+        if expanded, selectedID == bot.id, !showingClips, !showingTasks, !cardsOnly {
+            collapse()
+            return
+        }
+        show(bot.id)
+    }
     /// Which search result the arrow keys are on.
     var searchIndex = 0
     /// Whether the open chat should take the keyboard. Only after a deliberate click, never on hover.
@@ -242,6 +273,7 @@ final class NotchUI {
         composing = false
         showingProfiles = false
         showingTasks = false
+        showingClips = false
         browsing = true
         searchIndex = 0
         // Straight into typing: the search field takes the keyboard.
@@ -266,6 +298,7 @@ final class NotchUI {
         browsing = false
         showingProfiles = false
         showingTasks = false
+        showingClips = false
         focusReply = false
         Dictation.shared.stop()
         autoOpened = false
@@ -277,6 +310,7 @@ final class NotchUI {
         browsing = false
         showingProfiles = false
         showingTasks = false
+        showingClips = false
         selectedID = id
         focusReply = true
         UserDefaults.standard.set(id, forKey: "lastChat")
@@ -297,6 +331,7 @@ final class NotchUI {
         browsing = false
         showingProfiles = false
         showingTasks = false
+        showingClips = false
         focusReply = true
         UserDefaults.standard.set(id, forKey: "lastChat")
         expanded = true
@@ -432,6 +467,7 @@ final class NotchController {
     private var openWidth: CGFloat = 340
     private var openOffset: CGFloat = 0
     private var monitors: [Any] = []
+    private var dragWatch: Timer?
     private static let canvas = CGSize(width: 860, height: 680)
 
     init(store: AgentStore) {
@@ -473,6 +509,18 @@ final class NotchController {
         if let m = NSEvent.addLocalMonitorForEvents(matching: moves, handler: { [weak self] event in
             self?.trackMouse()
             return event
+        }) { monitors.append(m) }
+        // While a mouse button is held (a file being dragged up from another app, say) the pointer
+        // is followed on a timer, because ordinary movement events stop arriving during a drag.
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] _ in
+            self?.dragWatch?.invalidate()
+            self?.dragWatch = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] timer in
+                guard NSEvent.pressedMouseButtons & 1 == 1 else {
+                    timer.invalidate()
+                    return
+                }
+                self?.trackMouse()
+            }
         }) { monitors.append(m) }
         if let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
             self?.ui.outsideClick()
