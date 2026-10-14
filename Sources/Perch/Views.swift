@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import ServiceManagement
 
 private let faceSize: CGFloat = 16
@@ -991,6 +992,7 @@ private struct TaskColumn: View {
     /// The card at the top of what is showing, so a drag held at an edge can scroll from there.
     @State private var top: String?
     @State private var scroller: Timer?
+    @State private var hoveredID: String?
 
     static func tint(_ column: String) -> Color {
         // Cool, quiet colours that white text reads well on.
@@ -1070,7 +1072,7 @@ private struct TaskColumn: View {
                         VStack(spacing: 5) {
                             ForEach(Array(rows.enumerated()), id: \.element?.id) { _, row in
                                 if let card = row {
-                                    TaskCard(task: card, tint: tint)
+                                    TaskCard(task: card, tint: tint, hovered: hoveredID == card.id && drag.card == nil)
                                         .transition(.asymmetric(insertion: .scale(scale: 0.92).combined(with: .opacity),
                                                                 removal: .opacity.combined(with: .offset(x: 30))))
                                 } else {
@@ -1093,6 +1095,17 @@ private struct TaskColumn: View {
                     }
                     .scrollPosition(id: $top, anchor: .top)
                     .frame(height: 366)
+                    // Which card is under the pointer is worked out here, from where the pointer is,
+                    // so a highlight can never be left behind on a card the pointer has already left.
+                    .onContinuousHover(coordinateSpace: .named("board")) { phase in
+                        switch phase {
+                        case .active(let point):
+                            let id = cards.first { drag.cards[$0.id]?.contains(point) == true }?.id
+                            if id != hoveredID { hoveredID = id }
+                        case .ended:
+                            hoveredID = nil
+                        }
+                    }
                     .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("board")) }) { drag.lists[title] = $0 }
                     .onChange(of: drag.edge(of: title)) { _, direction in autoscroll(direction) }
                 }
@@ -1113,8 +1126,9 @@ private struct TaskCard: View {
     let tint: Color
     /// The copy that follows the pointer while dragging.
     var floating = false
+    /// Set by the column, which knows where the pointer is.
+    var hovered = false
     @Environment(BoardDrag.self) private var drag
-    @State private var hovered = false
     @State private var ticking = false
 
     private var dueText: (String, Color)? {
@@ -1174,7 +1188,6 @@ private struct TaskCard: View {
         .rotationEffect(.degrees(floating ? -1.5 : 0))
         .shadow(color: .black.opacity(floating ? 0.6 : 0), radius: 14, y: 8)
         .contentShape(Rectangle())
-        .onHover { hovered = $0 }
         .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("board")) }) { frame in
             if !floating { drag.cards[task.id] = frame }
         }
@@ -1826,7 +1839,7 @@ private struct ChatView: View {
         .padding(.horizontal, 2)
     }
 
-    private static let imageNote = try! NSRegularExpression(pattern: #"\[Image attached, saved at ([^\]]+)\]"#)
+    private static let imageNote = try! NSRegularExpression(pattern: #"\[(?:Image|File) attached, saved at ([^\]]+)\]"#)
     private static let thumbnails = NSCache<NSString, NSImage>()
 
     /// Pulls the "image attached" notes out of a message, so the pictures can be shown instead.
@@ -1841,7 +1854,7 @@ private struct ChatView: View {
     }
 
     private static func findImages(_ text: String) -> (text: String, paths: [String]) {
-        guard text.contains("[Image attached") else { return (text, []) }
+        guard text.contains(" attached, saved at ") else { return (text, []) }
         let range = NSRange(text.startIndex..., in: text)
         let paths = imageNote.matches(in: text, range: range).compactMap { m in
             Range(m.range(at: 1), in: text).map { String(text[$0]) }
@@ -1875,7 +1888,28 @@ private struct ChatView: View {
         let path: String
         @State private var image: NSImage?
 
+        private var isImage: Bool { UTType(filenameExtension: URL(fileURLWithPath: path).pathExtension)?.conforms(to: .image) == true }
+
         var body: some View {
+            if isImage { picture } else { file }
+        }
+
+        /// A file that is not a picture: its icon and name. Click to show it in Finder.
+        private var file: some View {
+            HStack(spacing: 7) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 22, height: 22)
+                Text(URL(fileURLWithPath: path).lastPathComponent).font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.9)).lineLimit(1).truncationMode(.middle)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .frame(maxWidth: 260, alignment: .trailing)
+            .contentShape(Rectangle())
+            .onTapGesture { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+            .help("Show in Finder")
+        }
+
+        private var picture: some View {
             Group {
                 if let image {
                     Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
@@ -2126,6 +2160,11 @@ private struct ReplyField: View {
                             .lineLimit(1).allowsHitTesting(false)
                     }
                 }
+            Button(action: chooseFiles) {
+                Image(systemName: "paperclip").font(.system(size: 13)).foregroundStyle(.white.opacity(0.45))
+                    .frame(width: 18, height: 18).contentShape(Rectangle())
+            }
+            .buttonStyle(Press()).help("Attach files")
             Button { Dictation.shared.toggle(for: agent.id) } label: {
                 Image(systemName: listening ? "mic.fill" : "mic").font(.system(size: 13))
                     .foregroundStyle(listening ? Palette.red : .white.opacity(0.45))
@@ -2160,6 +2199,15 @@ private struct ReplyField: View {
         }
         .onDrop(of: [.fileURL, .image], isTargeted: nil) { providers in
             for provider in providers {
+                if provider.hasItemConformingToTypeIdentifier("public.file-url") {
+                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                        guard let url else { return }
+                        DispatchQueue.main.async {
+                            if let file = Attachment.from(file: url) { ui.attachments[agent.id, default: []].append(file) }
+                        }
+                    }
+                    continue
+                }
                 _ = provider.loadDataRepresentation(forTypeIdentifier: "public.image") { data, _ in
                     guard let data, let image = NSImage(data: data) else { return }
                     DispatchQueue.main.async {
@@ -2178,6 +2226,24 @@ private struct ReplyField: View {
         .animation(.easeOut(duration: 0.15), value: ui.replyTo[agent.id]?.id)
     }
 
+    /// The Mac's file chooser. The island tucks away while it is up and reopens on this chat.
+    private func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Attach"
+        panel.level = .popUpMenu
+        NSApp.activate(ignoringOtherApps: true)
+        let ui = ui, id = agent.id
+        panel.begin { response in
+            if response == .OK {
+                ui.attachments[id, default: []].append(contentsOf: panel.urls.compactMap { Attachment.from(file: $0) })
+            }
+            ui.show(id)
+        }
+    }
+
     private func send() {
         let text = (ui.drafts[agent.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let files = ui.attachments[agent.id] ?? []
@@ -2191,7 +2257,7 @@ private struct ReplyField: View {
             GrokSource.shared.send(agent, text: text, files: files, replyTo: target)
         } else {
             // Claude Code and Codex run on this Mac, so they can open the saved image themselves.
-            let notes = files.map { "[Image attached, saved at \($0.path)]" }
+            let notes = files.map(\.note)
             CodingSessions.shared.reply(agent, text: ([text] + notes).filter { !$0.isEmpty }.joined(separator: "\n\n"))
         }
     }

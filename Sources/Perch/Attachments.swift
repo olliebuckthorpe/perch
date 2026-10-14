@@ -30,11 +30,21 @@ struct Attachment: Identifiable {
         return save(jpeg, ext: "jpg")
     }
 
+    var isImage: Bool { UTType(filenameExtension: URL(fileURLWithPath: path).pathExtension)?.conforms(to: .image) == true }
+
+    /// Any file. A picture is copied in like a pasted one; anything else (a PDF, a spreadsheet)
+    /// is sent from where it already is, shown with its Finder icon.
     static func from(file url: URL) -> Attachment? {
-        guard let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image),
-              let data = try? Data(contentsOf: url) else { return nil }
-        return save(data, ext: url.pathExtension.lowercased())
+        guard url.isFileURL, FileManager.default.fileExists(atPath: url.path) else { return nil }
+        if let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image),
+           let data = try? Data(contentsOf: url), let copy = save(data, ext: url.pathExtension.lowercased()) {
+            return copy
+        }
+        return Attachment(path: url.path, name: url.lastPathComponent, thumbnail: NSWorkspace.shared.icon(forFile: url.path))
     }
+
+    /// The note a Claude Code or Codex message carries for it; the chat draws the note as the file.
+    var note: String { isImage ? "[Image attached, saved at \(path)]" : "[File attached, saved at \(path)]" }
 
     /// Images on the clipboard, unless it also holds text (then it is an ordinary paste).
     static func fromPasteboard() -> [Attachment] {
