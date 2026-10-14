@@ -64,7 +64,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Hotkeys.shared.register(key: kVK_ANSI_V, modifiers: controlKey | optionKey) { NotchUI.shared.toggleClips() }
         Hotkeys.shared.register(key: kVK_ANSI_R, modifiers: controlKey | optionKey) { NotchUI.shared.openPinned() }
         Usage.shared.start()
-        if EdgeGuard.wanted { EdgeGuard.shared.start(prompt: false) }
+        // The top-edge guard is retired: holding the pointer off the top edge meant pinning it
+        // behind the notch, where it cannot be seen. Make sure it is off for good.
+        EdgeGuard.wanted = false
         codex.start()
         GrokSource.shared.start()
         NotionTasks.shared.start()

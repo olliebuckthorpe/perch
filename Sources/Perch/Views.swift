@@ -3093,7 +3093,6 @@ private struct Footer: View {
     @Environment(NotchUI.self) private var ui
     @State private var sounds = Settings.sounds
     @State private var soundName = Settings.soundName
-    @State private var edgeGuard = EdgeGuard.wanted
     @State private var replyWindow = Settings.replyWindow
     @State private var loginItem = SMAppService.mainApp.status == .enabled
 
@@ -3119,7 +3118,6 @@ private struct Footer: View {
                 Picker("Notification sound", selection: $soundName) {
                     ForEach(Settings.soundChoices, id: \.self) { Text($0).tag($0) }
                 }
-                Toggle("Keep the menu bar hidden in full screen", isOn: $edgeGuard)
                 Picker("Wait for a reply when a session finishes", selection: $replyWindow) {
                     Text("Off").tag(0)
                     Text("30 seconds").tag(30)
@@ -3139,10 +3137,6 @@ private struct Footer: View {
             Settings.soundName = name
             // Hear it as you pick it.
             Settings.playSound()
-        }
-        .onChange(of: edgeGuard) { _, on in
-            EdgeGuard.wanted = on
-            if on { EdgeGuard.shared.start(prompt: true) } else { EdgeGuard.shared.stop() }
         }
         .onChange(of: replyWindow) { _, seconds in Settings.replyWindow = seconds }
         .onChange(of: loginItem) { _, on in
