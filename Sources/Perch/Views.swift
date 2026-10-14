@@ -3023,6 +3023,51 @@ private struct ClipboardPanel: View {
 private struct ShelfPanel: View {
     @Environment(NotchUI.self) private var ui
     @State private var dropping = false
+    @State private var attaching = false
+
+    /// The chat a dragged picture would go to: the one open last, else the pinned bot.
+    private var chat: Agent? {
+        let store = AgentStore.shared
+        let last = (ui.selectedID ?? UserDefaults.standard.string(forKey: "lastChat")).flatMap { store.find($0) }
+        return last ?? store.grokBots.first { ui.pinned.contains($0.name) }
+    }
+
+    private func zone(icon: String, text: String, lit: Bool) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: lit ? icon + (icon == "paperclip" ? "" : ".fill") : icon).font(.system(size: 14))
+                .scaleEffect(lit ? 1.15 : 1)
+            Text(text).font(.system(size: 12, weight: .medium)).lineLimit(2).multilineTextAlignment(.leading)
+        }
+        .foregroundStyle(.white.opacity(lit ? 1 : 0.6))
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.white.opacity(lit ? 0.12 : 0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(.white.opacity(lit ? 0.7 : 0.2), style: StrokeStyle(lineWidth: 1.2, dash: [6, 4])))
+        .contentShape(Rectangle())
+        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: lit)
+    }
+
+    /// Pictures become attachments on that chat's reply and the chat opens, ready to send.
+    /// Anything that is not a picture cannot be attached, so it is held on the shelf instead.
+    private func attach(_ providers: [NSItemProvider], to chat: Agent) {
+        var opened = false
+        for provider in providers {
+            _ = provider.loadDataRepresentation(forTypeIdentifier: "public.image") { data, _ in
+                DispatchQueue.main.async {
+                    guard let data, let image = NSImage(data: data), let file = Attachment.from(image) else {
+                        shelve([provider])
+                        return
+                    }
+                    ui.attachments[chat.id, default: []].append(file)
+                    if !opened {
+                        opened = true
+                        ui.show(chat.id)
+                    }
+                }
+            }
+        }
+    }
 
     var body: some View {
         let items = Clips.shared.shelf
@@ -3038,17 +3083,18 @@ private struct ShelfPanel: View {
             }
             if items.isEmpty || ui.fileInHand {
                 HStack(spacing: 8) {
-                    Image(systemName: dropping ? "tray.and.arrow.down.fill" : "tray.and.arrow.down").font(.system(size: 15))
-                        .scaleEffect(dropping ? 1.15 : 1)
-                    Text(ui.fileInHand ? "Drop it here to hold it" : "Nothing held. Drag a file here to keep it handy.")
-                        .font(.system(size: 12, weight: .medium))
+                    zone(icon: "tray.and.arrow.down", text: ui.fileInHand ? "Hold it here" : "Nothing held. Drag a file here to keep it handy.", lit: dropping)
+                    // With a file in hand there is a second place to drop it: straight into the
+                    // chat you were last in, as an attachment.
+                    if ui.fileInHand, let chat {
+                        zone(icon: "paperclip", text: "Send to \(chat.name)", lit: attaching)
+                            .onDrop(of: [.fileURL, .image], isTargeted: $attaching) { providers in
+                                attach(providers, to: chat)
+                                return true
+                            }
+                    }
                 }
-                .foregroundStyle(.white.opacity(dropping ? 1 : 0.6))
-                .frame(maxWidth: .infinity).frame(height: items.isEmpty ? 76 : 46)
-                .background(.white.opacity(dropping ? 0.12 : 0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(.white.opacity(dropping ? 0.7 : 0.2), style: StrokeStyle(lineWidth: 1.2, dash: [6, 4])))
-                .animation(.spring(response: 0.25, dampingFraction: 0.7), value: dropping)
+                .frame(height: items.isEmpty ? 76 : 50)
             }
         }
         .frame(maxWidth: .infinity)
