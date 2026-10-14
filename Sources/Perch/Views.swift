@@ -23,7 +23,10 @@ struct NotchContent: View {
         // A small usage dial sits at the outer end of each side: Grok Bot's by the bots, Claude's
         // by the chats.
         let usage = Usage.shared
-        let grokDial = usage.grok.week != nil, claudeDial = usage.claude.short != nil || usage.claude.week != nil
+        // Only while the island is open in full; closed, and for a notification banner, the notch
+        // stays as small as it can be.
+        let dials = ui.expanded && !ui.cardsOnly && ui.pendingLinks.isEmpty && ui.justOpened == nil
+        let grokDial = dials && usage.grok.week != nil, claudeDial = dials && (usage.claude.short != nil || usage.claude.week != nil)
         let l = earWidth(left.count) + (grokDial ? dialWidth : 0), r = earWidth(right.count) + (claudeDial ? dialWidth : 0)
         // Opened, the island is at least 340 wide; the extra is shared between both sides
         // so the gap always stays lined up with the hardware notch.
