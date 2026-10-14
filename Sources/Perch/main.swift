@@ -108,6 +108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   String(describing: ui.attachments.mapValues(\.count)))
         case "unattach" where parts.count > 1:
             ui.attachments[parts[1]] = nil
+        case "slack" where parts.count > 1:
+            let data = try? JSONSerialization.data(withJSONObject: SlackSource.status)
+            try? data?.write(to: URL(fileURLWithPath: parts[1]))
         case "compose":
             ui.expand()
             ui.composing = true

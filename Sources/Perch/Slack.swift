@@ -29,6 +29,8 @@ struct SlackAlert: Identifiable, Equatable {
 /// posts anything.
 final class SlackSource {
     static let shared = SlackSource()
+    /// Each workspace's connection state, for checking it is live.
+    static var status: [String: String] = [:]
     private let dir = "\(Shell.home)/.perch/slack"
     private var links: [String: Workspace] = [:]
     private var timer: Timer?
@@ -99,7 +101,12 @@ private final class Workspace {
             return
         }
         api("apps.connections.open", token: appToken) { [weak self] o in
-            guard let self, let url = (o?["url"] as? String).flatMap(URL.init(string:)) else { self?.later(); return }
+            guard let self, let url = (o?["url"] as? String).flatMap(URL.init(string:)) else {
+                SlackSource.status[self?.name ?? "?"] = "could not open a connection"
+                self?.later()
+                return
+            }
+            SlackSource.status[self.name] = "connected"
             let socket = URLSession.shared.webSocketTask(with: url)
             self.socket = socket
             self.retry = 2
@@ -120,6 +127,7 @@ private final class Workspace {
                 guard let self, self.socket === socket else { return }
                 switch result {
                 case .failure:
+                    SlackSource.status[self.name] = "dropped, reconnecting"
                     self.socket = nil
                     self.later()
                 case .success(let message):
@@ -142,6 +150,7 @@ private final class Workspace {
             connect()
             return
         }
+        if let type = o["type"] as? String { SlackSource.status[name + " last"] = type }
         guard o["type"] as? String == "events_api",
               let event = (o["payload"] as? [String: Any])?["event"] as? [String: Any],
               event["type"] as? String == "message" else { return }
