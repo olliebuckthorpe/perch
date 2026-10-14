@@ -2028,7 +2028,26 @@ private struct AgentBubble: View {
             }
         }
         .zIndex(picking ? 5 : 0)
+        // While the tray is open, a click anywhere that is not an emoji closes it.
+        .onChange(of: picking) { _, open in
+            if let watcher { NSEvent.removeMonitor(watcher) }
+            watcher = nil
+            guard open else { return }
+            watcher = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
+                // After the click has been handled: if it picked an emoji, `chosen` is set by now.
+                DispatchQueue.main.async {
+                    if chosen == nil, picking { withAnimation(.easeOut(duration: 0.15)) { picking = false } }
+                }
+                return event
+            }
+        }
+        .onDisappear {
+            if let watcher { NSEvent.removeMonitor(watcher) }
+            watcher = nil
+        }
     }
+
+    @State private var watcher: Any?
 
     /// The reactions, popping in one after another. Each swells under the pointer, and the one
     /// picked jumps before the tray closes.
