@@ -878,8 +878,12 @@ private struct NoticeView: View {
 @Observable
 private final class BoardDrag {
     var card: TaskItem?
-    /// Pointer position in the board's space, and where on the card it was picked up.
+    /// Pointer position in the board's space, and where on the card it was picked up. Only the
+    /// floating card watches this; everything else watches the few things below that change
+    /// rarely, so moving the pointer does not redraw the whole board.
     var point = CGPoint.zero
+    /// A column whose top or bottom edge the pointer is resting on: -1 top, 1 bottom.
+    var edge: (column: String, dir: Int)?
     var grab = CGSize.zero
     var size = CGSize.zero
     /// Where it would land: a column and a position in it.
@@ -899,14 +903,17 @@ private final class BoardDrag {
         if target?.column != column || target?.index != index {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) { target = (column, index) }
         }
+        var now: (column: String, dir: Int)?
+        if let (name, frame) = lists.first(where: { $0.value.minX <= point.x && point.x <= $0.value.maxX }) {
+            if point.y < frame.minY + 30 { now = (name, -1) } else if point.y > frame.maxY - 30 { now = (name, 1) }
+        }
+        if now?.column != edge?.column || now?.dir != edge?.dir { edge = now }
     }
 
-    /// -1 while the pointer is in the top strip of that column's list, 1 in the bottom strip.
-    func edge(of column: String) -> Int {
-        guard card != nil, let frame = lists[column], frame.minX <= point.x, point.x <= frame.maxX else { return 0 }
-        if point.y < frame.minY + 30 { return -1 }
-        if point.y > frame.maxY - 30 { return 1 }
-        return 0
+    func end() {
+        card = nil
+        target = nil
+        edge = nil
     }
 }
 
@@ -957,16 +964,7 @@ private struct TasksView: View {
                     }
                 }
                 .coordinateSpace(.named("board"))
-                // The card being dragged, floating under the pointer.
-                .overlay(alignment: .topLeading) {
-                    if let card = drag.card {
-                        TaskCard(task: card, tint: TaskColumn.tint(drag.target?.column ?? card.column), floating: true)
-                            .frame(width: drag.size.width)
-                            .position(x: drag.point.x - drag.grab.width + drag.size.width / 2,
-                                      y: drag.point.y - drag.grab.height + drag.size.height / 2)
-                            .allowsHitTesting(false)
-                    }
-                }
+                .overlay(alignment: .topLeading) { FloatingCard() }
             }
         }
         .environment(drag)
@@ -982,6 +980,21 @@ private struct TasksView: View {
             Button("Check again") { notion.refresh() }.buttonStyle(ChipButton())
         }
         .padding(.horizontal, 6)
+    }
+}
+
+/// The card being dragged, floating under the pointer. The only view that follows every move.
+private struct FloatingCard: View {
+    @Environment(BoardDrag.self) private var drag
+
+    var body: some View {
+        if let card = drag.card {
+            TaskCard(task: card, tint: TaskColumn.tint(drag.target?.column ?? card.column), floating: true)
+                .frame(width: drag.size.width)
+                .position(x: drag.point.x - drag.grab.width + drag.size.width / 2,
+                          y: drag.point.y - drag.grab.height + drag.size.height / 2)
+                .allowsHitTesting(false)
+        }
     }
 }
 
@@ -1107,7 +1120,7 @@ private struct TaskColumn: View {
                         }
                     }
                     .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("board")) }) { drag.lists[title] = $0 }
-                    .onChange(of: drag.edge(of: title)) { _, direction in autoscroll(direction) }
+                    .onChange(of: drag.edge?.column == title ? drag.edge?.dir ?? 0 : 0) { _, direction in autoscroll(direction) }
                 }
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -1208,11 +1221,10 @@ private struct TaskCard: View {
                 if let target = drag.target {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
                         NotionTasks.shared.place(task.id, in: target.column, at: target.index)
-                        drag.card = nil
-                        drag.target = nil
+                        drag.end()
                     }
                 } else {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { drag.card = nil }
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { drag.end() }
                 }
             })
         .help("Drag to move. Double click to open in Notion.")
@@ -1542,9 +1554,11 @@ private struct NewChatView: View {
         panel.message = "Where should the new chat work?"
         panel.directoryURL = URL(fileURLWithPath: current)
         panel.level = .popUpMenu
+        ui.heldOpen = true
         NSApp.activate(ignoringOtherApps: true)
         let ui = ui
         panel.begin { response in
+            ui.heldOpen = false
             if response == .OK, let path = panel.url?.path {
                 var picked = UserDefaults.standard.stringArray(forKey: "pickedFolders") ?? []
                 picked.removeAll { $0 == path }
@@ -2234,9 +2248,12 @@ private struct ReplyField: View {
         panel.allowsMultipleSelection = true
         panel.prompt = "Attach"
         panel.level = .popUpMenu
+        // The notch stays open behind the chooser, on this chat.
+        ui.heldOpen = true
         NSApp.activate(ignoringOtherApps: true)
         let ui = ui, id = agent.id
         panel.begin { response in
+            ui.heldOpen = false
             if response == .OK {
                 ui.attachments[id, default: []].append(contentsOf: panel.urls.compactMap { Attachment.from(file: $0) })
             }

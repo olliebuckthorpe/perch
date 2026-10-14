@@ -226,6 +226,9 @@ final class NotchUI {
 
     @ObservationIgnored weak var controller: NotchController?
     @ObservationIgnored private var hovering = false
+    /// Held open on purpose (a file chooser is up for it): moving away or clicking elsewhere
+    /// does not close it.
+    @ObservationIgnored var heldOpen = false
     @ObservationIgnored private var autoOpened = false
     @ObservationIgnored private var holdOpenUntil = Date.distantPast
     @ObservationIgnored private var expandWork: DispatchWorkItem?
@@ -299,7 +302,7 @@ final class NotchUI {
     private func scheduleCollapse(after delay: TimeInterval) {
         collapseWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.hovering, !self.typing, !self.autoOpened, self.pendingLinks.isEmpty else { return }
+            guard let self, !self.hovering, !self.typing, !self.autoOpened, !self.heldOpen, self.pendingLinks.isEmpty else { return }
             // The settings menu is open: its window sits outside the island, so wait for it.
             if RunLoop.current.currentMode == .eventTracking {
                 self.scheduleCollapse(after: 0.5)
@@ -538,7 +541,7 @@ final class NotchUI {
     func outsideClick() {
         // A notification banner is not dismissed by carrying on working; it times out by itself.
         // Clicking away from a link picker cancels it; a plain notification just times out.
-        guard expanded, !cardsOnly || !pendingLinks.isEmpty, Date() >= holdOpenUntil else { return }
+        guard expanded, !heldOpen, !cardsOnly || !pendingLinks.isEmpty, Date() >= holdOpenUntil else { return }
         collapse()
     }
 }
