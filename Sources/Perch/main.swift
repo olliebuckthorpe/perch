@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller = NotchController(store: AgentStore.shared)
         AgentStore.shared.restore()
         CodingSessions.shared.start()
+        Headphones.shared.keepMacMicrophone()
         SlackSource.shared.start()
         Clips.shared.start()
         // Control+Option+V: the clipboard. Control+Option+R: the pinned bot (Remmi).

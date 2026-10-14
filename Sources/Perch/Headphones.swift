@@ -25,6 +25,50 @@ final class Headphones {
 
     func refresh() { connected = device?.isConnected() ?? false }
 
+    /// The Mac's built-in microphone is always the one used, for calls and for dictation. A
+    /// Bluetooth headset's microphone is poor, does not work well with two devices connected, and
+    /// using it drops the headphones' sound to phone-call quality. macOS switches to the headset's
+    /// microphone whenever it connects, so Perch switches straight back.
+    func keepMacMicrophone() {
+        Self.useMacMicrophone()
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main) { _, _ in
+            Self.useMacMicrophone()
+        }
+        // A newly connected device can also take over without the default changing first.
+        address.mSelector = kAudioHardwarePropertyDevices
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main) { _, _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Self.useMacMicrophone() }
+        }
+    }
+
+    private static func useMacMicrophone() {
+        guard let builtIn = devices().first(where: { transport($0) == kAudioDeviceTransportTypeBuiltIn
+            && channels($0, scope: kAudioDevicePropertyScopeInput) > 0 }) else { return }
+        if currentDefault(kAudioHardwarePropertyDefaultInputDevice) != builtIn {
+            setDefault(kAudioHardwarePropertyDefaultInputDevice, builtIn)
+        }
+    }
+
+    private static func transport(_ id: AudioDeviceID) -> UInt32 {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
+                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        AudioObjectGetPropertyData(id, &address, 0, nil, &size, &value)
+        return value
+    }
+
+    private static func currentDefault(_ selector: AudioObjectPropertySelector) -> AudioDeviceID {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var value: AudioDeviceID = 0
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &value)
+        return value
+    }
+
     /// Headphones button: bring them over, or if they are already here, hand them back.
     func toggle() {
         refresh()
@@ -89,10 +133,12 @@ final class Headphones {
             if channels(id, scope: kAudioDevicePropertyScopeOutput) > 0 { output = id }
             if channels(id, scope: kAudioDevicePropertyScopeInput) > 0 { input = id }
         }
+        _ = input
         guard let output else { return false }
         setDefault(kAudioHardwarePropertyDefaultOutputDevice, output)
         setDefault(kAudioHardwarePropertyDefaultSystemOutputDevice, output)
-        if let input { setDefault(kAudioHardwarePropertyDefaultInputDevice, input) }
+        // The microphone stays the Mac's own: see `keepMacMicrophone`.
+        Self.useMacMicrophone()
         return true
     }
 
