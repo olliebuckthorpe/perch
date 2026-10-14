@@ -31,6 +31,23 @@ final class NotchUI {
     /// Showing the Notion to-do list in the right-hand pane.
     var showingTasks = false
     var showingClips = false
+    /// Back from the clipboard: to the chat if it was opened beside one, otherwise closed.
+    func closeClips() {
+        if clipsInline {
+            showingClips = false
+            clipsInline = false
+            focusReply = true
+        } else {
+            collapse()
+        }
+    }
+
+    /// Small clipboard panel to the full island, chats and all.
+    func clipsToFull() {
+        clipsInline = true
+        expand()
+    }
+
     /// The small shelf panel is showing.
     var showingShelf = false
     /// A file is being dragged somewhere on screen right now.
@@ -81,9 +98,22 @@ final class NotchUI {
     var clipIndex = 0
 
     /// The keyboard shortcut for the clipboard: opens straight onto it, or closes it again.
+    /// Opened from inside the full island: the clipboard takes the right-hand pane, chats stay
+    /// down the left, and closing it goes straight back to the chat that was open.
+    var clipsInline = false
+
     func toggleClips() {
         if expanded, showingClips {
-            collapse()
+            closeClips()
+            return
+        }
+        // Open in full already (and not a banner): the clipboard slots in beside the chats.
+        clipsInline = expanded && !cardsOnly && pendingLinks.isEmpty && !showingShelf
+        if clipsInline {
+            showingTasks = false
+            showingClips = true
+            clipIndex = 0
+            controller?.panel.makeKey()
             return
         }
         cardsOnly = false
@@ -334,6 +364,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingClips = false
+        clipsInline = false
         showingShelf = false
         browsing = true
         searchIndex = 0
@@ -361,6 +392,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingClips = false
+        clipsInline = false
         showingShelf = false
         focusReply = false
         Dictation.shared.stop()
@@ -374,6 +406,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingClips = false
+        clipsInline = false
         showingShelf = false
         selectedID = id
         focusReply = true
@@ -396,6 +429,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingClips = false
+        clipsInline = false
         showingShelf = false
         focusReply = true
         UserDefaults.standard.set(id, forKey: "lastChat")
@@ -635,7 +669,7 @@ final class NotchController {
         }) { monitors.append(m) }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
             if event.keyCode == 53 {
-                self?.ui.collapse()
+                if self?.ui.showingClips == true { self?.ui.closeClips() } else { self?.ui.collapse() }
                 return nil
             }
             // With a link picker up: 1 to 9 picks that profile, Return takes the suggested one.

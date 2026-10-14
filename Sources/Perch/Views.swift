@@ -26,14 +26,14 @@ struct NotchContent: View {
         let usage = Usage.shared
         // Only while the island is open in full; closed, and for a notification banner, the notch
         // stays as small as it can be.
-        let dials = ui.expanded && !ui.cardsOnly && ui.pendingLinks.isEmpty && ui.justOpened == nil && !ui.showingClips && !ui.showingShelf
+        let dials = ui.expanded && !ui.cardsOnly && ui.pendingLinks.isEmpty && ui.justOpened == nil && !(ui.showingClips && !ui.clipsInline) && !ui.showingShelf
         let grokDial = dials && usage.grok.week != nil, claudeDial = dials && (usage.claude.short != nil || usage.claude.week != nil)
         let l = earWidth(left.count) + (grokDial ? dialWidth : 0), r = earWidth(right.count) + (claudeDial ? dialWidth : 0)
         // Opened, the island is at least 340 wide; the extra is shared between both sides
         // so the gap always stays lined up with the hardware notch.
         // A chat needs more room than the roster.
         let chatting = ui.selectedID != nil || ui.composing
-        let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : ui.showingClips || ui.showingShelf ? 380 : 680) - (l + ui.notch.width + r)) : 0
+        let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : (ui.showingClips && !ui.clipsInline) || ui.showingShelf ? 380 : 680) - (l + ui.notch.width + r)) : 0
         let side = max(l, r, extra > 0 ? (l + r + extra) / 2 : 0)
         let leftWidth = ui.expanded ? side : l, rightWidth = ui.expanded ? side : r
         let radius: CGFloat = ui.expanded ? 18 : 10
@@ -126,7 +126,7 @@ private struct ExpandedBody: View {
             } else if ui.showingShelf {
                 // A small panel, not the whole island: for holding a file, or taking one back.
                 ShelfPanel()
-            } else if ui.showingClips {
+            } else if ui.showingClips && !ui.clipsInline {
                 ClipboardPanel()
             } else {
                 TopBar()
@@ -158,7 +158,9 @@ private struct ExpandedBody: View {
 
     @ViewBuilder private var pane: some View {
         Group {
-            if ui.showingTasks {
+            if ui.showingClips && ui.clipsInline {
+                ClipboardPanel().frame(height: 452, alignment: .top)
+            } else if ui.showingTasks {
                 TasksView()
             } else if ui.showingProfiles {
                 ProfilesView()
@@ -3342,9 +3344,35 @@ private struct ClipboardPanel: View {
     var body: some View {
         let clips = clips
         VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                if ui.clipsInline {
+                    Button { ui.closeClips() } label: {
+                        Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
+                    }
+                    .buttonStyle(Press()).help("Back to the chat (Esc)")
+                }
+                Text("Clipboard").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                Text(ui.clipsInline && ui.selectedID != nil ? "goes into your reply" : "pastes where you were")
+                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.35))
+                Spacer()
+                if !ui.clipsInline {
+                    // The rest of Perch, one click away.
+                    Button { ui.clipsToFull() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 10))
+                            Text("Chats").font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundStyle(.white.opacity(0.7))
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(.white.opacity(0.08), in: Capsule())
+                    }
+                    .buttonStyle(Press())
+                }
+            }
             HStack(spacing: 6) {
-                Image(systemName: "doc.on.clipboard").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
-                TextField("Clipboard", text: $filter)
+                Image(systemName: "magnifyingglass").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+                TextField("Filter", text: $filter)
                     .textFieldStyle(.plain).font(.system(size: 12.5)).focused($focused)
                     .onKeyPress(.downArrow) {
                         ui.clipIndex = min(ui.clipIndex + 1, max(0, clips.count - 1))
@@ -3355,7 +3383,7 @@ private struct ClipboardPanel: View {
                         return .handled
                     }
                     .onSubmit { if clips.indices.contains(ui.clipIndex) { Clips.shared.paste(clips[ui.clipIndex]) } }
-                Text("Return pastes").font(.system(size: 10)).foregroundStyle(.white.opacity(0.28))
+                Text("↑ ↓  Return  Esc").font(.system(size: 10)).foregroundStyle(.white.opacity(0.28))
             }
             .padding(.horizontal, 9).padding(.vertical, 6)
             .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -3365,6 +3393,7 @@ private struct ClipboardPanel: View {
                     VStack(spacing: 1) {
                         ForEach(Array(clips.enumerated()), id: \.element.id) { index, clip in
                             ClipRow(clip: clip, selected: index == ui.clipIndex).id(clip.id)
+                                .onHover { if $0 { ui.clipIndex = index } }
                         }
                         if clips.isEmpty {
                             Text(filter.isEmpty ? "Things you copy will collect here." : "Nothing matches.")
@@ -3373,13 +3402,14 @@ private struct ClipboardPanel: View {
                         }
                     }
                 }
-                // Seven rows showing; the rest scroll.
-                .frame(height: min(CGFloat(max(clips.count, 1)) * 35, 245))
+                // Room for several, with the selected one opened out; the rest scroll.
+                .frame(height: ui.clipsInline ? 360 : min(CGFloat(max(clips.count, 1)) * 35 + 60, 300))
                 .onChange(of: ui.clipIndex) { _, i in
                     if clips.indices.contains(i) { proxy.scrollTo(clips[i].id) }
                 }
             }
         }
+        .animation(.spring(response: 0.25, dampingFraction: 0.85), value: ui.clipIndex)
         .onChange(of: filter) { ui.clipIndex = 0 }
         .onAppear {
             ui.controller?.panel.makeKey()
@@ -3531,18 +3561,22 @@ private struct ClipRow: View {
     @State private var copied = false
 
     var body: some View {
-        HStack(spacing: 9) {
+        HStack(alignment: .top, spacing: 9) {
             Group {
                 if let picture {
-                    Image(nsImage: picture).resizable().aspectRatio(contentMode: .fill)
-                        .frame(width: 30, height: 22).clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    Image(nsImage: picture).resizable().aspectRatio(contentMode: selected ? .fit : .fill)
+                        .frame(width: selected ? 120 : 30, height: selected ? 80 : 22)
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 } else {
                     Image(systemName: clip.imagePath != nil ? "photo" : clip.isLink ? "link" : "text.alignleft")
                         .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4)).frame(width: 30, height: 22)
                 }
             }
-            Text(clip.text.map { oneLine($0, max: 140) } ?? "Picture")
-                .font(.system(size: 12)).foregroundStyle(.white.opacity(selected || hovered ? 0.95 : 0.8)).lineLimit(1)
+            // The selected clip opens out to show more of itself.
+            Text(clip.text.map { selected ? String($0.prefix(600)) : oneLine($0, max: 140) } ?? "Picture")
+                .font(.system(size: 12)).foregroundStyle(.white.opacity(selected || hovered ? 0.95 : 0.8))
+                .lineLimit(selected ? 6 : 1).fixedSize(horizontal: false, vertical: selected)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 6)
             if hovered {
                 Button {

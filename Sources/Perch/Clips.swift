@@ -102,8 +102,20 @@ final class Clips {
     /// Pressing the keys for the user needs the Accessibility permission; without it the clip is
     /// simply on the clipboard, ready to paste by hand.
     func paste(_ clip: Clip) {
+        let ui = NotchUI.shared
+        // Opened beside a chat: the clip goes into that chat's reply, not into another app.
+        if ui.clipsInline, let id = ui.selectedID {
+            if let text = clip.text {
+                let draft = ui.drafts[id] ?? ""
+                ui.drafts[id] = draft.isEmpty ? text : "\(draft) \(text)"
+            } else if let path = clip.imagePath, let file = Attachment.from(file: URL(fileURLWithPath: path)) {
+                ui.attachments[id, default: []].append(file)
+            }
+            ui.closeClips()
+            return
+        }
         copy(clip)
-        NotchUI.shared.collapse()
+        ui.collapse()
         guard AXIsProcessTrusted() else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
             let source = CGEventSource(stateID: .combinedSessionState)
