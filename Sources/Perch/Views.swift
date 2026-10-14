@@ -871,60 +871,106 @@ private struct NoticeView: View {
 
 // MARK: To-do list
 
-/// The Notion to-do list: add one at the top, tick them off, click a name to open it in Notion.
+/// A card being dragged around the board. The board draws the card floating under the pointer,
+/// a gap where it would land, and moves the other cards aside as it goes; nothing is sent to
+/// Notion until it is let go.
+@Observable
+private final class BoardDrag {
+    var card: TaskItem?
+    /// Pointer position in the board's space, and where on the card it was picked up.
+    var point = CGPoint.zero
+    var grab = CGSize.zero
+    var size = CGSize.zero
+    /// Where it would land: a column and a position in it.
+    var target: (column: String, index: Int)?
+    /// Frames of the cards and columns, kept without redrawing anything when they change.
+    @ObservationIgnored var cards: [String: CGRect] = [:]
+    @ObservationIgnored var columns: [String: CGRect] = [:]
+    @ObservationIgnored var lists: [String: CGRect] = [:]
+
+    func move(to point: CGPoint) {
+        self.point = point
+        guard let card else { return }
+        let column = columns.first { $0.value.minX - 4 <= point.x && point.x <= $0.value.maxX + 4 }?.key ?? card.column
+        let ids = NotionTasks.shared.cards(in: column).map(\.id).filter { $0 != card.id }
+        // The landing spot is above the first card whose middle is below the pointer.
+        let index = ids.firstIndex { id in (cards[id]?.midY ?? .infinity) > point.y } ?? ids.count
+        if target?.column != column || target?.index != index {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) { target = (column, index) }
+        }
+    }
+
+    /// -1 while the pointer is in the top strip of that column's list, 1 in the bottom strip.
+    func edge(of column: String) -> Int {
+        guard card != nil, let frame = lists[column], frame.minX <= point.x, point.x <= frame.maxX else { return 0 }
+        if point.y < frame.minY + 30 { return -1 }
+        if point.y > frame.maxY - 30 { return 1 }
+        return 0
+    }
+}
+
+/// The board: My to-dos open, the other lists folded to slim strips until wanted. Ticking a
+/// card off, adding one and moving one all happen on screen at once; Notion is told after.
 private struct TasksView: View {
     @State private var draft = ""
+    @State private var drag = BoardDrag()
     @FocusState private var focused: Bool
     private var notion: NotionTasks { NotionTasks.shared }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 8) {
             if !notion.connected {
                 setup
             } else {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
-                    TextField("Add a to-do to My to-dos", text: $draft)
+                HStack(spacing: 7) {
+                    Image(systemName: "plus.circle.fill").font(.system(size: 13))
+                        .foregroundStyle(.white.opacity(draft.isEmpty ? 0.3 : 0.9))
+                    TextField("Add a to-do", text: $draft)
                         .textFieldStyle(.plain).font(.system(size: 12.5)).focused($focused)
                         .onSubmit {
-                            notion.add(draft)
+                            withAnimation(.spring(response: 0.32, dampingFraction: 0.75)) { notion.add(draft) }
                             draft = ""
                         }
-                    Button { notion.refresh() } label: {
-                        Image(systemName: "arrow.clockwise").font(.system(size: 10.5))
-                            .foregroundStyle(.white.opacity(notion.loading ? 0.25 : 0.5))
-                            .frame(width: 20, height: 18).contentShape(Rectangle())
+                    if notion.loading {
+                        ProgressView().controlSize(.mini).transition(.opacity)
                     }
-                    .buttonStyle(Press()).help("Refresh from Notion")
                 }
-                .padding(.horizontal, 8).padding(.vertical, 6)
-                .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        // A click anywhere in the box starts typing, not only on the line of text.
-        .contentShape(Rectangle())
-        .simultaneousGesture(TapGesture().onEnded {
-            NotchUI.shared.controller?.panel.makeKey()
-            focused = true
-        })
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(.white.opacity(focused ? 0.1 : 0.06), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded {
+                    NotchUI.shared.controller?.panel.makeKey()
+                    focused = true
+                })
+                .animation(.easeOut(duration: 0.15), value: focused)
 
                 if let problem = notion.problem {
-                    Text(problem).font(.system(size: 11)).foregroundStyle(Palette.amber.opacity(0.9))
+                    Text(problem).font(.system(size: 11)).foregroundStyle(Palette.red.opacity(0.9))
                         .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 6)
                 }
-                // The board: one column per list, cards you can tick off or drag across.
                 HStack(alignment: .top, spacing: 8) {
-                    // Open columns sit together on the left; folded ones line up at the right edge.
                     let arranged = NotionTasks.columns.filter { !notion.folded.contains($0) }
                         + NotionTasks.columns.filter { notion.folded.contains($0) }
                     ForEach(arranged, id: \.self) { column in
                         TaskColumn(title: column, cards: notion.cards(in: column))
                     }
                 }
+                .coordinateSpace(.named("board"))
+                // The card being dragged, floating under the pointer.
+                .overlay(alignment: .topLeading) {
+                    if let card = drag.card {
+                        TaskCard(task: card, tint: TaskColumn.tint(drag.target?.column ?? card.column), floating: true)
+                            .frame(width: drag.size.width)
+                            .position(x: drag.point.x - drag.grab.width + drag.size.width / 2,
+                                      y: drag.point.y - drag.grab.height + drag.size.height / 2)
+                            .allowsHitTesting(false)
+                    }
+                }
             }
         }
+        .environment(drag)
         .padding(.top, 2)
-        .onAppear {
-            notion.refresh()
-        }
+        .onAppear { notion.refresh() }
     }
 
     private var setup: some View {
@@ -938,36 +984,17 @@ private struct TasksView: View {
     }
 }
 
-/// One column of the board. Dropping a card on it moves the card there in Notion.
 private struct TaskColumn: View {
     let title: String
     let cards: [TaskItem]
-    @State private var targeted = false
+    @Environment(BoardDrag.self) private var drag
     /// The card at the top of what is showing, so a drag held at an edge can scroll from there.
     @State private var top: String?
-    @State private var edge = 0
     @State private var scroller: Timer?
 
-    /// Holding a dragged card at the top or bottom edge scrolls the column that way.
-    private func autoscroll(_ direction: Int) {
-        scroller?.invalidate()
-        scroller = nil
-        edge = direction
-        guard direction != 0 else { return }
-        scroller = Timer.scheduledTimer(withTimeInterval: 0.16, repeats: true) { _ in
-            let ids = cards.map(\.id)
-            let at = top.flatMap { ids.firstIndex(of: $0) } ?? 0
-            let next = max(0, min(ids.count - 1, at + direction))
-            guard next != at else { return }
-            withAnimation(.easeOut(duration: 0.16)) { top = ids[next] }
-        }
-    }
-
-    /// The colour Notion gives this column on the board.
-    private var tint: Color {
-        // Cool, quiet colours that white text reads well on. The warm orange and yellow Notion
-        // uses turn muddy and hard to read as tints on a black island.
-        switch title {
+    static func tint(_ column: String) -> Color {
+        // Cool, quiet colours that white text reads well on.
+        switch column {
         case "Upshow to-dos": return Color(red: 0.25, green: 0.72, blue: 0.62)
         case "My to-dos": return Color(red: 0.36, green: 0.58, blue: 0.98)
         case "Waiting On": return Color(red: 0.62, green: 0.52, blue: 0.96)
@@ -975,6 +1002,7 @@ private struct TaskColumn: View {
         }
     }
 
+    private var tint: Color { Self.tint(title) }
     private var folded: Bool { NotionTasks.shared.folded.contains(title) }
 
     private func toggle() {
@@ -983,10 +1011,34 @@ private struct TaskColumn: View {
         }
     }
 
+    /// Holding a dragged card at the top or bottom of the list scrolls it that way.
+    private func autoscroll(_ direction: Int) {
+        scroller?.invalidate()
+        scroller = nil
+        guard direction != 0 else { return }
+        scroller = Timer.scheduledTimer(withTimeInterval: 0.14, repeats: true) { _ in
+            let ids = cards.map(\.id)
+            let at = top.flatMap { ids.firstIndex(of: $0) } ?? 0
+            let next = max(0, min(ids.count - 1, at + direction))
+            guard next != at else { return }
+            withAnimation(.easeOut(duration: 0.14)) { top = ids[next] }
+            drag.move(to: drag.point)
+        }
+    }
+
+    /// The cards to draw: the dragged one taken out, and a gap where it would land.
+    private var rows: [TaskItem?] {
+        var list: [TaskItem?] = cards.filter { $0.id != drag.card?.id }
+        if let target = drag.target, target.column == title {
+            list.insert(nil, at: min(target.index, list.count))
+        }
+        return list
+    }
+
     var body: some View {
+        let landing = drag.card != nil && drag.target?.column == title
         Group {
             if folded {
-                // Folded: a slim strip with the name down its side. Click to open it.
                 VStack(spacing: 8) {
                     Circle().fill(tint).frame(width: 7, height: 7)
                     Text("\(cards.count)").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.7))
@@ -1005,6 +1057,7 @@ private struct TaskColumn: View {
                         Circle().fill(tint).frame(width: 7, height: 7)
                         Text(title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
                         Text("\(cards.count)").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.35))
+                            .contentTransition(.numericText())
                         Spacer()
                         Button(action: toggle) {
                             Image(systemName: "chevron.compact.left").font(.system(size: 11, weight: .semibold))
@@ -1015,70 +1068,54 @@ private struct TaskColumn: View {
                     .padding(.horizontal, 4)
                     ScrollView {
                         VStack(spacing: 5) {
-                            ForEach(cards) { TaskCard(task: $0, tint: tint) }
-                            // Room under the last card to drop onto: that puts a card at the bottom.
-                            EndSlot(column: title, tint: tint)
+                            ForEach(Array(rows.enumerated()), id: \.element?.id) { _, row in
+                                if let card = row {
+                                    TaskCard(task: card, tint: tint)
+                                        .transition(.asymmetric(insertion: .scale(scale: 0.92).combined(with: .opacity),
+                                                                removal: .opacity.combined(with: .offset(x: 30))))
+                                } else {
+                                    // Where the card will land.
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .fill(tint.opacity(0.12))
+                                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                            .strokeBorder(tint.opacity(0.6), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4])))
+                                        .frame(height: max(34, drag.size.height))
+                                        .transition(.opacity)
+                                }
+                            }
+                            if cards.isEmpty && !landing {
+                                Text("Nothing here").font(.system(size: 11)).foregroundStyle(.white.opacity(0.3))
+                                    .frame(maxWidth: .infinity).padding(.top, 20)
+                            }
                         }
                         .scrollTargetLayout()
+                        .padding(.bottom, 30)
                     }
                     .scrollPosition(id: $top, anchor: .top)
                     .frame(height: 366)
-                    // Thin strips at the top and bottom: resting a dragged card on one scrolls
-                    // the column, so any position can be reached without letting go.
-                    .overlay(alignment: .top) {
-                        Color.clear.frame(height: 26).contentShape(Rectangle())
-                            .dropDestination(for: String.self) { _, _ in false } isTargeted: { autoscroll($0 ? -1 : 0) }
-                    }
-                    .overlay(alignment: .bottom) {
-                        Color.clear.frame(height: 26).contentShape(Rectangle())
-                            .dropDestination(for: String.self) { ids, _ in
-                                // Let go at the very bottom: it goes last.
-                                guard let id = ids.first else { return false }
-                                withAnimation(tabSwitch) { NotionTasks.shared.placeLast(id, in: title) }
-                                return true
-                            } isTargeted: { autoscroll($0 ? 1 : 0) }
-                    }
-                    .onDisappear { scroller?.invalidate() }
+                    .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("board")) }) { drag.lists[title] = $0 }
+                    .onChange(of: drag.edge(of: title)) { _, direction in autoscroll(direction) }
                 }
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
-        .background(.white.opacity(targeted ? 0.1 : 0.035), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .dropDestination(for: String.self) { ids, _ in
-            guard let id = ids.first else { return false }
-            NotionTasks.shared.move(id, to: title)
-            return true
-        } isTargeted: { targeted = $0 }
-    }
-}
-
-/// The space under a column's last card. Dropping a card here puts it at the bottom.
-private struct EndSlot: View {
-    let column: String
-    let tint: Color
-    @State private var targeted = false
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .strokeBorder(tint.opacity(targeted ? 0.7 : 0), style: StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
-            .frame(maxWidth: .infinity).frame(height: 44)
-            .contentShape(Rectangle())
-            .dropDestination(for: String.self) { ids, _ in
-                guard let id = ids.first else { return false }
-                withAnimation(tabSwitch) { NotionTasks.shared.placeLast(id, in: column) }
-                return true
-            } isTargeted: { targeted = $0 }
+        .background(landing ? tint.opacity(folded ? 0.25 : 0.07) : .white.opacity(0.035),
+                    in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .animation(.easeOut(duration: 0.15), value: landing)
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("board")) }) { drag.columns[title] = $0 }
+        .onDisappear { scroller?.invalidate() }
     }
 }
 
 private struct TaskCard: View {
     let task: TaskItem
-    /// The column's colour. Cards are tinted with it, as on a Notion board with coloured columns.
     let tint: Color
+    /// The copy that follows the pointer while dragging.
+    var floating = false
+    @Environment(BoardDrag.self) private var drag
     @State private var hovered = false
     @State private var ticking = false
-    @State private var targeted = false
 
     private var dueText: (String, Color)? {
         guard let due = task.due else { return nil }
@@ -1100,19 +1137,21 @@ private struct TaskCard: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 7) {
-            Button {
-                ticking = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { NotionTasks.shared.complete(task) }
-            } label: {
-                Image(systemName: ticking ? "checkmark.circle.fill" : "circle").font(.system(size: 13.5))
-                    .foregroundStyle(ticking ? Palette.green : .white.opacity(hovered ? 0.8 : 0.35))
-                    .frame(width: 16, height: 16).contentShape(Rectangle())
+        HStack(alignment: .top, spacing: 8) {
+            Button(action: tick) {
+                ZStack {
+                    Circle().strokeBorder(.white.opacity(ticking ? 0 : hovered ? 0.75 : 0.35), lineWidth: 1.4)
+                    Circle().fill(Palette.green).scaleEffect(ticking ? 1 : 0.01).opacity(ticking ? 1 : 0)
+                    Image(systemName: "checkmark").font(.system(size: 8, weight: .heavy)).foregroundStyle(.black)
+                        .scaleEffect(ticking ? 1 : 0.3).opacity(ticking ? 1 : 0)
+                }
+                .frame(width: 15, height: 15).padding(.top, 1)
             }
-            .buttonStyle(Press()).help("Mark as done")
+            .buttonStyle(Press(reach: 6)).help("Mark as done")
             VStack(alignment: .leading, spacing: 4) {
-                Text(task.name).font(.system(size: 12)).foregroundStyle(.white.opacity(ticking ? 0.4 : 0.92))
-                    .strikethrough(ticking).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                Text(task.name).font(.system(size: 12)).foregroundStyle(.white.opacity(ticking ? 0.4 : 0.93))
+                    .strikethrough(ticking, color: .white.opacity(0.5))
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if dueText != nil || priorityColor != nil {
                     HStack(spacing: 5) {
@@ -1127,22 +1166,50 @@ private struct TaskCard: View {
                 }
             }
         }
-        .padding(.horizontal, 8).padding(.vertical, 7)
-        .background(tint.opacity(hovered ? 0.3 : 0.2), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 9).padding(.vertical, 8)
+        .background(tint.opacity(floating ? 0.42 : hovered ? 0.3 : 0.2), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(floating ? Color.black.opacity(0.85) : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.white.opacity(floating ? 0.25 : 0), lineWidth: 1))
+        .scaleEffect(floating ? 1.04 : 1)
+        .rotationEffect(.degrees(floating ? -1.5 : 0))
+        .shadow(color: .black.opacity(floating ? 0.6 : 0), radius: 14, y: 8)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { NotionTasks.shared.open(task) }
         .onHover { hovered = $0 }
-        // Drop another card on this one to put it just above.
-        .overlay(alignment: .top) {
-            Capsule().fill(.white).frame(height: 2).opacity(targeted ? 0.9 : 0).offset(y: -3.5)
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("board")) }) { frame in
+            if !floating { drag.cards[task.id] = frame }
         }
-        .draggable(task.id)
-        .dropDestination(for: String.self) { ids, _ in
-            guard let id = ids.first else { return false }
-            NotionTasks.shared.place(id, before: task)
-            return true
-        } isTargeted: { targeted = $0 }
-        .help("Drag to reorder or move column. Double click to open in Notion.")
+        .onTapGesture(count: 2) { NotionTasks.shared.open(task) }
+        // Pick it up and move it: the card follows the pointer straight away, the others make
+        // room, and letting go drops it where the gap is.
+        .gesture(floating ? nil : DragGesture(minimumDistance: 3, coordinateSpace: .named("board"))
+            .onChanged { value in
+                if drag.card == nil {
+                    let frame = drag.cards[task.id] ?? .zero
+                    drag.size = frame.size
+                    drag.grab = CGSize(width: value.startLocation.x - frame.minX, height: value.startLocation.y - frame.minY)
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) { drag.card = task }
+                }
+                drag.move(to: value.location)
+            }
+            .onEnded { _ in
+                if let target = drag.target {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                        NotionTasks.shared.place(task.id, in: target.column, at: target.index)
+                        drag.card = nil
+                        drag.target = nil
+                    }
+                } else {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { drag.card = nil }
+                }
+            })
+        .help("Drag to move. Double click to open in Notion.")
+    }
+
+    private func tick() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.55)) { ticking = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { NotionTasks.shared.complete(task) }
+        }
     }
 }
 

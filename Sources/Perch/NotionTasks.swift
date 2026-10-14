@@ -172,6 +172,15 @@ final class NotionTasks {
         order = placed + order.filter { !placed.contains($0) && known.contains($0) }
     }
 
+    /// Puts card `id` at position `index` of `column`, as dropped on the board.
+    func place(_ id: String, in column: String, at index: Int) {
+        move(id, to: column)
+        var ids = cards(in: column).map(\.id).filter { $0 != id }
+        ids.insert(id, at: max(0, min(index, ids.count)))
+        let known = Set(tasks.map(\.id))
+        order = ids + order.filter { !ids.contains($0) && known.contains($0) }
+    }
+
     /// Puts card `id` at the very bottom of `column`.
     func placeLast(_ id: String, in column: String) {
         move(id, to: column)
@@ -206,11 +215,18 @@ final class NotionTasks {
             "Owner": ["select": ["name": "Jonny"]],
             "Source": ["select": ["name": "Manual"]],
         ]
+        // On the board straight away, at the top of its list; Notion's copy replaces it when it arrives.
+        let temp = TaskItem(id: "new-\(UUID().uuidString)", name: name, column: column)
+        tasks.append(temp)
+        order.insert(temp.id, at: 0)
         call("POST", "pages", ["parent": ["database_id": Self.database], "properties": props]) { [weak self] json, error in
+            guard let self else { return }
             if let json, let item = Self.item(json) {
-                self?.tasks.append(item)
+                if let i = self.tasks.firstIndex(where: { $0.id == temp.id }) { self.tasks[i] = item } else { self.tasks.append(item) }
+                if let i = self.order.firstIndex(of: temp.id) { self.order[i] = item.id }
             } else {
-                self?.problem = "Could not add that: \(error ?? "unknown error")"
+                self.tasks.removeAll { $0.id == temp.id }
+                self.problem = "Could not add that: \(error ?? "unknown error")"
             }
         }
     }
