@@ -6,7 +6,15 @@ cd "$(dirname "$0")/.."
 swift build -c release -j 4
 
 APP="$HOME/Applications/Perch.app"
-pkill -x Perch 2>/dev/null || true
+# Quit the running copy. Matched by its full path: matching by name has silently missed it,
+# leaving an old build running while the new one sat unused on disk.
+for pid in $(ps -Ao pid=,command= | awk -v app="$APP/Contents/MacOS/Perch" '$2 == app {print $1}'); do
+  kill "$pid" 2>/dev/null || true
+done
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  ps -Ao command= | grep -qx "$APP/Contents/MacOS/Perch" || break
+  sleep 0.5
+done
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp bridge/grok-bridge.mjs "$APP/Contents/Resources/grok-bridge.mjs"
