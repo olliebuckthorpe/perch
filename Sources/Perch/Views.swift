@@ -1700,8 +1700,6 @@ private struct ChatView: View {
         // Having the chat open in front of you is reading it, however it came to be open and
         // whenever the message arrived.
         .onAppear { ui.markSeen(agent.id) }
-        // A suggested next message, once the agent has had its say.
-        .task(id: messages.last?.id) { Suggestions.shared.want(agent) }
         .onChange(of: agent.unread) { ui.markSeen(agent.id) }
         .onChange(of: agent.status) { ui.markSeen(agent.id) }
         .onChange(of: agent.seen) { ui.markSeen(agent.id) }
@@ -1937,8 +1935,6 @@ private struct ReplyField: View {
     private var placeholder: String {
         if let problem = Dictation.shared.problem { return problem }
         if Dictation.shared.activeAgentID == agent.id { return "Listening…" }
-        // A guess at the next message, when there is one. Tab takes it.
-        if let guess = Suggestions.shared.text(for: agent) { return "\(guess)   ⇥" }
         if agent.source == .grok { return "Message \(agent.name)" }
         if agent.source != .grok, agent.status == .working, agent.pending == nil { return "Message now, it reads it at its next step" }
         if agent.pending != nil { return "Tell it what to do next" }
@@ -2012,10 +2008,6 @@ private struct ReplyField: View {
                 .onKeyPress(.tab) {
                     if let first = offers.first {
                         ui.drafts[agent.id] = "/\(first.id) "
-                        return .handled
-                    }
-                    if (ui.drafts[agent.id] ?? "").isEmpty, let guess = Suggestions.shared.text(for: agent) {
-                        ui.drafts[agent.id] = guess
                         return .handled
                     }
                     return .ignored
