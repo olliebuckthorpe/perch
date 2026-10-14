@@ -96,6 +96,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "peek" where parts.count > 1:
             ui.expand()
             ui.peek(parts[1])
+        case "paste":
+            let took = ui.pasteImages()
+            NSLog("perch paste: %@ selected=%@ attachments=%@", String(took), ui.selectedID ?? "nil",
+                  String(describing: ui.attachments.mapValues(\.count)))
+        case "unattach" where parts.count > 1:
+            ui.attachments[parts[1]] = nil
         case "compose":
             ui.expand()
             ui.composing = true

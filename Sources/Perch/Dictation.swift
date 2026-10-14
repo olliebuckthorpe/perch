@@ -41,21 +41,25 @@ final class Dictation {
         }
     }
 
+    /// What has been said so far in earlier stretches of speech, and the stretch in progress.
+    @ObservationIgnored private var committed = ""
+    @ObservationIgnored private var current = ""
+    @ObservationIgnored private var existing = ""
+
     private func begin(_ agentID: String) {
         guard let recognizer, recognizer.isAvailable else {
             problem = "Speech recognition is not available right now"
             return
         }
-        let ui = NotchUI.shared
-        let existing = ui.drafts[agentID] ?? ""
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
+        existing = NotchUI.shared.drafts[agentID] ?? ""
+        committed = ""
+        current = ""
 
         let input = engine.inputNode
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in
-            request.append(buffer)
+        // The microphone feeds whichever request is current, so listening carries on across pauses.
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in
+            self?.request?.append(buffer)
         }
         engine.prepare()
         do { try engine.start() } catch {
@@ -63,18 +67,58 @@ final class Dictation {
             problem = "Could not start the microphone"
             return
         }
-        self.request = request
         activeAgentID = agentID
+        listen(recognizer, for: agentID)
+    }
+
+    /// One stretch of speech. The recogniser wraps a stretch up when the speaker pauses, and
+    /// starts its text again from nothing. Each finished stretch is therefore kept, and a new
+    /// one is started, so a pause never loses what came before it. It only stops when the
+    /// microphone button is pressed again.
+    private func listen(_ recognizer: SFSpeechRecognizer, for agentID: String) {
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
+        self.request = request
+        let began = Date()
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             DispatchQueue.main.async {
-                guard let self, self.activeAgentID == agentID else { return }
+                guard let self, self.activeAgentID == agentID, self.request === request else { return }
                 if let result {
                     let spoken = result.bestTranscription.formattedString
-                    ui.drafts[agentID] = existing.isEmpty ? spoken : "\(existing) \(spoken)"
+                    // Some versions restart the text mid-request after a pause: much shorter,
+                    // and not a continuation of what was there. Keep the earlier part.
+                    if self.current.count > 12, spoken.count < self.current.count / 2,
+                       !self.current.hasPrefix(String(spoken.prefix(8))) {
+                        self.committed = self.join(self.committed, self.current)
+                    }
+                    self.current = spoken
+                    self.write(agentID)
                 }
-                if error != nil || result?.isFinal == true { self.stop() }
+                if error != nil || result?.isFinal == true {
+                    self.committed = self.join(self.committed, self.current)
+                    self.current = ""
+                    self.write(agentID)
+                    self.task = nil
+                    // Failing straight away means it will not work at all; do not spin on it.
+                    if error != nil, Date().timeIntervalSince(began) < 0.6 {
+                        self.problem = "Dictation stopped. Press the microphone to try again."
+                        self.stop()
+                        return
+                    }
+                    // Carry on listening for the next thing said.
+                    self.listen(recognizer, for: agentID)
+                }
             }
         }
+    }
+
+    private func join(_ a: String, _ b: String) -> String {
+        a.isEmpty ? b : b.isEmpty ? a : "\(a) \(b)"
+    }
+
+    private func write(_ agentID: String) {
+        NotchUI.shared.drafts[agentID] = join(existing, join(committed, current))
     }
 
     func stop() {
