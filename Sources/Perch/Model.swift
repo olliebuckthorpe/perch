@@ -178,7 +178,7 @@ final class AgentStore {
                   let id = row["id"] as? String, let name = row["name"] as? String else { continue }
             let at = Date(timeIntervalSince1970: row["at"] as? Double ?? 0)
             let kept = row["kept"] as? Bool ?? false
-            guard kept || now.timeIntervalSince(at) < 3 * 3600 else { continue }
+            guard kept || now.timeIntervalSince(at) < Self.keepFor else { continue }
             let a = upsert(source: source, sessionID: id, name: name)
             a.name = name
             a.kept = kept
@@ -218,13 +218,18 @@ final class AgentStore {
     }
 
     /// Coding sessions go quiet without telling anyone. Drop the stale ones.
+    /// How long a quiet chat stays in the notch.
+    static let keepFor: TimeInterval = 4 * 86400
+
     func prune() {
         let now = Date()
         for a in agents where a.source != .grok && a.pending == nil && !a.kept {
             let age = now.timeIntervalSince(a.lastActivity)
             // A session that died mid-turn never says so.
             if a.status == .working, age > 30 * 60 { a.status = .idle }
-            if age > 3 * 3600 || (a.ended && age > 30 * 60) { remove(a) }
+            // Chats stay until they have been quiet for a few days (overnight is not long enough;
+            // they used to vanish after three hours). Clear one sooner with its cross.
+            if age > Self.keepFor || (a.ended && age > 2 * 86400) { remove(a) }
         }
     }
 }
