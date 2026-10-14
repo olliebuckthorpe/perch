@@ -1186,6 +1186,67 @@ private struct TaskCard: View {
     /// Set by the column, which knows where the pointer is.
     var hovered = false
     @Environment(BoardDrag.self) private var drag
+    /// Handing this to-do to the pinned bot: the note being written, and whether it went.
+    @State private var pushing = false
+    @State private var note = ""
+    @State private var pushed = false
+    @FocusState private var noteFocused: Bool
+
+    private var bot: Agent? {
+        let ui = NotchUI.shared
+        return AgentStore.shared.grokBots.first { ui.pinned.contains($0.name) } ?? AgentStore.shared.grokBots.first
+    }
+
+    /// Sends the to-do and the note to the bot as one message, with the Notion link so it can
+    /// find the card.
+    private func push() {
+        guard let bot else { return }
+        var lines = ["To-do from my list: \"\(task.name)\""]
+        var facts: [String] = [task.column]
+        if let (due, _) = dueText { facts.append("due \(due.lowercased())") }
+        if let p = task.priority { facts.append("\(p) priority") }
+        lines[0] += " (\(facts.joined(separator: ", ")))"
+        if let url = task.url { lines.append(url) }
+        let ask = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        lines.append(ask.isEmpty ? "Can you take this on?" : ask)
+        GrokSource.shared.send(bot, text: lines.joined(separator: "\n\n"))
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            pushing = false
+            pushed = true
+        }
+        note = ""
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { withAnimation { pushed = false } }
+    }
+
+    @ViewBuilder private var pushBox: some View {
+        if pushing, let bot {
+            HStack(spacing: 6) {
+                TextField("What should \(bot.name) do with it?", text: $note, axis: .vertical)
+                    .textFieldStyle(.plain).font(.system(size: 11.5)).lineLimit(1...4)
+                    .focused($noteFocused)
+                    .onSubmit(push)
+                    .onKeyPress(.escape) {
+                        withAnimation { pushing = false }
+                        return .handled
+                    }
+                Button(action: push) {
+                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 15)).foregroundStyle(.white)
+                }
+                .buttonStyle(Press())
+                .help("Send to \(bot.name)")
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .transition(.opacity.combined(with: .move(edge: .top)))
+            .onAppear {
+                NotchUI.shared.controller?.panel.makeKey()
+                DispatchQueue.main.async { noteFocused = true }
+            }
+        } else if pushed, let bot {
+            Label("Sent to \(bot.name)", systemImage: "checkmark").font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(Palette.green).transition(.opacity)
+        }
+    }
     @State private var ticking = false
 
     private var dueText: (String, Color)? {
@@ -1235,6 +1296,19 @@ private struct TaskCard: View {
                         }
                     }
                 }
+                if !floating { pushBox }
+            }
+            // Hand it to Remmi: shown while the pointer is on the card.
+            if !floating, bot != nil, hovered || pushing {
+                Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { pushing.toggle() } } label: {
+                    Image(systemName: "paperplane.fill").font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(pushing ? 0.95 : 0.6))
+                        .frame(width: 22, height: 22)
+                        .background(.white.opacity(pushing ? 0.2 : 0.1), in: Circle())
+                }
+                .buttonStyle(Press(reach: 3))
+                .help("Push to \(bot?.name ?? "Remmi") with a note")
+                .transition(.opacity)
             }
         }
         .padding(.horizontal, 9).padding(.vertical, 8)
