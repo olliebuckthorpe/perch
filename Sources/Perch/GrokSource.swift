@@ -310,6 +310,9 @@ final class GrokSource {
             }
             // A message just sent from the notch stays put until the host's copy of it arrives.
             messages = Threads.keepingLocalIDs(messages, from: agent.thread)
+            // A message the host now has did get through, even if the send itself timed out
+            // waiting for an answer: drop its "Not delivered" warning.
+            for message in messages where message.id.hasPrefix("local-") { agent.unsent[message.id] = nil }
             let unsent = Threads.unsent(in: agent.thread, loaded: messages)
             let merged = messages + unsent
             if merged != agent.thread { agent.thread = merged }
