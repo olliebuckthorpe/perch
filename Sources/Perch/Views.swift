@@ -924,6 +924,7 @@ private final class BoardDrag {
 private struct TasksView: View {
     @State private var draft = ""
     @State private var drag = BoardDrag()
+    @State private var mouseUp: Any?
     @FocusState private var focused: Bool
     private var notion: NotionTasks { NotionTasks.shared }
 
@@ -971,7 +972,26 @@ private struct TasksView: View {
         }
         .environment(drag)
         .padding(.top, 2)
-        .onAppear { notion.refresh() }
+        .onAppear {
+            notion.refresh()
+            // Belt and braces: letting go of the mouse always ends a drag, even if the card's own
+            // gesture missed it.
+            mouseUp = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [drag] event in
+                DispatchQueue.main.async {
+                    guard let card = drag.card else { return }
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                        if let target = drag.target { NotionTasks.shared.place(card.id, in: target.column, at: target.index) }
+                        drag.end()
+                    }
+                }
+                return event
+            }
+        }
+        .onDisappear {
+            if let mouseUp { NSEvent.removeMonitor(mouseUp) }
+            mouseUp = nil
+            drag.end()
+        }
     }
 
     private var setup: some View {
@@ -1043,11 +1063,15 @@ private struct TaskColumn: View {
         }
     }
 
-    /// The cards to draw: the dragged one taken out, and a gap where it would land.
+    /// The cards to draw, with a gap where the dragged one would land. The dragged card itself
+    /// stays in the list (drawn with no height): taking it out ended the drag gesture, so letting
+    /// go was never noticed and the card was left floating.
     private var rows: [TaskItem?] {
-        var list: [TaskItem?] = cards.filter { $0.id != drag.card?.id }
+        var list: [TaskItem?] = cards
         if let target = drag.target, target.column == title {
-            list.insert(nil, at: min(target.index, list.count))
+            let others = cards.filter { $0.id != drag.card?.id }
+            let at = target.index < others.count ? (cards.firstIndex(of: others[target.index]) ?? cards.count) : cards.count
+            list.insert(nil, at: at)
         }
         return list
     }
@@ -1086,7 +1110,10 @@ private struct TaskColumn: View {
                     ScrollView {
                         VStack(spacing: 5) {
                             ForEach(Array(rows.enumerated()), id: \.element?.id) { _, row in
-                                if let card = row {
+                                if let card = row, card.id == drag.card?.id {
+                                    // Lifted: still here so the drag carries on, but taking no room.
+                                    TaskCard(task: card, tint: tint).frame(height: 0).opacity(0).clipped()
+                                } else if let card = row {
                                     TaskCard(task: card, tint: tint, hovered: hoveredID == card.id && drag.card == nil)
                                         .transition(.asymmetric(insertion: .scale(scale: 0.92).combined(with: .opacity),
                                                                 removal: .opacity.combined(with: .offset(x: 30))))
