@@ -1997,6 +1997,14 @@ private struct ChatView: View {
                     }
                     .padding(.top, message.reactions.isEmpty ? 0 : 12)
                 }
+                if let retry = agent.unsent[message.id] {
+                    // It did not get through: say so on the message, never silently.
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.circle.fill").font(.system(size: 11)).foregroundStyle(Palette.red)
+                        Text("Not delivered").font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.red)
+                        Button("Try again", action: retry).buttonStyle(LinkButton())
+                    }
+                }
             } else if let name = message.fileName, let path = message.filePath {
                 FileCard(name: name, path: path, agent: agent, messageID: message.id)
             } else if let email = message.email {

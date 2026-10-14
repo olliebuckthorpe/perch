@@ -103,9 +103,15 @@ final class Agent: Identifiable {
     var tick = 0
     @ObservationIgnored var lastTick = Date.distantPast
 
-    func addLocal(_ text: String) {
-        thread.append(ChatMessage(id: "local-\(UUID().uuidString)", fromUser: true, text: text))
+    @discardableResult
+    func addLocal(_ text: String) -> String {
+        let id = "local-\(UUID().uuidString)"
+        thread.append(ChatMessage(id: id, fromUser: true, text: text))
+        return id
     }
+
+    /// Notch messages that did not get through, by their local id, with what to resend.
+    var unsent: [String: () -> Void] = [:]
     var ended = false
     var sending = false
 

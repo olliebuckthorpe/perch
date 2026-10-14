@@ -12,13 +12,26 @@ import { pathToFileURL } from "node:url";
 
 const src = process.argv[2];
 const { Gateway } = await import(pathToFileURL(`${src}/gateway.js`));
-const { resolveGatewaySession } = await import(pathToFileURL(`${src}/session.js`));
+const session = await import(pathToFileURL(`${src}/session.js`));
+const { resolveGatewaySession } = session;
+import { readFileSync } from "node:fs";
+
+// Grok Bot 0.70 saves its connection in a newer file format the plugin does not read yet; the
+// entries inside are the same. Used when the usual route (asking Cursor for a fresh one) fails.
+function appSession() {
+  const wrapped = JSON.parse(readFileSync(session.descriptorPath(), "utf8"));
+  return session.parseDescriptorFile({ ...wrapped, version: 2 });
+}
 
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 let gw = null;
 
 async function gateway() {
-  if (!gw) gw = new Gateway(await resolveGatewaySession({}), { timeoutMs: 30_000 });
+  if (!gw) {
+    let found;
+    try { found = await resolveGatewaySession({}); } catch (err) { found = appSession(); }
+    gw = new Gateway(found, { timeoutMs: 30_000 });
+  }
   return gw;
 }
 

@@ -328,6 +328,16 @@ final class GrokSource {
         return ([words] + paths.map { "[Image attached, saved at \($0)]" }).filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
+    /// Sends a prompt, trying again a few times over about ten seconds: the host sometimes
+    /// refuses for a moment (after the Mac wakes, say) and then recovers.
+    private func send(_ body: [String: Any], tries: Int, done: @escaping (Bool) -> Void) {
+        request("sendPrompt", body) { [weak self] reply in
+            if reply != nil { return done(true) }
+            guard tries > 1, let self else { return done(false) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.send(body, tries: tries - 1, done: done) }
+        }
+    }
+
     func send(_ agent: Agent, text: String, files: [Attachment] = [], replyTo: String? = nil) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !(text.isEmpty && files.isEmpty) else { return }
@@ -340,7 +350,7 @@ final class GrokSource {
             sent[nonce] = files.map(\.path)
             Self.sentImages = sent
         }
-        agent.addLocal(Self.withPictures(text, files.map(\.path)))
+        let localID = agent.addLocal(Self.withPictures(text, files.map(\.path)))
         agent.status = .working
         agent.detail = text.isEmpty ? "You sent an image" : "You: \(oneLine(text))"
 
@@ -351,8 +361,22 @@ final class GrokSource {
                 body["attachmentPaths"] = paths
                 body["attachmentNames"] = files.map(\.name)
             }
-            request("sendPrompt", body) { [weak self, weak agent] reply in
-                if reply == nil { agent?.detail = "Message did not send. Is Grok Bot open?" }
+            send(body, tries: 3) { [weak self, weak agent] ok in
+                guard let agent else { return }
+                if ok {
+                    agent.unsent[localID] = nil
+                } else {
+                    // Shown on the message itself, with a way to try again.
+                    agent.detail = "A message did not send"
+                    agent.unsent[localID] = { [weak self, weak agent] in
+                        guard let self, let agent else { return }
+                        agent.unsent[localID] = nil
+                        self.send(body, tries: 3) { ok in
+                            if !ok { agent.unsent[localID] = { post(paths) } }
+                            self.scheduleRefresh()
+                        }
+                    }
+                }
                 self?.scheduleRefresh()
             }
         }
