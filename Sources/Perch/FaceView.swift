@@ -231,6 +231,9 @@ struct CodexMark: View {
 /// square eyes, stubby arms out to the sides and four little legs.
 struct Mascot: View {
     let eyes: Color
+    /// While Claude is working the creature thinks: its eyes glance about, now and then it
+    /// blinks, and its feet shuffle. Still otherwise, so idle chats cost nothing.
+    var thinking = false
 
     // 12 wide by 8 tall. X = body, o = eye, . = empty.
     private static let grid = [
@@ -243,19 +246,45 @@ struct Mascot: View {
         "..X.X..X.X..",
         "..X.X..X.X..",
     ]
+    /// Feet mid-step: the two inner legs lifted.
+    private static let step = ["..X.X..X.X..", "..X......X.."]
+
+    /// Where the eyes look on each beat: left, left, centre, right, right, centre, up, and a blink.
+    private static let glance: [(dx: Int, dy: Int, open: Bool)] = [
+        (-1, 0, true), (-1, 0, true), (0, 0, true), (1, 0, true), (1, 0, true), (0, 0, true), (0, -1, true), (0, 0, false),
+    ]
 
     var body: some View {
+        if thinking {
+            TimelineView(.periodic(from: .now, by: 0.32)) { context in
+                let beat = Int(context.date.timeIntervalSinceReferenceDate / 0.32)
+                draw(Self.glance[beat % Self.glance.count], stepping: beat % 2 == 1)
+            }
+        } else {
+            draw((0, 0, true), stepping: false)
+        }
+    }
+
+    private func draw(_ look: (dx: Int, dy: Int, open: Bool), stepping: Bool) -> some View {
         Canvas { context, size in
             let cols = 12.0, rows = 8.0
             let cell = min(size.width / cols, size.height / rows)
             let origin = CGPoint(x: (size.width - cell * cols) / 2, y: (size.height - cell * rows) / 2)
-            for (r, line) in Self.grid.enumerated() {
+            func fill(_ c: Int, _ r: Int, _ color: Color) {
+                // A hair of overlap so no seams show between the squares.
+                let rect = CGRect(x: origin.x + Double(c) * cell, y: origin.y + Double(r) * cell, width: cell + 0.4, height: cell + 0.4)
+                context.fill(Path(rect), with: .color(color))
+            }
+            var grid = Self.grid
+            if stepping { grid[7] = Self.step[1] }
+            for (r, line) in grid.enumerated() {
                 for (c, ch) in line.enumerated() where ch != "." {
-                    // A hair of overlap so no seams show between the squares.
-                    let rect = CGRect(x: origin.x + Double(c) * cell, y: origin.y + Double(r) * cell,
-                                      width: cell + 0.4, height: cell + 0.4)
-                    context.fill(Path(rect), with: .color(ch == "o" ? eyes : Palette.claude))
+                    fill(c, r, ch == "o" && look.dx == 0 && look.dy == 0 && look.open ? eyes : Palette.claude)
                 }
+            }
+            // Eyes drawn where they are looking (still inside the face), or shut for a blink.
+            if look.open, look.dx != 0 || look.dy != 0 {
+                for c in [3, 8] { fill(c + look.dx, 2 + look.dy, eyes) }
             }
         }
     }
@@ -321,7 +350,7 @@ struct FaceView: View {
                 CodexMark().frame(width: size, height: size)
             } else if agent.source == .claude {
                 // Every Claude chat wears the same little orange Claude Code creature.
-                Mascot(eyes: .black.opacity(0.85)).frame(width: size, height: size)
+                Mascot(eyes: .black.opacity(0.85), thinking: agent.status == .working).frame(width: size, height: size)
             } else {
                 bodyShape.fill(agent.color)
                 VStack(spacing: size * 0.07) {
