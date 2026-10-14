@@ -895,6 +895,25 @@ private struct TaskColumn: View {
     let title: String
     let cards: [TaskItem]
     @State private var targeted = false
+    /// The card at the top of what is showing, so a drag held at an edge can scroll from there.
+    @State private var top: String?
+    @State private var edge = 0
+    @State private var scroller: Timer?
+
+    /// Holding a dragged card at the top or bottom edge scrolls the column that way.
+    private func autoscroll(_ direction: Int) {
+        scroller?.invalidate()
+        scroller = nil
+        edge = direction
+        guard direction != 0 else { return }
+        scroller = Timer.scheduledTimer(withTimeInterval: 0.16, repeats: true) { _ in
+            let ids = cards.map(\.id)
+            let at = top.flatMap { ids.firstIndex(of: $0) } ?? 0
+            let next = max(0, min(ids.count - 1, at + direction))
+            guard next != at else { return }
+            withAnimation(.easeOut(duration: 0.16)) { top = ids[next] }
+        }
+    }
 
     /// The colour Notion gives this column on the board.
     private var tint: Color {
@@ -949,9 +968,29 @@ private struct TaskColumn: View {
                     ScrollView {
                         VStack(spacing: 5) {
                             ForEach(cards) { TaskCard(task: $0, tint: tint) }
+                            // Room under the last card to drop onto: that puts a card at the bottom.
+                            EndSlot(column: title, tint: tint)
                         }
+                        .scrollTargetLayout()
                     }
+                    .scrollPosition(id: $top, anchor: .top)
                     .frame(height: 366)
+                    // Thin strips at the top and bottom: resting a dragged card on one scrolls
+                    // the column, so any position can be reached without letting go.
+                    .overlay(alignment: .top) {
+                        Color.clear.frame(height: 26).contentShape(Rectangle())
+                            .dropDestination(for: String.self) { _, _ in false } isTargeted: { autoscroll($0 ? -1 : 0) }
+                    }
+                    .overlay(alignment: .bottom) {
+                        Color.clear.frame(height: 26).contentShape(Rectangle())
+                            .dropDestination(for: String.self) { ids, _ in
+                                // Let go at the very bottom: it goes last.
+                                guard let id = ids.first else { return false }
+                                withAnimation(tabSwitch) { NotionTasks.shared.placeLast(id, in: title) }
+                                return true
+                            } isTargeted: { autoscroll($0 ? 1 : 0) }
+                    }
+                    .onDisappear { scroller?.invalidate() }
                 }
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -963,6 +1002,25 @@ private struct TaskColumn: View {
             NotionTasks.shared.move(id, to: title)
             return true
         } isTargeted: { targeted = $0 }
+    }
+}
+
+/// The space under a column's last card. Dropping a card here puts it at the bottom.
+private struct EndSlot: View {
+    let column: String
+    let tint: Color
+    @State private var targeted = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(tint.opacity(targeted ? 0.7 : 0), style: StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
+            .frame(maxWidth: .infinity).frame(height: 44)
+            .contentShape(Rectangle())
+            .dropDestination(for: String.self) { ids, _ in
+                guard let id = ids.first else { return false }
+                withAnimation(tabSwitch) { NotionTasks.shared.placeLast(id, in: column) }
+                return true
+            } isTargeted: { targeted = $0 }
     }
 }
 
@@ -1831,7 +1889,7 @@ private struct ReplyField: View {
     private var placeholder: String {
         if let problem = Dictation.shared.problem { return problem }
         if Dictation.shared.activeAgentID == agent.id { return "Listening…" }
-        if agent.source == .grok { return "Message \(agent.name), paste images too" }
+        if agent.source == .grok { return "Message \(agent.name)" }
         if agent.source != .grok, agent.status == .working, agent.pending == nil { return "Message now, it reads it at its next step" }
         if agent.pending != nil { return "Tell it what to do next" }
         return agent.waiter != nil ? "Reply to this session" : "Reply in the background"
@@ -1988,6 +2046,7 @@ private struct AgentBubble: View {
     @State private var picking = false
     @State private var over: String?
     @State private var chosen: String?
+    @State private var copied = false
 
     private static let quick = ["👍", "❤️", "😂", "🙏", "👀", "🔥", "✅"]
     private static let pop = Animation.spring(response: 0.3, dampingFraction: 0.6)
@@ -1999,6 +2058,21 @@ private struct AgentBubble: View {
                 .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             // Only while the pointer is on the message: one small, dim face. Clicking it springs
             // open a tray of reactions just above.
+            // Copy the whole message: a prompt to hand on, an address, a draft.
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                copied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 10.5, weight: copied ? .bold : .regular))
+                    .foregroundStyle(copied ? Palette.green : .white.opacity(0.45))
+                    .frame(width: 22, height: 24).contentShape(Rectangle())
+            }
+            .buttonStyle(Press(reach: 3))
+            .padding(.leading, 3)
+            .opacity(hovered || picking || copied ? 1 : 0)
+            .help("Copy this message")
             if react != nil {
                 Button { withAnimation(Self.pop) { picking.toggle() } } label: {
                     Image(systemName: picking ? "face.smiling.inverse" : "face.smiling").font(.system(size: 12))

@@ -172,6 +172,14 @@ final class NotionTasks {
         order = placed + order.filter { !placed.contains($0) && known.contains($0) }
     }
 
+    /// Puts card `id` at the very bottom of `column`.
+    func placeLast(_ id: String, in column: String) {
+        move(id, to: column)
+        let placed = cards(in: column).map(\.id).filter { $0 != id } + [id]
+        let known = Set(tasks.map(\.id))
+        order = placed + order.filter { !placed.contains($0) && known.contains($0) }
+    }
+
     /// Moves a card to another column on the board, as dragging it in Notion would.
     func move(_ id: String, to column: String) {
         guard let i = tasks.firstIndex(where: { $0.id == id }), tasks[i].column != column else { return }
