@@ -97,6 +97,21 @@ final class CodingSessions {
 
     func handle(_ req: HookRequest) {
         let j = req.json
+        // Another agent handing work to Claude Code (perch-new-chat): start a chat for it.
+        if req.headers["x-perch-mode"] == "newchat" {
+            guard let prompt = j["prompt"] as? String, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                req.respond(Data("No prompt given".utf8))
+                return
+            }
+            let folder = (j["folder"] as? String).flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil } ?? "\(Shell.home)/Dev"
+            if let agent = startChat(prompt: prompt, folder: folder) {
+                store.ping(agent)
+                req.respond(Data("Started a Claude Code chat in \(folder). It will appear in the Claude app once it has replied.".utf8))
+            } else {
+                req.respond(Data("Could not start the chat".utf8))
+            }
+            return
+        }
         // Claude Code's status line: not a session event, just how much of the plan is used.
         if req.headers["x-perch-mode"] == "status" {
             Usage.shared.takeClaude(j)

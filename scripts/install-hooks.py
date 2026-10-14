@@ -96,6 +96,9 @@ def main():
         os.makedirs(os.path.dirname(HOOK), mode=0o700, exist_ok=True)
         shutil.copy2(os.path.join(REPO, "hooks", "perch-hook"), HOOK)
         os.chmod(HOOK, 0o755)
+        starter = os.path.join(os.path.dirname(HOOK), "perch-new-chat")
+        shutil.copy2(os.path.join(REPO, "hooks", "perch-new-chat"), starter)
+        os.chmod(starter, 0o755)
     update(os.path.join(HOME, ".claude", "settings.json"), "claude", uninstall)
     if os.path.isdir(os.path.join(HOME, ".codex")):
         update(os.path.join(HOME, ".codex", "hooks.json"), "codex", uninstall)

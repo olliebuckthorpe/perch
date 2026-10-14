@@ -1,0 +1,19 @@
+#!/bin/sh
+# Starts a Claude Code chat through Perch: it runs in the background in auto mode, shows up in
+# the notch, and lands in the Claude app with a proper title once it has replied.
+#
+#   perch-new-chat [-f folder] "prompt"
+#   echo "long prompt" | perch-new-chat -f ~/Dev
+#
+# Meant for agents (Remmi, say) handing a piece of work to Claude Code on this Mac.
+SOCK="$HOME/.perch/perch.sock"
+FOLDER="$HOME/Dev"
+if [ "$1" = "-f" ]; then FOLDER="$2"; shift 2; fi
+PROMPT="$*"
+[ -n "$PROMPT" ] || PROMPT=$(cat)
+[ -n "$PROMPT" ] || { echo "usage: perch-new-chat [-f folder] \"prompt\"" >&2; exit 1; }
+[ -S "$SOCK" ] || { echo "Perch is not running" >&2; exit 1; }
+BODY=$(PROMPT="$PROMPT" FOLDER="$FOLDER" /usr/bin/python3 -c 'import json,os; print(json.dumps({"prompt": os.environ["PROMPT"], "folder": os.path.expanduser(os.environ["FOLDER"])}))')
+OUT=$(printf '%s' "$BODY" | curl -s --unix-socket "$SOCK" --max-time 10 -X POST \
+  -H "Content-Type: application/json" -H "X-Perch-Mode: newchat" --data-binary @- http://perch/hook)
+echo "${OUT:-Started}"
