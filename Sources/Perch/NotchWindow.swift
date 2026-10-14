@@ -637,23 +637,29 @@ final class NotchController {
         }) { monitors.append(m) }
         // While a mouse button is held (a file being dragged up from another app, say) the pointer
         // is followed on a timer, because ordinary movement events stop arriving during a drag.
-        // The drag clipboard changes when something is picked up; if that something is a file, the
-        // shelf drops down to take it.
+        // A file being dragged towards the notch drops the shelf down to take it. Watched on a timer
+        // while the button is held, because ordinary movement events stop arriving during a drag
+        // from another app. It opens once the pointer, still held, comes up near the notch with a
+        // file or picture on the drag clipboard; dragging things around elsewhere leaves it alone.
         if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] _ in
-            let drag = NSPasteboard(name: .drag)
-            let before = drag.changeCount
+            let start = NSEvent.mouseLocation
             self?.dragWatch?.invalidate()
             self?.dragWatch = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] timer in
+                guard let self else { return timer.invalidate() }
                 guard NSEvent.pressedMouseButtons & 1 == 1 else {
                     timer.invalidate()
-                    self?.ui.fileDrag(false)
+                    self.ui.fileDrag(false)
                     return
                 }
-                if drag.changeCount != before,
-                   drag.types?.contains(where: { [.fileURL, .tiff, .png].contains($0) || $0.rawValue.contains("promise") }) == true {
-                    self?.ui.fileDrag(true)
+                let now = NSEvent.mouseLocation
+                let frame = self.panel.frame
+                let nearNotch = now.y > frame.maxY - 110 && abs(now.x - frame.midX) < 330
+                let moved = hypot(now.x - start.x, now.y - start.y) > 40
+                if nearNotch, moved, !self.ui.fileInHand,
+                   NSPasteboard(name: .drag).types?.contains(where: { [.fileURL, .tiff, .png].contains($0) || $0.rawValue.contains("promise") }) == true {
+                    self.ui.fileDrag(true)
                 }
-                self?.trackMouse()
+                self.trackMouse()
             }
         }) { monitors.append(m) }
         if let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
