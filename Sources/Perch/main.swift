@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller = NotchController(store: AgentStore.shared)
         AgentStore.shared.restore()
         CodingSessions.shared.start()
+        SlackSource.shared.start()
         Clips.shared.start()
         // Control+Option+V: the clipboard. Control+Option+R: the pinned bot (Remmi).
         Hotkeys.shared.register(key: kVK_ANSI_V, modifiers: controlKey | optionKey) { NotchUI.shared.toggleClips() }

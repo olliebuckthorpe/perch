@@ -231,7 +231,11 @@ final class GrokSource {
                     if let from = (e["fromAgent"] as? [String: Any])?["name"] as? String {
                         return ChatMessage(id: id, fromUser: false, text: text, reactions: reactions, peerName: from, peerOutbound: false)
                     }
-                    return ChatMessage(id: id, fromUser: e["role"] as? String == "user", text: text, reactions: reactions)
+                    let user = e["role"] as? String == "user"
+                    if user, let nonce = e["clientNonce"] as? String, let paths = Self.sentImages[nonce] {
+                        return ChatMessage(id: id, fromUser: true, text: Self.withPictures(text, paths), reactions: reactions)
+                    }
+                    return ChatMessage(id: id, fromUser: user, text: text, reactions: reactions)
                 case "send-message":
                     let message = e["message"] as? [String: Any] ?? [:]
                     if let text = message["content"] as? String, !text.isEmpty {
@@ -296,16 +300,36 @@ final class GrokSource {
         }
     }
 
+    /// Which pictures went with each message sent from the notch, by the message's nonce.
+    private static var sentImages: [String: [String]] {
+        get { UserDefaults.standard.dictionary(forKey: "grokSentImages") as? [String: [String]] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "grokSentImages") }
+    }
+
+    /// The words of a message plus a note per picture, which the chat draws as the picture.
+    static func withPictures(_ text: String, _ paths: [String]) -> String {
+        let words = text == "See the attached image." ? "" : text
+        return ([words] + paths.map { "[Image attached, saved at \($0)]" }).filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+
     func send(_ agent: Agent, text: String, files: [Attachment] = [], replyTo: String? = nil) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !(text.isEmpty && files.isEmpty) else { return }
         let prompt = text.isEmpty ? "See the attached image." : text
-        agent.addLocal(prompt)
+        let nonce = UUID().uuidString.lowercased()
+        // The host's record of a message keeps its words but not its pictures, so Perch notes
+        // which pictures went with it and draws them in your bubble, now and after every reload.
+        if !files.isEmpty {
+            var sent = Self.sentImages
+            sent[nonce] = files.map(\.path)
+            Self.sentImages = sent
+        }
+        agent.addLocal(Self.withPictures(text, files.map(\.path)))
         agent.status = .working
         agent.detail = text.isEmpty ? "You sent an image" : "You: \(oneLine(text))"
 
         func post(_ paths: [String]) {
-            var body: [String: Any] = ["agentId": agent.sessionID, "prompt": prompt, "clientNonce": UUID().uuidString.lowercased()]
+            var body: [String: Any] = ["agentId": agent.sessionID, "prompt": prompt, "clientNonce": nonce]
             if let replyTo { body["replyToId"] = replyTo }
             if !paths.isEmpty {
                 body["attachmentPaths"] = paths

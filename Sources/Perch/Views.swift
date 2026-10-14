@@ -118,6 +118,8 @@ private struct ExpandedBody: View {
                 LinkPicker(link: link, waiting: ui.pendingLinks.count - 1).id(link.id)
             } else if let opened = ui.justOpened {
                 LinkOpenedNote(site: opened.site, profile: opened.profile)
+            } else if ui.cardsOnly, let alert = ui.slackAlert {
+                SlackBanner(alert: alert)
             } else if ui.cardsOnly, let id = ui.noticeID, let agent = store.find(id) {
                 NoticeView(agent: agent)
             } else if ui.showingShelf {
@@ -3296,5 +3298,39 @@ enum References {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         }
         NotchUI.shared.collapse()
+    }
+}
+
+// MARK: Slack
+
+/// A Slack message in the notch: who, where, and what they said. Click to open it in Slack.
+private struct SlackBanner: View {
+    let alert: SlackAlert
+    @Environment(NotchUI.self) private var ui
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "number.square.fill").font(.system(size: 22))
+                .foregroundStyle(.white.opacity(0.85))
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(alert.sender).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                    Text("\(alert.place) · \(alert.workspace.capitalized)").font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                }
+                Text(alert.text).font(.system(size: 12)).foregroundStyle(.white.opacity(0.8))
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(.white.opacity(hovered ? 0.1 : 0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+        .onTapGesture {
+            if let link = alert.link { NSWorkspace.shared.open(link) }
+            ui.collapse()
+        }
     }
 }

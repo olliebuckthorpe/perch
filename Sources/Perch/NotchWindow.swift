@@ -257,6 +257,12 @@ final class NotchUI {
             if expanded, cardsOnly, noticeID != nil, !noticeArmed { return }
             collapseWork?.cancel()
             autoOpened = false
+            // A Slack banner stays a banner: clicking it opens Slack.
+            if expanded, cardsOnly, slackAlert != nil {
+                collapseWork?.cancel()
+                autoOpened = false
+                return
+            }
             if expanded, cardsOnly, let id = noticeID {
                 // Coming up to a notification opens it into the full conversation, after a beat
                 // so a pointer just passing through does not trigger it.
@@ -341,6 +347,7 @@ final class NotchUI {
         guard expanded else { return }
         expanded = false
         cardsOnly = false
+        slackAlert = nil
         pendingLinks = []
         justOpened = nil
         query = ""
@@ -460,6 +467,30 @@ final class NotchUI {
         present(PendingLink(url: last.url, site: last.site, sourceName: nil, sourceBundle: nil, choices: ChromeProfile.shown()))
     }
 
+    /// A Slack message being shown as a banner.
+    private(set) var slackAlert: SlackAlert?
+
+    /// A Slack message: drop the banner down, like an agent's. A less important workspace does
+    /// not push aside a banner from a more important one that is still showing.
+    func slack(_ alert: SlackAlert) {
+        guard pendingLinks.isEmpty else { return }
+        if expanded && !autoOpened { return }
+        if let showing = slackAlert, expanded, cardsOnly, showing.priority < alert.priority { return }
+        if Settings.sounds { Settings.playSound() }
+        autoOpened = true
+        cardsOnly = true
+        noticeID = nil
+        slackAlert = alert
+        expanded = true
+        collapseWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.slackAlert?.id == alert.id, !self.hovering, !self.typing else { return }
+            self.collapse()
+        }
+        collapseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: work)
+    }
+
     /// The agent a self-opened summary banner is about.
     private(set) var noticeID: String?
     /// Hovering only opens a banner once the pointer has been seen away from it.
@@ -484,6 +515,7 @@ final class NotchUI {
         }
         autoOpened = true
         cardsOnly = true
+        slackAlert = nil
         noticeID = id
         holdOpenUntil = Date().addingTimeInterval(1.5)
         expanded = true
