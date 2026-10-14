@@ -152,9 +152,16 @@ final class NotionTasks {
         didSet { UserDefaults.standard.set(order, forKey: "taskOrder") }
     }
 
+    /// A column's cards. Anything due today or overdue always comes first, so the order you
+    /// dragged cards into last week cannot bury today's work as the dates move on. Within that
+    /// and within the rest, your dragged order holds, then the board's own (soonest due first).
     func cards(in column: String) -> [TaskItem] {
         let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        let endOfToday = Calendar.current.startOfDay(for: Date()).addingTimeInterval(86400)
+        func urgent(_ t: TaskItem) -> Bool { t.due.map { $0 < endOfToday } ?? false }
         return tasks.filter { $0.column == column }.enumerated().sorted {
+            let (x, y) = (urgent($0.element), urgent($1.element))
+            if x != y { return x }
             let (a, b) = (rank[$0.element.id] ?? Int.max, rank[$1.element.id] ?? Int.max)
             return a != b ? a < b : $0.offset < $1.offset
         }.map(\.element)
