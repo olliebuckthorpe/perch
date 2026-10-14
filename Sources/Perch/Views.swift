@@ -1963,7 +1963,10 @@ private struct ChatView: View {
                             .foregroundStyle(agent.source == .grok ? Color.black.opacity(0.88) : .white)
                             .padding(.horizontal, 11).padding(.vertical, 7)
                             .background(mine, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                            // As in Grok Bot: reactions sit in a round badge on the bubble's corner.
+                            .overlay(alignment: .topLeading) { ReactionBadge(emojis: message.reactions).offset(x: -16, y: -14) }
                     }
+                    .padding(.top, message.reactions.isEmpty ? 0 : 12)
                 }
             } else if let name = message.fileName, let path = message.filePath {
                 FileCard(name: name, path: path, agent: agent, messageID: message.id)
@@ -1979,21 +1982,11 @@ private struct ChatView: View {
                 ChoiceCard(choice: choice, agent: agent, answered: messages.dropFirst(asked + 1).contains { $0.fromUser })
             } else {
                 // The agent's side: a quieter bubble on the left, yours brighter on the right.
-                AgentBubble(text: parts.text, react: agent.source == .grok && !message.id.hasPrefix("local-") ? { emoji in
+                AgentBubble(text: parts.text, reactions: message.reactions,
+                            react: agent.source == .grok && !message.id.hasPrefix("local-") ? { emoji in
                     GrokSource.shared.react(emoji, to: message.id, in: agent)
                 } : nil)
-            }
-            if !message.reactions.isEmpty {
-                // Reactions the agent (or you) left on this message in Grok Bot.
-                HStack(spacing: 3) {
-                    ForEach(Array(message.reactions.enumerated()), id: \.offset) { _, emoji in
-                        Text(emoji).font(.system(size: 11))
-                            .padding(.horizontal, 5).padding(.vertical, 1.5)
-                            .background(.white.opacity(0.1), in: Capsule())
-                            // A new reaction lands with a little bounce.
-                            .modifier(PopIn(delay: 0))
-                    }
-                }
+                .padding(.top, message.reactions.isEmpty ? 0 : 12)
             }
         }
     }
@@ -2285,6 +2278,7 @@ private struct ReplyField: View {
 /// again takes it back).
 private struct AgentBubble: View {
     let text: String
+    var reactions: [String] = []
     let react: ((String) -> Void)?
     @State private var hovered = false
     @State private var picking = false
@@ -2302,6 +2296,7 @@ private struct AgentBubble: View {
             MessageBody(text: text)
                 .padding(.horizontal, 11).padding(.vertical, 8)
                 .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .overlay(alignment: .topTrailing) { ReactionBadge(emojis: reactions).offset(x: 16, y: -14) }
             // Only while the pointer is on the message: one small, dim face. Clicking it springs
             // open a tray of reactions just above.
             // Copy the whole message: a prompt to hand on, an address, a draft.
@@ -2407,6 +2402,25 @@ private struct AgentBubble: View {
             chosen = nil
             over = nil
         }
+    }
+}
+
+/// Reactions on a message, the way Grok Bot draws them: each in a dark round badge with a
+/// black ring, overlapping the corner of the bubble. Several sit in a slightly overlapping row.
+private struct ReactionBadge: View {
+    let emojis: [String]
+
+    var body: some View {
+        HStack(spacing: -7) {
+            ForEach(Array(emojis.enumerated()), id: \.offset) { _, emoji in
+                Text(emoji).font(.system(size: 14))
+                    .frame(width: 28, height: 28)
+                    .background(Color(white: 0.13), in: Circle())
+                    .overlay(Circle().strokeBorder(.black, lineWidth: 2.5))
+                    .modifier(PopIn(delay: 0))
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
