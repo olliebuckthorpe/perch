@@ -52,12 +52,15 @@ struct ChatMessage: Identifiable, Equatable {
     /// The bot handing its computer over for a step it needs the user for (scanning a QR code,
     /// signing in): what to do, and how it ended ("handed_back" and so on), nil while waiting.
     var handoff: (instruction: String, resolution: String?)?
+    /// A bot asking for an app to be linked so one of its triggers can fire (Slack, say), and why.
+    var listener: (platform: String, reason: String)?
 
     static func == (a: ChatMessage, b: ChatMessage) -> Bool {
         a.id == b.id && a.fromUser == b.fromUser && a.text == b.text && a.reactions == b.reactions && a.email == b.email
             && a.choice == b.choice && a.approval == b.approval && a.fileName == b.fileName && a.filePath == b.filePath
             && a.peerName == b.peerName && a.peerOutbound == b.peerOutbound && a.secret?.label == b.secret?.label && a.secret?.provided == b.secret?.provided
             && a.boxImages == b.boxImages && a.handoff?.instruction == b.handoff?.instruction && a.handoff?.resolution == b.handoff?.resolution
+            && a.listener?.platform == b.listener?.platform
     }
     /// Set when this is one agent talking to another, not part of the conversation with the user.
     /// A file the agent attached: its name, and where it lives on the agent's own computer.

@@ -303,6 +303,10 @@ final class GrokSource {
                             return ChatMessage(id: id, fromUser: false, text: body, reactions: reactions, email: draft)
                         }
                     }
+                    if message["type"] as? String == "listener-connect", let platform = message["platform"] as? String {
+                        return ChatMessage(id: id, fromUser: false, text: "", reactions: reactions,
+                                           listener: (platform, message["reason"] as? String ?? ""))
+                    }
                     // Some other kind of card the notch cannot draw yet: say so, do not hide it.
                     guard let type = message["type"] as? String else { return nil }
                     return ChatMessage(id: id, fromUser: false, text: "_Sent a \(type.replacingOccurrences(of: "-", with: " ")). Open Grok Bot to see it._", reactions: reactions)
@@ -433,6 +437,27 @@ final class GrokSource {
     /// Adds (or, if it is already there, removes) the user's reaction on one of the bot's messages.
     /// Hands a requested secret to the host, the same call Grok Bot's own field makes. The value
     /// goes straight to the host to be stored for the bot's box; Perch keeps no copy.
+    /// Whether an app is linked for bots' triggers (the Slack connection a routine waits on).
+    func listenerConnected(_ platform: String, done: @escaping (Bool?) -> Void) {
+        request("getListenerIntegrations") { reply in
+            let list = (reply as? [String: Any])?["integrations"] as? [[String: Any]]
+            let row = list?.first { $0["platform"] as? String == platform }
+            DispatchQueue.main.async { done(row.map { $0["isConnected"] as? Bool == true }) }
+        }
+    }
+
+    /// Opens the app's own sign-in page (Slack's, say) to link it for triggers, as the card in
+    /// Grok Bot does. Nothing is linked until the user approves it there.
+    func connectListener(_ platform: String, done: @escaping (Bool) -> Void) {
+        request("getListenerConnectUrl", ["platform": platform]) { reply in
+            let url = ((reply as? [String: Any])?["url"] as? String).flatMap(URL.init(string:))
+            DispatchQueue.main.async {
+                if let url { NSWorkspace.shared.open(url) }
+                done(url != nil)
+            }
+        }
+    }
+
     func submitSecret(_ value: String, entry: String, in agent: Agent, done: @escaping (Bool) -> Void) {
         request("submitSecret", ["entryId": entry, "value": value, "agentId": agent.sessionID]) { reply in
             done(reply != nil)

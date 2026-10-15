@@ -2387,6 +2387,8 @@ struct ChatView: View {
             } else if let handoff = message.handoff {
                 HandoffCard(instruction: handoff.instruction, resolution: handoff.resolution, agent: agent,
                             picture: messages.prefix { $0.id != message.id }.last { !$0.boxImages.isEmpty }?.boxImages.first)
+            } else if let listener = message.listener {
+                ListenerCard(platform: listener.platform, reason: listener.reason)
             } else if let secret = message.secret {
                 SecretCard(label: secret.label, detail: secret.detail, entry: message.id, agent: agent, provided: secret.provided)
             } else if let approval = message.approval {
@@ -3112,6 +3114,75 @@ private struct HandoffCard: View {
 /// A bot asking for a key or password. It is typed into a hidden field and handed straight
 /// to the host with the same call Grok Bot's own field uses; the bot never sees it and Perch
 /// keeps no copy. Grok Bot is still there as a fallback.
+/// A bot asking for an app (Slack, say) to be linked so its trigger can fire. Connecting opens
+/// that app's own approval page in the browser; the card turns green once it is linked.
+private struct ListenerCard: View {
+    let platform: String
+    let reason: String
+    @State private var connected: Bool?
+    @State private var opening = false
+    @State private var watching = false
+
+    private var name: String {
+        switch platform {
+        case "github": return "GitHub"
+        case "gitlab": return "GitLab"
+        case "azure-devops": return "Azure DevOps"
+        default: return platform.prefix(1).uppercased() + platform.dropFirst()
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 7) {
+                    Image(systemName: connected == true ? "checkmark.circle.fill" : "bolt.horizontal.circle")
+                        .font(.system(size: 13)).foregroundStyle(connected == true ? Palette.green : .white.opacity(0.7))
+                    Text(connected == true ? "\(name) connected" : "Connect \(name)")
+                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                }
+                if connected != true {
+                    Text(reason.isEmpty ? "So this routine can fire." : reason.prefix(1).uppercased() + reason.dropFirst() + ".")
+                        .font(.system(size: 12)).foregroundStyle(.white.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        Button(opening ? "Opening…" : "Connect \(name)", action: connect)
+                            .buttonStyle(ChipButton(fill: .white)).disabled(opening)
+                        if watching {
+                            Text("Approve it in your browser, this updates by itself")
+                                .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
+                        }
+                    }
+                }
+            }
+            .padding(11)
+            .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .opacity(connected == true ? 0.75 : 1)
+            Spacer(minLength: 28)
+        }
+        .animation(.easeOut(duration: 0.2), value: connected)
+        .task(id: platform) { check() }
+    }
+
+    private func check() {
+        GrokSource.shared.listenerConnected(platform) { connected = $0 }
+    }
+
+    private func connect() {
+        opening = true
+        GrokSource.shared.connectListener(platform) { ok in
+            opening = false
+            guard ok else { return NSSound.beep() }
+            watching = true
+            // Look again every few seconds for a few minutes while they approve it.
+            for i in 1...60 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 3) {
+                    if connected != true { check() }
+                }
+            }
+        }
+    }
+}
+
 private struct SecretCard: View {
     let label: String
     let detail: String
