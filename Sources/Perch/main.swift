@@ -153,6 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "reply" where parts.count > 1:
             let bits = parts[1].components(separatedBy: "|")
             if bits.count == 2, let agent = AgentStore.shared.find(bits[0]) { CodingSessions.shared.reply(agent, text: bits[1]) }
+        case "messageview" where parts.count > 1:
+            let text = "1. **Dustin** (@dustinvarano)\nOperates high-ticket info offers. 8.2k followers.\n\n**Tweet** (14 Oct, 33 likes):\n> selling info is science\n>\n> it's all a data game and if you know what numbers to look at...\n>\n> You will make millions of dollars\n\n**DM**\nHey Dustin, your post stuck with me."
+            DispatchQueue.main.async { MainActor.assumeIsolated { renderMessagePreview(text, to: parts[1]) } }
         case "toastview" where parts.count > 1:
             let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
             DispatchQueue.main.async { MainActor.assumeIsolated { renderToastPreview(bits[0], to: bits[1]) } }

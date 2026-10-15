@@ -2869,10 +2869,12 @@ private struct MessageBody: View {
     private enum Block: Identifiable {
         case prose(Int, String)
         case table(Int, [String], [[String]])
+        /// Quoted text (lines starting "> "), such as a tweet being discussed.
+        case quote(Int, String)
 
         var id: Int {
             switch self {
-            case .prose(let i, _), .table(let i, _, _): return i
+            case .prose(let i, _), .table(let i, _, _), .quote(let i, _): return i
             }
         }
     }
@@ -2926,6 +2928,20 @@ private struct MessageBody: View {
                 out.append(.table(out.count, header, rows))
                 continue
             }
+            // A run of quoted lines becomes one quote, its blank ">" lines kept as paragraph breaks.
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix(">") {
+                flush()
+                var quoted: [String] = []
+                while i < lines.count, lines[i].trimmingCharacters(in: .whitespaces).hasPrefix(">") {
+                    var q = lines[i].trimmingCharacters(in: .whitespaces).dropFirst()
+                    if q.hasPrefix(" ") { q = q.dropFirst() }
+                    quoted.append(String(q))
+                    i += 1
+                }
+                let joined = quoted.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !joined.isEmpty { out.append(.quote(out.count, joined)) }
+                continue
+            }
             // Headings become bold lines; there is no room for big type up here.
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("#") {
@@ -2964,6 +2980,15 @@ private struct MessageBody: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 case .table(_, let header, let rows):
                     table(header, rows)
+                case .quote(_, let s):
+                    Text(Self.inline(s)).font(.system(size: 12.5)).lineSpacing(2)
+                        .foregroundStyle(.white.opacity(0.72)).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 11).padding(.vertical, 2)
+                        .overlay(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 1.5).fill(.white.opacity(0.28)).frame(width: 3)
+                        }
                 }
             }
         }
@@ -5261,4 +5286,14 @@ private func freeDownloadsURL(_ name: String) -> URL {
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
     }
     ui.toast = before
+}
+
+/// Draws a message body into a picture, off screen, for checking formatting.
+@MainActor func renderMessagePreview(_ text: String, to path: String) {
+    let view = MessageBody(text: text).frame(width: 460).padding(12).background(Color(white: 0.17))
+    let renderer = ImageRenderer(content: view)
+    renderer.scale = 2
+    if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
 }

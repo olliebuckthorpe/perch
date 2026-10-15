@@ -154,6 +154,10 @@ final class SlackSource {
         // New workspaces are picked up without restarting.
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.scan() }
         timer?.tolerance = 2
+        // Waking from sleep: the old connections are almost certainly dead.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self?.links.values.forEach { $0.reconnect() } }
+        }
         // What was said since, for search: every half hour.
         let rewarm = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
             self?.links.values.forEach { $0.warmAll() }
@@ -191,6 +195,9 @@ private final class Workspace {
     private var emoji: [String: String] = [:]
     private var places: [String: String] = [:]
     private var retry: TimeInterval = 2
+    /// When the user last wrote in each conversation, from Slack's own timestamps.
+    private var lastMine: [String: Double] = [:]
+    private var heartbeat: Timer?
 
     init(name: String, priority: Int, apps: Bool, appToken: String, userToken: String) {
         self.name = name
@@ -483,7 +490,36 @@ private final class Workspace {
             self.retry = 2
             socket.resume()
             self.receive(socket)
+            self.beat(socket)
         }
+    }
+
+    /// A connection can die silently (the Mac slept, the network changed) and Slack then holds
+    /// messages back until Perch notices. A ping every 30 seconds notices within moments.
+    private func beat(_ socket: URLSessionWebSocketTask) {
+        heartbeat?.invalidate()
+        heartbeat = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] timer in
+            guard let self, self.socket === socket else { return timer.invalidate() }
+            var answered = false
+            socket.sendPing { error in
+                DispatchQueue.main.async { if error == nil { answered = true } }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                guard let self, self.socket === socket, !answered else { return }
+                SlackSource.status[self.name] = "stopped answering, reconnecting"
+                self.reconnect()
+            }
+        }
+        heartbeat?.tolerance = 5
+    }
+
+    /// Straight onto a fresh connection, dropping the old one.
+    func reconnect() {
+        socket?.cancel()
+        socket = nil
+        heartbeat?.invalidate()
+        retry = 2
+        connect()
     }
 
     private func later() {
@@ -537,7 +573,11 @@ private final class Workspace {
                 self?.record(event, channel: channel, sender: sender, who: who)
             }
         }
-        guard sender != me else { return }
+        // The user's own messages: anything in that conversation from before is already answered.
+        if sender == me, let ts = event["ts"] as? String {
+            lastMine[channel] = max(Double(ts) ?? 0, lastMine[channel] ?? 0)
+            return
+        }
         let body = event["text"] as? String ?? ""
         let kind = event["channel_type"] as? String ?? ""
         let direct = kind == "im" || kind == "mpim"
@@ -546,6 +586,10 @@ private final class Workspace {
         guard direct || mentioned || (apps && fromApp) else { return }
 
         let ts = event["ts"] as? String ?? ""
+        // Slack resends messages that could not be delivered while the connection was down. A
+        // banner for something minutes old, or already replied to, is just noise.
+        let sent = Double(ts) ?? 0
+        if Date().timeIntervalSince1970 - sent > 90 || (lastMine[channel] ?? 0) > sent { return }
         resolve(sender: sender, botName: (event["bot_profile"] as? [String: Any])?["name"] as? String ?? event["username"] as? String,
                 channel: channel, direct: direct) { [weak self] who, place in
             guard let self else { return }
