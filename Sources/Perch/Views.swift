@@ -1852,9 +1852,10 @@ private struct NewChatView: View {
 // MARK: Chat
 
 /// One agent's conversation: recent messages in full, and a reply box.
-private struct ChatView: View {
+struct ChatView: View {
     let agent: Agent
     @Environment(NotchUI.self) private var ui
+    @Environment(\.sideWindow) private var sideWindow
     /// How many of the most recent messages are drawn.
     @State private var shown = 10
     /// Rests the view on the newest message, by its top edge: a long reply is read from its
@@ -1911,7 +1912,8 @@ private struct ChatView: View {
                 }
                 // A fixed height keeps the island the same size every time it opens, so the
                 // opening animation has one target instead of jumping as the history loads.
-                .frame(height: 380)
+                .frame(height: sideWindow == nil ? 380 : nil)
+                .frame(maxHeight: sideWindow == nil ? 380 : .infinity)
                 .onChange(of: messages.last?.id) {
                     withAnimation(.easeOut(duration: 0.22)) { settle(proxy) }
                 }
@@ -2018,6 +2020,22 @@ private struct ChatView: View {
             Spacer(minLength: 4)
             if agent.source != .grok, let used = agent.contextUsed { ContextMeter(used: used, model: agent.contextModel) }
             StatusChip(agent: agent)
+            if let sideWindow {
+                Button { SidePanel.shared.close() } label: {
+                    Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
+                }
+                .buttonStyle(Press()).help("Close")
+                .id(ObjectIdentifier(sideWindow))
+            } else {
+                // Keep this chat open in a slim panel at the side of the screen, for following
+                // instructions while working in another app.
+                Button { SidePanel.shared.show(agent) } label: {
+                    Image(systemName: "sidebar.right").font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
+                }
+                .buttonStyle(Press()).help("Keep open at the side")
+            }
             Button(action: open) {
                 Image(systemName: "arrow.up.forward.app").font(.system(size: 12))
                     .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
@@ -2261,6 +2279,7 @@ private struct ReplyField: View {
     let agent: Agent
     var autofocus = false
     @Environment(NotchUI.self) private var ui
+    @Environment(\.sideWindow) private var sideWindow
     @State private var focused = false
     /// Bumped to put the cursor in the box.
     @State private var focusAsk = 0
@@ -2385,7 +2404,7 @@ private struct ReplyField: View {
         .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         .simultaneousGesture(TapGesture().onEnded {
             guard !busy else { return }
-            ui.controller?.panel.makeKey()
+            (sideWindow ?? ui.controller?.panel)?.makeKey()
             focus()
         })
         .onChange(of: focused) { _, on in
@@ -2886,6 +2905,7 @@ private struct SecretCard: View {
     /// Grok Bot's own record says it has been given, from here or from the app.
     var provided = false
     @Environment(NotchUI.self) private var ui
+    @Environment(\.sideWindow) private var sideWindow
     @State private var value = ""
     @State private var saved: String?
     private var state: String? { provided ? "saved" : saved }
@@ -2935,7 +2955,7 @@ private struct SecretCard: View {
         .animation(.easeOut(duration: 0.2), value: state)
         .onTapGesture {
             guard state != "saved" else { return }
-            ui.controller?.panel.makeKey()
+            (sideWindow ?? ui.controller?.panel)?.makeKey()
             focused = true
         }
     }
@@ -4264,5 +4284,75 @@ struct GrowingText: NSViewRepresentable {
             context.coordinator.asked = focusAsk
             DispatchQueue.main.async { view.window?.makeFirstResponder(view) }
         }
+    }
+}
+
+// MARK: Side panel
+
+private struct SideWindowKey: EnvironmentKey { static let defaultValue: NSWindow? = nil }
+
+extension EnvironmentValues {
+    /// Set inside the side panel: its window, which takes the keyboard instead of the notch.
+    var sideWindow: NSWindow? {
+        get { self[SideWindowKey.self] }
+        set { self[SideWindowKey.self] = newValue }
+    }
+}
+
+final class SidePanelWindow: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+/// One chat kept open in a slim floating panel down the right of the screen, so instructions
+/// stay in view while the user works through them in another app. It floats above other
+/// windows, stays put until closed, can be dragged anywhere, and never steals focus until clicked.
+final class SidePanel {
+    static let shared = SidePanel()
+    private var window: SidePanelWindow?
+
+    func show(_ agent: Agent) {
+        NotchUI.shared.collapse()
+        let screen = NSScreen.main ?? NSScreen.screens[0]
+        let visible = screen.visibleFrame
+        let size = NSSize(width: 380, height: min(720, visible.height - 40))
+        let frame = window?.frame ?? NSRect(x: visible.maxX - size.width - 16, y: visible.maxY - size.height - 16,
+                                            width: size.width, height: size.height)
+        window?.close()
+        let panel = SidePanelWindow(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel, .resizable],
+                                    backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
+        panel.isMovableByWindowBackground = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.minSize = NSSize(width: 300, height: 320)
+        let root = SideRoot(agent: agent)
+            .environment(AgentStore.shared).environment(NotchUI.shared)
+            .environment(\.sideWindow, panel)
+        panel.contentView = FirstClickHostingView(rootView: root)
+        panel.orderFrontRegardless()
+        window = panel
+    }
+
+    func close() {
+        window?.close()
+        window = nil
+    }
+}
+
+private struct SideRoot: View {
+    let agent: Agent
+
+    var body: some View {
+        ChatView(agent: agent)
+            .padding(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(.black, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
+            .preferredColorScheme(.dark)
     }
 }
