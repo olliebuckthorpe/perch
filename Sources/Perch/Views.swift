@@ -2051,6 +2051,9 @@ struct ChatView: View {
             .buttonStyle(Press()).help("Open in its own app")
         }
         .padding(.horizontal, 2)
+        .contentShape(Rectangle())
+        // Double-clicking the header jumps to the real chat in its own app.
+        .onTapGesture(count: 2, perform: open)
     }
 
     private static let imageNote = try! NSRegularExpression(pattern: #"\[(?:Image|File) attached, saved at ([^\]]+)\]"#)
@@ -2224,7 +2227,7 @@ struct ChatView: View {
 
     private func open() {
         if agent.source == .grok { GrokSource.shared.open(agent) } else { CodingSessions.shared.open(agent) }
-        ui.collapse()
+        if sideWindow != nil { SidePanel.shared.close() } else { ui.collapse() }
     }
 }
 
@@ -4105,6 +4108,11 @@ private struct SlackComposer: View {
                 Text(target.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                 Text("Slack · \(target.workspace.capitalized)").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
                 Spacer()
+            }
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                SlackSource.shared.open(target)
+                ui.collapse()
             }
             // The conversation so far, newest at the bottom, live as messages arrive.
             ScrollViewReader { proxy in

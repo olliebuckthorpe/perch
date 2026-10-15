@@ -133,6 +133,11 @@ final class SlackSource {
         link.send(to: target, text: text, files: files, done: done)
     }
 
+    /// Opens a conversation in the Slack app.
+    func open(_ target: SlackTarget) {
+        links.values.first(where: { $0.name == target.workspace })?.open(target)
+    }
+
     /// Fetches a shared file's contents with the workspace's key. Nil when the key can't read files.
     func fetch(_ url: URL, workspace: String, done: @escaping (Data?) -> Void) {
         guard let link = links.values.first(where: { $0.name == workspace }) else { return done(nil) }
@@ -223,6 +228,16 @@ private final class Workspace {
             }
             // Opening needs a permission the key may not have; an existing conversation can still be found.
             self.directMessages(nil) { done(store.dmChannel["\(self.name):\(target.id)"]) }
+        }
+    }
+
+    func open(_ target: SlackTarget) {
+        channel(for: target) { [weak self] channel in
+            guard let self else { return }
+            var parts = URLComponents(string: target.channel || channel != nil ? "slack://channel" : "slack://user")
+            parts?.queryItems = [URLQueryItem(name: "team", value: self.team),
+                                 URLQueryItem(name: "id", value: channel ?? target.id)]
+            if let url = parts?.url { NSWorkspace.shared.open(url) }
         }
     }
 
