@@ -4665,6 +4665,24 @@ final class SidePanel {
             panel.animator().setFrame(frame, display: true)
             panel.animator().alphaValue = 1
         }, completionHandler: { self.remember() })
+        // Opened from the notch, where the user was likely mid-reply: the same draft carries on
+        // in the panel's box with the cursor already in it, so typing never stops.
+        panel.makeKey()
+        for delay in [0.0, 0.15, 0.4] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard panel.isVisible, let box = Self.textBox(in: panel.contentView),
+                      panel.firstResponder !== box else { return }
+                panel.makeFirstResponder(box)
+                box.setSelectedRange(NSRange(location: (box.string as NSString).length, length: 0))
+            }
+        }
+    }
+
+    private static func textBox(in view: NSView?) -> NSTextView? {
+        guard let view else { return nil }
+        if let text = view as? NSTextView, text.isEditable { return text }
+        for child in view.subviews { if let found = textBox(in: child) { return found } }
+        return nil
     }
 
     /// A small rectangle where the notch is, for the panel to grow out of and shrink back into.
