@@ -384,8 +384,15 @@ private struct SearchResults: View {
         case .newChat(let prompt):
             PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(prompt)", trailing: nil) { item.open(ui) }
         case .slack(let target):
-            PlainRow(icon: target.channel ? "number" : "person.crop.circle",
-                     title: "Message \(target.label) on Slack · \(target.workspace.capitalized)", trailing: nil) { item.open(ui) }
+            HStack(spacing: 7) {
+                SlackAvatar(url: target.picture, channel: target.channel, size: 18)
+                Text(target.label).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text("Slack · \(target.workspace.capitalized)").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5))
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 6).padding(.vertical, 5)
+            .contentShape(Rectangle())
+            .onTapGesture { item.open(ui) }
         }
     }
 }
@@ -3963,6 +3970,45 @@ enum References {
 
 // MARK: Slack
 
+/// A profile picture (or workspace icon for a channel) with the Slack logo in its corner, so a
+/// Slack row is told apart from a chat at a glance.
+private struct SlackAvatar: View {
+    let url: URL?
+    let channel: Bool
+    let size: CGFloat
+    @State private var image: NSImage?
+
+    private static let cache = NSCache<NSURL, NSImage>()
+    static let logo = NSWorkspace.shared.icon(forFile: "/Applications/Slack.app")
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                Color.white.opacity(0.12)
+                    .overlay(Image(systemName: channel ? "number" : "person.fill").font(.system(size: size * 0.42))
+                        .foregroundStyle(.white.opacity(0.6)))
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
+        .overlay(alignment: .bottomTrailing) {
+            Image(nsImage: Self.logo).resizable().frame(width: size * 0.5, height: size * 0.5)
+                .background(Color.black, in: RoundedRectangle(cornerRadius: size * 0.12, style: .continuous))
+                .offset(x: size * 0.16, y: size * 0.16)
+        }
+        .task(id: url) {
+            guard let url else { return }
+            if let hit = Self.cache.object(forKey: url as NSURL) { image = hit; return }
+            if let (data, _) = try? await URLSession.shared.data(from: url), let img = NSImage(data: data) {
+                Self.cache.setObject(img, forKey: url as NSURL)
+                image = img
+            }
+        }
+    }
+}
+
 /// A fresh Slack message to someone or a channel, chosen from search. Sends as you.
 private struct SlackComposer: View {
     let target: SlackTarget
@@ -3979,8 +4025,7 @@ private struct SlackComposer: View {
                         .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
                 }
                 .buttonStyle(Press())
-                Image(systemName: target.channel ? "number.square.fill" : "person.crop.circle.fill").font(.system(size: 16))
-                    .foregroundStyle(.white.opacity(0.85))
+                SlackAvatar(url: target.picture, channel: target.channel, size: 22)
                 Text(target.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                 Text("Slack · \(target.workspace.capitalized)").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
                 Spacer()
@@ -4044,8 +4089,7 @@ private struct SlackBanner: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "number.square.fill").font(.system(size: 22))
-                    .foregroundStyle(.white.opacity(0.85))
+                SlackAvatar(url: alert.picture, channel: false, size: 30)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(alert.sender).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)

@@ -7,6 +7,8 @@ struct SlackTarget: Identifiable, Hashable {
     let id: String
     let name: String
     let channel: Bool
+    /// Their profile picture, or the workspace's icon for a channel.
+    var picture: URL?
     var label: String { channel ? "#\(name)" : name }
 }
 
@@ -40,6 +42,8 @@ struct SlackAlert: Identifiable, Equatable {
     /// The thread it belongs to, if any. A reply goes into the same thread.
     var thread: String?
     var direct = false
+    /// The sender's profile picture (or the posting app's icon).
+    var picture: URL?
 
     /// Opens the conversation in the Slack app.
     var link: URL? {
@@ -107,6 +111,8 @@ private final class Workspace {
     private var team = ""
     private var socket: URLSessionWebSocketTask?
     private var names: [String: String] = [:]
+    private var pictures: [String: URL] = [:]
+    private var teamIcon: URL?
     private var places: [String: String] = [:]
     private var retry: TimeInterval = 2
 
@@ -141,7 +147,9 @@ private final class Workspace {
                     let profile = u["profile"] as? [String: Any]
                     let name = (profile?["real_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                         ?? profile?["display_name"] as? String ?? u["name"] as? String ?? id
-                    found.append(SlackTarget(workspace: self.name, id: id, name: name, channel: false))
+                    let picture = (profile?["image_72"] as? String ?? profile?["image_48"] as? String).flatMap(URL.init(string:))
+                    if let picture { self.pictures[id] = picture }
+                    found.append(SlackTarget(workspace: self.name, id: id, name: name, channel: false, picture: picture))
                 }
                 if let next = (o?["response_metadata"] as? [String: Any])?["next_cursor"] as? String, !next.isEmpty {
                     people(next)
@@ -157,7 +165,7 @@ private final class Workspace {
                 guard let self else { return }
                 for c in o?["channels"] as? [[String: Any]] ?? [] {
                     guard let id = c["id"] as? String, let name = c["name"] as? String else { continue }
-                    found.append(SlackTarget(workspace: self.name, id: id, name: name, channel: true))
+                    found.append(SlackTarget(workspace: self.name, id: id, name: name, channel: true, picture: self.teamIcon))
                 }
                 if let next = (o?["response_metadata"] as? [String: Any])?["next_cursor"] as? String, !next.isEmpty {
                     channels(next)
@@ -196,7 +204,11 @@ private final class Workspace {
                 self.me = o?["user_id"] as? String ?? ""
                 self.team = o?["team_id"] as? String ?? ""
                 if self.me.isEmpty { self.later() } else {
-                    self.loadDirectory()
+                    self.api("team.info", token: self.userToken) { [weak self] o in
+                        let icon = (o?["team"] as? [String: Any])?["icon"] as? [String: Any]
+                        self?.teamIcon = (icon?["image_88"] as? String ?? icon?["image_68"] as? String).flatMap(URL.init(string:))
+                        self?.loadDirectory()
+                    }
                     self.connect()
                 }
             }
@@ -275,6 +287,9 @@ private final class Workspace {
                                    channel: channel, place: place, sender: who, text: self.tidy(body, event: event), ts: ts)
             alert.thread = event["thread_ts"] as? String
             alert.direct = direct
+            let botIcons = (event["bot_profile"] as? [String: Any])?["icons"] as? [String: Any]
+            alert.picture = (botIcons?["image_72"] as? String ?? botIcons?["image_48"] as? String).flatMap(URL.init(string:))
+                ?? self.pictures[sender]
             NotchUI.shared.slack(alert)
         }
     }
@@ -298,6 +313,7 @@ private final class Workspace {
             let name = (profile?["display_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 ?? profile?["real_name"] as? String ?? user?["name"] as? String ?? "Someone"
             self?.names[sender] = name
+            if let p = (profile?["image_72"] as? String).flatMap(URL.init(string:)) { self?.pictures[sender] = p }
             finish(name)
         }
     }
