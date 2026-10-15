@@ -31,10 +31,36 @@ final class SlackDirectory {
 /// One message in a Slack conversation, as shown in the notch.
 struct SlackLine: Identifiable, Equatable {
     let id: String
-    let sender: String
+    var sender: String
     let mine: Bool
     let text: String
     var picture: URL?
+    var files: [SlackFile] = []
+}
+
+/// A file shared in a Slack message. Its links need the workspace's key to open.
+struct SlackFile: Identifiable, Equatable {
+    let id: String
+    let workspace: String
+    let name: String
+    let image: Bool
+    /// A small preview, for pictures.
+    let thumb: URL?
+    let url: URL?
+    let link: URL?
+
+    static func list(_ event: [String: Any], workspace: String) -> [SlackFile] {
+        (event["files"] as? [[String: Any]] ?? []).compactMap { f in
+            guard let id = f["id"] as? String, f["mode"] as? String != "tombstone" else { return nil }
+            let mime = f["mimetype"] as? String ?? ""
+            return SlackFile(id: id, workspace: workspace,
+                             name: f["name"] as? String ?? f["title"] as? String ?? "File",
+                             image: mime.hasPrefix("image/"),
+                             thumb: (f["thumb_480"] as? String ?? f["thumb_360"] as? String).flatMap(URL.init(string:)),
+                             url: (f["url_private_download"] as? String ?? f["url_private"] as? String).flatMap(URL.init(string:)),
+                             link: (f["permalink"] as? String).flatMap(URL.init(string:)))
+        }
+    }
 }
 
 /// The open Slack conversations' recent messages, kept live as new ones arrive.
@@ -102,6 +128,12 @@ final class SlackSource {
         link.send(to: target, text: text, files: files, done: done)
     }
 
+    /// Fetches a shared file's contents with the workspace's key. Nil when the key can't read files.
+    func fetch(_ url: URL, workspace: String, done: @escaping (Data?) -> Void) {
+        guard let link = links.values.first(where: { $0.name == workspace }) else { return done(nil) }
+        link.fetch(url, done: done)
+    }
+
     /// Loads a conversation's recent messages into `SlackConversations`.
     func history(for target: SlackTarget) {
         links.values.first(where: { $0.name == target.workspace })?.history(for: target)
@@ -163,6 +195,17 @@ private final class Workspace {
         }
     }
 
+    func fetch(_ url: URL, done: @escaping (Data?) -> Void) {
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(userToken)", forHTTPHeaderField: "Authorization")
+        URLSession.shared.dataTask(with: req) { data, response, _ in
+            // Without file access Slack answers with its sign-in page instead of the file.
+            let type = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? ""
+            let ok = (response as? HTTPURLResponse)?.statusCode == 200 && !type.hasPrefix("text/html")
+            DispatchQueue.main.async { done(ok ? data : nil) }
+        }.resume()
+    }
+
     func send(to target: SlackTarget, text: String, files: [URL], done: @escaping (Bool) -> Void) {
         channel(for: target) { [weak self] channel in
             guard let self, let channel else { return done(false) }
@@ -220,11 +263,13 @@ private final class Workspace {
                     let bot = (m["bot_profile"] as? [String: Any])?["name"] as? String ?? m["username"] as? String
                     let i = lines.count
                     lines.append(SlackLine(id: ts, sender: bot ?? self.names[user] ?? "", mine: user == self.me,
-                                           text: self.tidy(m["text"] as? String ?? "", event: m), picture: self.pictures[user]))
+                                           text: self.tidy(m["text"] as? String ?? "", event: m, full: true), picture: self.pictures[user],
+                                           files: SlackFile.list(m, workspace: self.name)))
                     if bot == nil, self.names[user] == nil, !user.isEmpty {
                         group.enter()
                         self.resolve(sender: user, botName: nil, channel: channel, direct: true) { who, _ in
-                            lines[i] = SlackLine(id: ts, sender: who, mine: user == self.me, text: lines[i].text, picture: self.pictures[user])
+                            lines[i].sender = who
+                            lines[i].picture = self.pictures[user]
                             group.leave()
                         }
                     }
@@ -241,7 +286,8 @@ private final class Workspace {
         guard store.lines[key] != nil, let ts = event["ts"] as? String,
               store.lines[key]?.contains(where: { $0.id == ts }) != true else { return }
         store.lines[key]?.append(SlackLine(id: ts, sender: who, mine: sender == me,
-                                           text: tidy(event["text"] as? String ?? "", event: event), picture: pictures[sender]))
+                                           text: tidy(event["text"] as? String ?? "", event: event, full: true), picture: pictures[sender],
+                                           files: SlackFile.list(event, workspace: name)))
     }
 
     /// Loads the people and channels in this workspace for search.
@@ -260,6 +306,7 @@ private final class Workspace {
                         ?? profile?["display_name"] as? String ?? u["name"] as? String ?? id
                     let picture = (profile?["image_72"] as? String ?? profile?["image_48"] as? String).flatMap(URL.init(string:))
                     if let picture { self.pictures[id] = picture }
+                    self.names[id] = name
                     found.append(SlackTarget(workspace: self.name, id: id, name: name, channel: false, picture: picture))
                 }
                 if let next = (o?["response_metadata"] as? [String: Any])?["next_cursor"] as? String, !next.isEmpty {
@@ -439,15 +486,20 @@ private final class Workspace {
     }
 
     /// Slack's markup into plain text: links and mentions to their labels.
-    private func tidy(_ text: String, event: [String: Any]) -> String {
+    private func tidy(_ text: String, event: [String: Any], full: Bool = false) -> String {
         var s = text
+        // Mentions read as the person's name, and as "you" only when they are.
+        for match in s.matches(of: #/<@([A-Z0-9]+)(?:\|([^>]*))?>/#).reversed() {
+            let id = String(match.1)
+            let who = id == me ? "you" : names[id] ?? match.2.map(String.init) ?? "someone"
+            s.replaceSubrange(match.range, with: "@" + who)
+        }
         if s.isEmpty, let blocks = event["attachments"] as? [[String: Any]] {
             s = blocks.compactMap { $0["text"] as? String ?? $0["fallback"] as? String }.joined(separator: " ")
         }
         s = s.replacingOccurrences(of: #"<([^|>]+)\|([^>]+)>"#, with: "$2", options: .regularExpression)
-        s = s.replacingOccurrences(of: #"<@[A-Z0-9]+>"#, with: "@you", options: .regularExpression)
         s = s.replacingOccurrences(of: #"<(https?://[^>]+)>"#, with: "$1", options: .regularExpression)
         s = s.replacingOccurrences(of: "&amp;", with: "&").replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
-        return oneLine(s, max: 200)
+        return full ? s.trimmingCharacters(in: .whitespacesAndNewlines) : oneLine(s, max: 200)
     }
 }

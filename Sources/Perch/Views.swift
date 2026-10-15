@@ -4122,12 +4122,15 @@ private struct SlackComposer: View {
                                         if !line.mine {
                                             Text(line.sender).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
                                         }
-                                        Text(line.text).font(.system(size: 12.5)).textSelection(.enabled)
-                                            .foregroundStyle(line.mine ? Color.black.opacity(0.88) : .white.opacity(0.9))
-                                            .fixedSize(horizontal: false, vertical: true)
-                                            .padding(.horizontal, 10).padding(.vertical, 7)
-                                            .background(line.mine ? Color(red: 0.92, green: 0.87, blue: 0.95) : Color(white: 0.17),
-                                                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                        if !line.text.isEmpty {
+                                            Text(line.text).font(.system(size: 12.5)).textSelection(.enabled)
+                                                .foregroundStyle(line.mine ? Color.black.opacity(0.88) : .white.opacity(0.9))
+                                                .fixedSize(horizontal: false, vertical: true)
+                                                .padding(.horizontal, 10).padding(.vertical, 7)
+                                                .background(line.mine ? Color(red: 0.92, green: 0.87, blue: 0.95) : Color(white: 0.17),
+                                                            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                        }
+                                        ForEach(line.files) { SlackFileView(file: $0) }
                                     }
                                     if !line.mine { Spacer(minLength: 40) }
                                 }
@@ -4237,6 +4240,87 @@ private struct SlackComposer: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { SlackSource.shared.history(for: target) }
             }
         }
+    }
+}
+
+/// A file shared in Slack: pictures as a preview, anything else as a chip. Clicking opens it;
+/// when the workspace's key can't read files, it opens in Slack instead.
+private struct SlackFileView: View {
+    let file: SlackFile
+    @State private var image: NSImage?
+    @State private var hovered = false
+    @State private var opening = false
+
+    var body: some View {
+        Group {
+            if file.image, let image {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 260, maxHeight: 220, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(alignment: .topTrailing) {
+                        if hovered { SaveButton { save() } }
+                    }
+            } else {
+                HStack(spacing: 7) {
+                    Image(nsImage: NSWorkspace.shared.icon(for: UTType(filenameExtension: (file.name as NSString).pathExtension) ?? .data))
+                        .resizable().frame(width: 22, height: 22)
+                    Text(file.name).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(.white.opacity(0.9))
+                    if opening { ProgressView().controlSize(.mini) }
+                    else if hovered {
+                        Button(action: save) {
+                            Image(systemName: "arrow.down.to.line").font(.system(size: 10.5, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+                        .buttonStyle(Press()).help("Save to Downloads")
+                    }
+                }
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .frame(maxWidth: 260, alignment: .leading)
+                .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+        .onTapGesture(perform: open)
+        .help("Open \(file.name)")
+        .task(id: file.id) {
+            guard file.image, let thumb = file.thumb ?? file.url else { return }
+            SlackSource.shared.fetch(thumb, workspace: file.workspace) { data in
+                image = data.flatMap(NSImage.init(data:))
+            }
+        }
+    }
+
+    private func download(_ done: @escaping (Data?) -> Void) {
+        guard let url = file.url else { return done(nil) }
+        opening = true
+        SlackSource.shared.fetch(url, workspace: file.workspace) { data in
+            opening = false
+            done(data)
+        }
+    }
+
+    private func open() {
+        download { data in
+            guard let data else { return openInSlack() }
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("perch-slack/\(file.id)")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let target = dir.appendingPathComponent(file.name)
+            guard (try? data.write(to: target)) != nil else { return openInSlack() }
+            NSWorkspace.shared.open(target)
+        }
+    }
+
+    private func save() {
+        download { data in
+            guard let data else { return openInSlack() }
+            guard (try? data.write(to: freeDownloadsURL(file.name))) != nil else { return NSSound.beep() }
+        }
+    }
+
+    private func openInSlack() {
+        if let link = file.link { NSWorkspace.shared.open(link) } else { NSSound.beep() }
     }
 }
 
