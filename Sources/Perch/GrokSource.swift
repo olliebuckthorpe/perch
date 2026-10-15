@@ -163,6 +163,12 @@ final class GrokSource {
         // Safety net in case the event stream drops something.
         timer = Timer.scheduledTimer(withTimeInterval: 45, repeats: true) { [weak self] _ in self?.refresh() }
         timer?.tolerance = 10
+        // While a bot is at work, what it is doing changes by the second: look more often.
+        let busy = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            guard let self, self.store.grokBots.contains(where: { $0.status == .working }) else { return }
+            self.refresh()
+        }
+        busy.tolerance = 1
     }
 
     func stop() { bridge?.terminate() }
