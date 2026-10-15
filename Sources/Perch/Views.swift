@@ -311,6 +311,11 @@ enum SearchItem: Identifiable {
     static var snippets: [String: String] = [:]
     /// Results found by meaning alone.
     static var related = Set<String>()
+    /// The words to highlight in each result's snippet, and when it was last active.
+    static var matches: [String: [String]] = [:]
+    static var times: [String: Date] = [:]
+    /// People and channels on Slack offered to message, rather than conversations found.
+    static var people = Set<String>()
 
     /// Everything matching the search, best first: chats from every app (live or older), bots and
     /// Slack conversations, matched on what was said as well as titles, then people on Slack to
@@ -340,7 +345,10 @@ enum SearchItem: Identifiable {
         var seen = Set<String>()
         snippets = [:]
         related = []
-        for hit in hits.prefix(14) {
+        matches = [:]
+        times = [:]
+        people = []
+        for hit in hits.prefix(10) {
             let item: SearchItem
             switch hit.target {
             case .agent(let id):
@@ -354,11 +362,16 @@ enum SearchItem: Identifiable {
             guard seen.insert(item.id).inserted else { continue }
             if let snippet = hit.snippet { snippets[item.id] = snippet }
             if hit.related { related.insert(item.id) }
+            matches[item.id] = hit.matches
+            times[item.id] = hit.modified
             items.append(item)
         }
+        // Found by meaning alone: after everything that actually contains the words.
+        items = items.filter { !related.contains($0.id) } + items.filter { related.contains($0.id) }
         // People and channels on Slack, to message directly.
-        let people = SlackDirectory.shared.matching(q).prefix(4).map { SearchItem.slack($0) }.filter { !seen.contains($0.id) }
-        return items + people + [.newChat(ui.query)]
+        let found = SlackDirectory.shared.matching(q).prefix(4).map { SearchItem.slack($0) }.filter { !seen.contains($0.id) }
+        people = Set(found.map(\.id))
+        return items + found + [.newChat(ui.query)]
     }
 
     func open(_ ui: NotchUI) {
@@ -385,16 +398,33 @@ enum SearchItem: Identifiable {
 }
 
 /// The search results. Arrow keys move the highlight, Return opens it, and clicking works too.
+/// Grouped: chats that contain the words, chats about the same thing, people to message.
 private struct SearchResults: View {
     @Environment(AgentStore.self) private var store
     @Environment(NotchUI.self) private var ui
     /// Rows come in one after another the first time the list appears, not on every keystroke.
     @State private var arrived = false
 
+    private func section(_ item: SearchItem) -> String? {
+        if ui.query.trimmingCharacters(in: .whitespaces).isEmpty { return nil }
+        if case .newChat = item { return "" }
+        if SearchItem.related.contains(item.id) { return "Related" }
+        if SearchItem.people.contains(item.id) { return "Message on Slack" }
+        return "Chats"
+    }
+
     var body: some View {
         let items = SearchItem.all(store, ui)
         VStack(alignment: .leading, spacing: 1) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                let header = section(item)
+                if let header, !header.isEmpty, index == 0 || section(items[index - 1]) != header {
+                    Text(header).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.white.opacity(0.35))
+                        .padding(.horizontal, 8).padding(.top, index == 0 ? 2 : 9).padding(.bottom, 3)
+                }
+                if header == "", index > 0 {
+                    Divider().overlay(.white.opacity(0.08)).padding(.vertical, 5).padding(.horizontal, 6)
+                }
                 row(item)
                     .background(.white.opacity(index == ui.searchIndex ? 0.12 : 0),
                                 in: RoundedRectangle(cornerRadius: 9, style: .continuous))
@@ -406,84 +436,102 @@ private struct SearchResults: View {
                     .padding(.horizontal, 6).padding(.vertical, 5)
             }
             Text("↑ ↓ to move, Return to open").font(.system(size: 10)).foregroundStyle(.white.opacity(0.28))
-                .padding(.horizontal, 6).padding(.top, 4)
+                .padding(.horizontal, 8).padding(.top, 4)
         }
         .animation(.easeOut(duration: 0.12), value: ui.searchIndex)
         .onAppear { arrived = true }
     }
 
     @ViewBuilder private func row(_ item: SearchItem) -> some View {
-        let snippet = SearchItem.snippets[item.id]
         switch item {
         case .agent(let agent):
-            VStack(alignment: .leading, spacing: 2) {
+            if ui.query.trimmingCharacters(in: .whitespaces).isEmpty {
+                // Nothing typed: the plain list of live chats.
                 HStack(spacing: 7) {
                     FaceView(agent: agent, size: 18)
                     Text(agent.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
                         .lineLimit(1).layoutPriority(1)
-                    if snippet == nil {
-                        Text(agent.detail.isEmpty ? agent.source.label : agent.detail)
-                            .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
-                    } else {
-                        Text(agent.source.label).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.35)).lineLimit(1)
-                    }
+                    Text(agent.detail.isEmpty ? agent.source.label : agent.detail)
+                        .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
                     Spacer(minLength: 4)
-                    tag(item)
                     StatusChip(agent: agent).layoutPriority(1)
                 }
-                found(snippet)
+                .padding(.horizontal, 6).padding(.vertical, 5)
+                .contentShape(Rectangle())
+                .onTapGesture { item.open(ui) }
+            } else {
+                result(item, title: agent.name) { FaceView(agent: agent, size: 20) }
             }
-            .padding(.horizontal, 6).padding(.vertical, 5)
-            .contentShape(Rectangle())
-            .onTapGesture { item.open(ui) }
         case .older(let entry):
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 7) {
-                    Image(systemName: "clock").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).frame(width: 18)
-                    Text(entry.title).font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.85)).lineLimit(1)
-                    Text(entry.source.label).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.35)).lineLimit(1)
-                    Spacer(minLength: 4)
-                    tag(item)
-                    Text(entry.modified.formatted(.relative(presentation: .named)))
-                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.3)).lineLimit(1)
-                }
-                found(snippet)
-            }
-            .padding(.horizontal, 6).padding(.vertical, 5)
-            .contentShape(Rectangle())
-            .onTapGesture { item.open(ui) }
+            result(item, title: entry.title) { AppMark(source: entry.source) }
         case .newChat(let prompt):
             PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(prompt)", trailing: nil) { item.open(ui) }
         case .slack(let target):
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 7) {
-                    SlackAvatar(url: target.picture, channel: target.channel, size: 18)
-                    Text(target.label).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-                    Text("Slack · \(target.workspace.capitalized)").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5))
-                    Spacer(minLength: 4)
-                    tag(item)
-                }
-                found(snippet)
+            result(item, title: SearchItem.people.contains(item.id) ? target.label : "\(target.label)  ·  \(target.workspace.capitalized)") {
+                SlackAvatar(url: target.picture, channel: target.channel, size: 18)
             }
-            .padding(.horizontal, 6).padding(.vertical, 5)
-            .contentShape(Rectangle())
-            .onTapGesture { item.open(ui) }
         }
     }
 
-    /// The bit of the conversation that matched, under the title.
-    @ViewBuilder private func found(_ snippet: String?) -> some View {
-        if let snippet {
-            Text(snippet).font(.system(size: 11)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
-                .padding(.leading, 25)
+    /// A found thread: who or what it is and when, then the line of it that matched.
+    private func result<Icon: View>(_ item: SearchItem, title: String, @ViewBuilder icon: () -> Icon) -> some View {
+        let snippet = SearchItem.snippets[item.id]
+        return HStack(alignment: .top, spacing: 9) {
+            icon().frame(width: 20, height: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                    Spacer(minLength: 6)
+                    if let time = SearchItem.times[item.id], !SearchItem.people.contains(item.id) {
+                        Text(Self.when(time)).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.32)).lineLimit(1)
+                    }
+                }
+                if let snippet {
+                    Text(Self.highlighted(snippet, SearchItem.matches[item.id] ?? []))
+                        .font(.system(size: 11.5)).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .onTapGesture { item.open(ui) }
     }
 
-    @ViewBuilder private func tag(_ item: SearchItem) -> some View {
-        if SearchItem.related.contains(item.id) {
-            Text("Related").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.white.opacity(0.5))
-                .padding(.horizontal, 5).padding(.vertical, 1.5)
-                .background(.white.opacity(0.08), in: Capsule())
+    private static func when(_ date: Date) -> String {
+        let age = Date().timeIntervalSince(date)
+        if age < 60 { return "now" }
+        if age < 3600 { return "\(Int(age / 60))m" }
+        if age < 86400 { return "\(Int(age / 3600))h" }
+        if age < 7 * 86400 { return "\(Int(age / 86400))d" }
+        return date.formatted(.dateTime.day().month(.abbreviated))
+    }
+
+    /// The snippet in grey with the matching words picked out in white.
+    private static func highlighted(_ text: String, _ words: [String]) -> AttributedString {
+        var out = AttributedString(text)
+        out.foregroundColor = .white.opacity(0.45)
+        for word in words where word.count >= 2 {
+            var from = out.startIndex
+            while let r = out[from...].range(of: word, options: [.caseInsensitive, .diacriticInsensitive]) {
+                out[r].foregroundColor = .white.opacity(0.95)
+                out[r].font = .system(size: 11.5, weight: .semibold)
+                from = r.upperBound
+            }
+        }
+        return out
+    }
+}
+
+/// The app an older chat belongs to, as a small mark.
+private struct AppMark: View {
+    let source: AgentSource
+
+    var body: some View {
+        let bundle = source == .codex ? "com.openai.codex" : "com.anthropic.claudefordesktop"
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable().frame(width: 20, height: 20)
+        } else {
+            Image(systemName: "clock").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
         }
     }
 }
@@ -5006,4 +5054,19 @@ private func freeDownloadsURL(_ name: String) -> URL {
         n += 1
     }
     return url
+}
+
+/// Draws the search results for a query into a picture, off screen, for checking the design.
+@MainActor func renderSearchPreview(_ query: String, to path: String) {
+    let ui = NotchUI.shared
+    let before = ui.query
+    ui.query = query
+    let view = SearchResults().environment(AgentStore.shared).environment(ui)
+        .frame(width: 520).padding(12).background(.black)
+    let renderer = ImageRenderer(content: view)
+    renderer.scale = 2
+    if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+    ui.query = before
 }

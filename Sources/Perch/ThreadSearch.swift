@@ -26,6 +26,8 @@ final class ThreadSearch {
         let modified: Date
         var words: Set<String> = []
         var titleWords: Set<String> = []
+        /// How often each word comes up, for weighting a thread that is about it over a passing mention.
+        var counts: [String: Int] = [:]
         var vector: [Float]?
     }
 
@@ -35,6 +37,9 @@ final class ThreadSearch {
         let score: Double
         /// Found by meaning alone, sharing no words with the search.
         let related: Bool
+        /// The words in the thread that matched, for highlighting.
+        var matches: [String] = []
+        var modified = Date()
     }
 
     /// Bumped when the index or a meaning lookup changes, so open results refresh.
@@ -53,7 +58,7 @@ final class ThreadSearch {
         return (try? m.load()) != nil ? m : nil
     }()
     @ObservationIgnored private lazy var words = NLEmbedding.wordEmbedding(for: .english)
-    private static let store = "\(Shell.home)/.perch/search-index.json"
+    private static let store = "\(Shell.home)/.perch/search-index-3.json"
 
     // MARK: Building the index
 
@@ -145,6 +150,8 @@ final class ThreadSearch {
                 } else {
                     let payload = o["payload"] as? [String: Any]
                     if o["type"] as? String == "session_meta" {
+                        // Codex's own helpers (its safety reviewer and the like) are not chats.
+                        if payload?["thread_source"] as? String == "subagent" { return nil }
                         cwd = payload?["cwd"] as? String
                         id = payload?["id"] as? String
                         continue
@@ -159,6 +166,8 @@ final class ThreadSearch {
             }
         }
         guard !said.isEmpty else { return nil }
+        // One-off helper runs that ask for a fixed reply.
+        if let first = firstPrompt, first.hasPrefix("Reply with") || first.hasPrefix("The following is the Codex agent history") { return nil }
         let file = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
         let sessionID = id ?? (source == .codex ? String(file.suffix(36)) : file)
         var title = source == .claude ? CodingSessions.transcriptInfo(path, span: 96 << 10).title : nil
@@ -185,6 +194,8 @@ final class ThreadSearch {
     private static func isChat(_ text: String) -> Bool {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return false }
+        // Context that tools wrap in tags, like <recommended_plugins>, rather than anything typed.
+        if t.range(of: #"^<[a-z_\-]+>"#, options: .regularExpression) != nil { return false }
         for prefix in ["<environment_context", "<user_instructions", "<app-context", "<command-", "<local-command",
                        "<system-reminder", "# AGENTS.md", "<permissions", "<external_", "<multi_agent", "Caveat:"] where t.hasPrefix(prefix) {
             return false
@@ -193,8 +204,16 @@ final class ThreadSearch {
     }
 
     private static func tokenize(_ doc: inout Doc) {
-        doc.titleWords = Set(terms(doc.title))
-        doc.words = Set(terms(doc.text)).union(doc.titleWords)
+        let title = terms(doc.title), body = terms(doc.text)
+        var counts: [String: Int] = [:]
+        for (i, w) in body.enumerated() {
+            counts[w, default: 0] += 1
+            // "clean up" and "clean-up" are also found as "cleanup".
+            if i + 1 < body.count, w.count + body[i + 1].count <= 12 { counts[w + body[i + 1], default: 0] += 1 }
+        }
+        doc.counts = counts
+        doc.titleWords = Set(title).union(zip(title, title.dropFirst()).map { $0 + $1 })
+        doc.words = Set(counts.keys).union(doc.titleWords)
     }
 
     static func terms(_ s: String) -> [String] {
@@ -223,14 +242,26 @@ final class ThreadSearch {
     private func askMeaning(_ query: String, docs: [Doc]) {
         guard query.count >= 4, meaning[query] == nil, !asking.contains(query) else { return }
         asking.insert(query)
-        let keyed = docs.compactMap { d in d.vector.map { (d.key, $0) } }
+        // Very short threads give the model too little to go on and land close to everything.
+        let keyed = docs.filter { $0.text.count >= 400 }.compactMap { d in d.vector.map { (d.key, $0) } }
         queue.async { [weak self] in
-            guard let self, let q = self.embed(query) else {
+            guard let self, let raw = self.embed(query), !keyed.isEmpty else {
                 DispatchQueue.main.async { self?.asking.remove(query) }
                 return
             }
+            // Everything this model produces leans the same way, which lets a few threads look
+            // close to every search. Measuring from the average thread instead fixes that.
+            var mean = [Float](repeating: 0, count: raw.count)
+            for (_, v) in keyed { for i in 0..<min(v.count, mean.count) { mean[i] += v[i] } }
+            mean = mean.map { $0 / Float(keyed.count) }
+            func centred(_ v: [Float]) -> [Float] {
+                let c = zip(v, mean).map { $0 - $1 }
+                let n = sqrt(c.reduce(0) { $0 + $1 * $1 })
+                return n > 0 ? c.map { $0 / n } : c
+            }
+            let q = centred(raw)
             var scores: [String: Float] = [:]
-            for (key, v) in keyed { scores[key] = zip(q, v).reduce(0) { $0 + $1.0 * $1.1 } }
+            for (key, v) in keyed { scores[key] = zip(q, centred(v)).reduce(0) { $0 + $1.0 * $1.1 } }
             DispatchQueue.main.async {
                 self.asking.remove(query)
                 if self.meaning.count > 40 { self.meaning.removeAll() }
@@ -255,7 +286,9 @@ final class ThreadSearch {
             let text = agent.thread.suffix(60).map(\.text).joined(separator: "\n") + "\n" + agent.detail + "\n" + agent.lastMessage
             var doc = Doc(key: agent.id, target: .agent(agent.id), title: agent.name, text: text, modified: agent.lastActivity)
             if let path = agent.transcriptPath, let indexed = files[path] {
-                doc.vector = indexed.vector
+                // What is on screen now plus everything said earlier in the session.
+                doc = Doc(key: agent.id, target: .agent(agent.id), title: agent.name, text: text + "\n" + indexed.text,
+                          modified: agent.lastActivity, vector: indexed.vector)
                 liveKeys.insert(path)
             }
             Self.tokenize(&doc)
@@ -292,7 +325,8 @@ final class ThreadSearch {
                 for (word, weight) in options {
                     let inTitle = doc.titleWords.contains(word)
                     guard inTitle || doc.words.contains(word) else { continue }
-                    let w = weight * (inTitle ? 1.6 : 1)
+                    let often = 1 + 0.18 * log2(Double(1 + min(doc.counts[word] ?? 0, 64)))
+                    let w = weight * (inTitle ? 1.6 : 1) * often
                     if w > best { best = w; bestWord = word }
                 }
                 if best > 0 { matched += 1 }
@@ -300,19 +334,30 @@ final class ThreadSearch {
                 if let bestWord { found.append(bestWord) }
             }
             let coverage = tokens.isEmpty ? 0 : Double(matched) / Double(tokens.count)
-            var score = tokens.isEmpty ? 0 : total / Double(tokens.count)
+            // Threads with every word come first; ones missing a word drop well behind.
+            var score = tokens.isEmpty ? 0 : total / Double(tokens.count) * coverage * coverage
             // Most of the words have to be there for a keyword match to count.
             if coverage < (tokens.count <= 2 ? 1 : 0.6) { score = 0 }
             if doc.title.lowercased().contains(query) { score += 1 }
+            // The search as a whole phrase ("case study") counts for much more than its words apart.
+            var phrase = false
+            if tokens.count > 1, doc.text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+                score += 0.9
+                phrase = true
+            }
             let z = closeness[doc.key].map { (Double($0) - mean) / spread } ?? 0
-            let related = score == 0 && z >= 2.3
+            let related = score == 0 && z >= 3.3 && doc.text.count >= 400
             if score == 0 && !related { continue }
-            score += max(0, z - 1) * 0.35
+            score += min(0.35, max(0, z - 1.5) * 0.12)
             // A gentle nudge towards recent threads.
             let age = Date().timeIntervalSince(doc.modified) / 86400
             score += 0.25 * exp(-max(0, age) / 7)
-            let snippet = found.isEmpty ? nil : Self.snippet(doc.text, around: found)
-            hits.append(Hit(target: doc.target, snippet: snippet, score: score, related: related))
+            let near = found.isEmpty ? nil : Self.snippet(doc.text, around: phrase ? [query] + found : found)
+            // The words side by side in one passage, not scattered across the thread.
+            if let near, tokens.count > 1 { score += 0.3 * Double(min(near.together, tokens.count) - 1) }
+            let snippet = near?.text
+            hits.append(Hit(target: doc.target, snippet: snippet, score: score, related: related,
+                            matches: phrase ? [query] + found : found, modified: doc.modified))
         }
         hits.sort { $0.score > $1.score }
         // Meaning alone is a weaker signal, so only a few of those.
@@ -322,7 +367,7 @@ final class ThreadSearch {
         return hits
     }
 
-    private static let stop: Set<String> = ["the", "and", "for", "with", "that", "this", "about", "from", "to", "of", "in", "on", "my", "me", "it", "is", "was", "where", "what", "we", "chat", "thread"]
+    private static let stop: Set<String> = ["the", "and", "for", "with", "that", "this", "about", "from", "to", "of", "in", "on", "my", "me", "it", "is", "was", "where", "what", "we", "chat", "thread", "up", "an", "do", "be", "at", "by", "or", "as", "so", "if", "into", "all"]
 
     @ObservationIgnored private var vocabulary: (count: Int, words: [String])?
 
@@ -344,9 +389,11 @@ final class ThreadSearch {
         if token.count >= 2 {
             for word in vocab where word.count > token.count && word.hasPrefix(token) { out[word] = max(out[word] ?? 0, 0.85) }
         }
-        if token.count >= 4 {
-            let limit = token.count >= 7 ? 2 : 1
-            for word in vocab where out[word] == nil && abs(word.count - token.count) <= limit {
+        // Typos only count on longer words, and never in the first letter: short words have too
+        // many near neighbours ("lead" and "read").
+        if token.count >= 5 {
+            let limit = token.count >= 8 ? 2 : 1
+            for word in vocab where out[word] == nil && word.first == token.first && abs(word.count - token.count) <= limit {
                 if Self.distance(token, word, limit: limit) <= limit { out[word] = 0.7 }
             }
         }
@@ -383,21 +430,39 @@ final class ThreadSearch {
         return prev[b.count]
     }
 
-    /// A short line of the conversation around the first matching word.
-    private static func snippet(_ text: String, around words: [String]) -> String? {
+    /// A short stretch of the conversation where the most search words appear together.
+    private static func snippet(_ text: String, around words: [String]) -> (text: String, together: Int)? {
         let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-        for word in words {
-            guard let r = folded.range(of: word) else { continue }
-            let start = folded.index(r.lowerBound, offsetBy: -50, limitedBy: folded.startIndex) ?? folded.startIndex
-            let end = folded.index(r.upperBound, offsetBy: 90, limitedBy: folded.endIndex) ?? folded.endIndex
-            let lo = text.index(text.startIndex, offsetBy: folded.distance(from: folded.startIndex, to: start))
-            let hi = text.index(text.startIndex, offsetBy: folded.distance(from: folded.startIndex, to: end))
-            let piece = text[lo..<hi].replacingOccurrences(of: "\n", with: " ")
-                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespaces)
-            return (start > folded.startIndex ? "…" : "") + piece + (end < folded.endIndex ? "…" : "")
+        let wanted = Array(Set(words.map { $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) }))
+        var spots: [(Int, String)] = []
+        for word in wanted {
+            var from = folded.startIndex
+            var n = 0
+            while n < 40, let r = folded.range(of: word, range: from..<folded.endIndex) {
+                spots.append((folded.distance(from: folded.startIndex, to: r.lowerBound), word))
+                from = r.upperBound
+                n += 1
+            }
         }
-        return nil
+        guard !spots.isEmpty else { return nil }
+        spots.sort { $0.0 < $1.0 }
+        // The spot with the most different words within a short reach, phrases first.
+        var best = spots[0].0, bestScore = -1, together = 1
+        for (i, spot) in spots.enumerated() {
+            var seen = Set<String>()
+            for other in spots[i...] where other.0 - spot.0 < 120 { seen.insert(other.1) }
+            let score = seen.reduce(0) { $0 + ($1.contains(" ") ? 3 : 1) }
+            if score > bestScore { bestScore = score; best = spot.0; together = seen.count }
+        }
+        let count = text.count
+        let lo = max(0, best - 45), hi = min(count, best + 150)
+        let start = text.index(text.startIndex, offsetBy: lo), end = text.index(text.startIndex, offsetBy: hi)
+        let piece = text[start..<end].replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)?"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"\*\*|__|`|^#+ | #+ "#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        return ((lo > 0 ? "…" : "") + piece + (hi < count ? "…" : ""), together)
     }
 
     // MARK: Saving

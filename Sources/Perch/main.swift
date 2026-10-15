@@ -61,6 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Headphones.shared.keepMacMicrophone()
         SlackSource.shared.start()
         SidePanel.shared.restore()
+        // Search reads every chat; that happens quietly after launch, so it is ready when needed.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { ThreadSearch.shared.refresh() }
         Clips.shared.start()
         // Control+Option+V: the clipboard. Control+Option+R: the pinned bot (Remmi).
         Hotkeys.shared.register(key: kVK_ANSI_V, modifiers: controlKey | optionKey) { NotchUI.shared.toggleClips() }
@@ -107,6 +109,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let took = ui.pasteImages()
             NSLog("perch paste: %@ selected=%@ attachments=%@", String(took), ui.selectedID ?? "nil",
                   String(describing: ui.attachments.mapValues(\.count)))
+        case "search" where parts.count > 1:
+            // search:<query>|<file>: writes the results as text, without touching the island.
+            let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
+            ThreadSearch.shared.refresh()
+            func run(_ tries: Int) {
+                let hits = ThreadSearch.shared.search(bits[0], live: AgentStore.shared.sessions + AgentStore.shared.grokBots, slack: [])
+                let lines = hits.prefix(12).map { hit -> String in
+                    let name: String
+                    switch hit.target {
+                    case .agent(let id): name = "live " + (AgentStore.shared.find(id)?.name ?? id)
+                    case .older(let e): name = "\(e.source.rawValue) " + e.title
+                    case .slack(let t): name = "slack " + t.label
+                    }
+                    return String(format: "%.2f ", hit.score) + (hit.related ? "[related] " : "") + name + " | " + (hit.snippet ?? "")
+                }
+                try? lines.joined(separator: "\n").write(toFile: bits[1], atomically: true, encoding: .utf8)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { run(0) }
         case "unattach" where parts.count > 1:
             ui.attachments[parts[1]] = nil
         case "slack" where parts.count > 1:
@@ -122,6 +142,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "reply" where parts.count > 1:
             let bits = parts[1].components(separatedBy: "|")
             if bits.count == 2, let agent = AgentStore.shared.find(bits[0]) { CodingSessions.shared.reply(agent, text: bits[1]) }
+        case "searchview" where parts.count > 1:
+            let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
+            DispatchQueue.main.async { MainActor.assumeIsolated { renderSearchPreview(bits[0], to: bits[1]) } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { MainActor.assumeIsolated { renderSearchPreview(bits[0], to: bits[1]) } }
         case "snapshot" where parts.count > 1:
             guard let view = controller?.panel.contentView,
                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
