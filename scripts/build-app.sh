@@ -61,5 +61,6 @@ echo "Built $APP"
 if [ "$1" = "--run" ]; then
   # Launch Services sometimes refuses a relaunch straight after the old copy quits.
   sleep 1
-  open "$APP" 2>/dev/null || { sleep 2; open "$APP"; }
+  # In the background, so a relaunch never takes the keyboard from whatever is being typed in.
+  open -g "$APP" 2>/dev/null || { sleep 2; open -g "$APP"; }
 fi
