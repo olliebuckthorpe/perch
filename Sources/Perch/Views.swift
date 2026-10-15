@@ -1919,8 +1919,16 @@ struct ChatView: View {
                 // opening animation has one target instead of jumping as the history loads.
                 .frame(height: sideWindow == nil ? 380 : nil)
                 .frame(maxHeight: sideWindow == nil ? 380 : .infinity)
-                .onChange(of: messages.last?.id) {
-                    withAnimation(.easeOut(duration: 0.22)) { settle(proxy) }
+                .onChange(of: messages.last?.id) { before, _ in
+                    // A new message glides into view. A whole history arriving at once (opening
+                    // a chat, or after a relaunch) jumps straight to the end instead of racing past.
+                    if let before, messages.contains(where: { $0.id == before }) {
+                        withAnimation(.easeOut(duration: 0.22)) { settle(proxy) }
+                    } else {
+                        settle(proxy)
+                        DispatchQueue.main.async { settle(proxy) }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { settle(proxy) }
+                    }
                 }
                 // Something in the chat was opened up (a file to read): bring it to the top.
                 .onChange(of: ui.scrollTarget?.n) {
