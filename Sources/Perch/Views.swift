@@ -2021,11 +2021,15 @@ struct ChatView: View {
             if agent.source != .grok, let used = agent.contextUsed { ContextMeter(used: used, model: agent.contextModel) }
             StatusChip(agent: agent)
             if let sideWindow {
-                Button { SidePanel.shared.close() } label: {
-                    Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
+                // Back into the notch, on this same chat.
+                Button {
+                    SidePanel.shared.close()
+                    ui.show(agent.id)
+                } label: {
+                    Image(systemName: "rectangle.topthird.inset.filled").font(.system(size: 12))
                         .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
                 }
-                .buttonStyle(Press()).help("Close")
+                .buttonStyle(Press()).help("Back to the notch")
                 .id(ObjectIdentifier(sideWindow))
             } else {
                 // Keep this chat open in a slim panel at the side of the screen, for following
