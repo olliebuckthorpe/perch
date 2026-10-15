@@ -172,6 +172,8 @@ private final class Workspace {
     private var names: [String: String] = [:]
     private var pictures: [String: URL] = [:]
     private var teamIcon: URL?
+    /// Emoji shortcodes to the characters, learned from the messages that use them.
+    private var emoji: [String: String] = [:]
     private var places: [String: String] = [:]
     private var retry: TimeInterval = 2
 
@@ -542,8 +544,39 @@ private final class Workspace {
     }
 
     /// Slack's markup into plain text: links and mentions to their labels.
+    /// A few everyday shortcodes for messages that arrive without Slack's emoji record.
+    private static let common: [String: String] = [
+        "slightly_smiling_face": "🙂", "smile": "😄", "smiley": "😃", "grinning": "😀", "joy": "😂", "wink": "😉",
+        "blush": "😊", "thumbsup": "👍", "+1": "👍", "-1": "👎", "thumbsdown": "👎", "pray": "🙏", "clap": "👏",
+        "raised_hands": "🙌", "wave": "👋", "ok_hand": "👌", "muscle": "💪", "eyes": "👀", "fire": "🔥", "tada": "🎉",
+        "heart": "❤️", "white_check_mark": "✅", "heavy_check_mark": "✔️", "x": "❌", "warning": "⚠️", "rocket": "🚀",
+        "100": "💯", "thinking_face": "🤔", "sweat_smile": "😅", "rolling_on_the_floor_laughing": "🤣", "sob": "😭",
+        "sunglasses": "😎", "heart_eyes": "😍", "upside_down_face": "🙃", "pensive": "😔", "point_up": "☝️",
+        "point_right": "👉", "star": "⭐", "sparkles": "✨", "memo": "📝", "calendar": "📅", "email": "📧",
+    ]
+
+    /// Slack's own record of each emoji a message uses, with its real character.
+    private func learnEmoji(_ node: Any) {
+        if let list = node as? [Any] { return list.forEach(learnEmoji) }
+        guard let o = node as? [String: Any] else { return }
+        if o["type"] as? String == "emoji", let name = o["name"] as? String, let code = o["unicode"] as? String {
+            let chars = code.split(separator: "-").compactMap { UInt32($0, radix: 16).flatMap(Unicode.Scalar.init) }
+            if !chars.isEmpty {
+                var text = ""
+                text.unicodeScalars.append(contentsOf: chars)
+                if let tone = o["skin_tone"] as? Int { emoji["\(name)::skin-tone-\(tone)"] = text } else { emoji[name] = text }
+            }
+        }
+        for key in ["blocks", "elements"] { if let child = o[key] { learnEmoji(child) } }
+    }
+
     private func tidy(_ text: String, event: [String: Any], full: Bool = false) -> String {
         var s = text
+        if let blocks = event["blocks"] { learnEmoji(blocks) }
+        for match in s.matches(of: #/:([a-z0-9_+\-']+)(::skin-tone-[2-6])?:/#).reversed() {
+            let name = String(match.1), tone = match.2.map(String.init) ?? ""
+            if let char = emoji[name + tone] ?? emoji[name] ?? Self.common[name] { s.replaceSubrange(match.range, with: char) }
+        }
         // Mentions read as the person's name, and as "you" only when they are.
         for match in s.matches(of: #/<@([A-Z0-9]+)(?:\|([^>]*))?>/#).reversed() {
             let id = String(match.1)
