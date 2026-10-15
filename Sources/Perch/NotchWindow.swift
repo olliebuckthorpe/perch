@@ -328,6 +328,14 @@ final class NotchUI {
     private var typing: Bool { controller?.panel.isKeyWindow ?? false }
 
     /// Cmd+V with an image on the clipboard attaches it to the reply being written.
+    /// Pictures pasted into a chat open in the side panel go to that chat.
+    func pasteImages(into id: String) -> Bool {
+        let images = Attachment.fromPasteboard()
+        guard !images.isEmpty else { return false }
+        attachments[id, default: []].append(contentsOf: images)
+        return true
+    }
+
     func pasteImages() -> Bool {
         // The chat on screen is the one being written to. (Going by which box last had the
         // cursor could point at a chat that is no longer showing, and the picture vanished.)
@@ -752,6 +760,10 @@ final class NotchController {
                     ui.resolveLink(pick, always: false)
                     return nil
                 }
+            }
+            if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v",
+               event.window is SidePanelWindow, let id = SidePanel.shared.agentID {
+                return self?.ui.pasteImages(into: id) == true ? nil : event
             }
             if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v",
                self?.ui.pasteImages() == true {

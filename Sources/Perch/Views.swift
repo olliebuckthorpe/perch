@@ -4533,8 +4533,11 @@ final class SidePanelWindow: NSPanel {
 final class SidePanel {
     static let shared = SidePanel()
     private var window: SidePanelWindow?
+    /// The chat the side panel is showing, for pictures pasted into it.
+    private(set) var agentID: String?
 
     func show(_ agent: Agent) {
+        agentID = agent.id
         NotchUI.shared.collapse()
         let screen = NSScreen.main ?? NSScreen.screens[0]
         let visible = screen.visibleFrame
@@ -4578,12 +4581,14 @@ final class SidePanel {
     func close() {
         window?.close()
         window = nil
+        agentID = nil
     }
 
     /// Shrinks back up into the notch, then the chat opens there.
     func returnToNotch(_ agent: Agent) {
         guard let panel = window else { return NotchUI.shared.show(agent.id) }
         window = nil
+        agentID = nil
         let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
         // The reverse of going out: the notch opens on this chat while the panel glides over
         // into it and melts away, so it lands already open.
