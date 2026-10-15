@@ -370,8 +370,24 @@ enum SearchItem: Identifiable {
         items = items.filter { !related.contains($0.id) } + items.filter { related.contains($0.id) }
         // People and channels on Slack, to message directly.
         let found = SlackDirectory.shared.matching(q).prefix(4).map { SearchItem.slack($0) }.filter { !seen.contains($0.id) }
-        people = Set(found.map(\.id))
-        return items + found + [.newChat(ui.query)]
+        // Typing a name means that person, bot or chat: those come first, ahead of chats that
+        // only mention it.
+        let terms = ThreadSearch.terms(q)
+        func named(_ item: SearchItem) -> Bool {
+            let title: String
+            switch item {
+            case .agent(let a): title = a.name
+            case .older(let e): title = e.title
+            case .slack(let t): title = t.label
+            case .newChat: return false
+            }
+            let words = ThreadSearch.terms(title)
+            return !terms.isEmpty && terms.allSatisfy { t in words.contains { $0.hasPrefix(t) } }
+        }
+        let byName = (items.filter { named($0) && !SearchItem.related.contains($0.id) } + found)
+        people = Set(byName.map(\.id))
+        let rest = items.filter { !people.contains($0.id) }
+        return byName + rest + [.newChat(ui.query)]
     }
 
     func open(_ ui: NotchUI) {
@@ -409,7 +425,7 @@ private struct SearchResults: View {
         if ui.query.trimmingCharacters(in: .whitespaces).isEmpty { return nil }
         if case .newChat = item { return "" }
         if SearchItem.related.contains(item.id) { return "Related" }
-        if SearchItem.people.contains(item.id) { return "Message on Slack" }
+        if SearchItem.people.contains(item.id) { return "Top matches" }
         return "Chats"
     }
 
@@ -467,7 +483,7 @@ private struct SearchResults: View {
         case .newChat(let prompt):
             PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(prompt)", trailing: nil) { item.open(ui) }
         case .slack(let target):
-            result(item, title: SearchItem.people.contains(item.id) ? target.label : "\(target.label)  ·  \(target.workspace.capitalized)") {
+            result(item, title: "\(target.label)  ·  \(target.channel ? "" : "Slack, ")\(target.workspace.capitalized)") {
                 SlackAvatar(url: target.picture, channel: target.channel, size: 18)
             }
         }
@@ -482,7 +498,7 @@ private struct SearchResults: View {
                 HStack(spacing: 6) {
                     Text(title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                     Spacer(minLength: 6)
-                    if let time = SearchItem.times[item.id], !SearchItem.people.contains(item.id) {
+                    if let time = SearchItem.times[item.id] {
                         Text(Self.when(time)).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.32)).lineLimit(1)
                     }
                 }
