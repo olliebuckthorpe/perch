@@ -149,12 +149,21 @@ enum Threads {
         guard let h = FileHandle(forReadingAtPath: path) else { return ([], nil) }
         defer { try? h.close() }
         let size = (try? h.seekToEnd()) ?? 0
-        let span: UInt64 = 1 << 20
+        // Codex writes generated pictures into its file in full, a few megabytes each, so read
+        // further back for it or a single picture pushes the conversation out of reach.
+        let span: UInt64 = codex ? 12 << 20 : 1 << 20
         try? h.seek(toOffset: size > span ? size - span : 0)
         guard let data = try? h.readToEnd() else { return ([], nil) }
         var out: [ChatMessage] = []
         var context: (used: Int, model: String?)?
         for (i, line) in String(decoding: data, as: UTF8.self).split(separator: "\n").enumerated() {
+            // A picture Codex made: too big to read whole, so just find where it was saved.
+            if codex, line.contains("image_gen.generation"), line.contains("item_completed"),
+               let r = line.range(of: #""savedPath":"([^"]+)""#, options: .regularExpression) {
+                let path = String(line[r].dropFirst(13).dropLast())
+                out.append(ChatMessage(id: "img-\(path)", fromUser: false, text: "[Image attached, saved at \(path)]"))
+                continue
+            }
             guard line.count < 400_000,
                   let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
             let id = o["uuid"] as? String ?? "line-\(i)"
@@ -212,9 +221,17 @@ enum Threads {
         guard o["type"] as? String == "response_item", let p = o["payload"] as? [String: Any],
               p["type"] as? String == "message", let role = p["role"] as? String,
               role == "user" || role == "assistant", let blocks = p["content"] as? [[String: Any]] else { return nil }
-        let text = blocks.compactMap { $0["text"] as? String }.joined(separator: "\n\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !text.hasPrefix("<") else { return nil }
+        // Pictures the user attached arrive as `<image ... path="...">` markers among the text.
+        var words: [String] = [], pictures: [String] = []
+        for case let t as String in blocks.map({ $0["text"] }) {
+            if t.hasPrefix("<image"), let r = t.range(of: #"path="([^"]+)""#, options: .regularExpression) {
+                pictures.append("[Image attached, saved at \(t[r].dropFirst(6).dropLast())]")
+            } else if !t.hasPrefix("<"), !t.hasPrefix("\n# Files mentioned") {
+                words.append(t)
+            }
+        }
+        let text = (words + pictures).joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
         return (role == "user", text)
     }
 

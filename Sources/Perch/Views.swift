@@ -2168,11 +2168,15 @@ private struct ChatView: View {
             } else {
                 // The agent's side: a quieter bubble on the left, yours brighter on the right.
                 ForEach(message.boxImages, id: \.self) { BoxPicture(path: $0) }
+                // Pictures the agent made or attached, drawn as pictures.
+                pictures(parts.paths)
+                if !parts.text.isEmpty {
                 AgentBubble(text: parts.text, reactions: message.reactions,
                             react: agent.source == .grok && !message.id.hasPrefix("local-") ? { emoji in
                     GrokSource.shared.react(emoji, to: message.id, in: agent)
                 } : nil)
                 .padding(.top, message.reactions.isEmpty ? 0 : 12)
+                }
             }
         }
     }
