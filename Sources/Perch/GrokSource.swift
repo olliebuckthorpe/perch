@@ -20,7 +20,51 @@ final class GrokSource {
     /// The newest transcript entry each bot's cached thread was loaded at.
     private var threadStamp: [String: String] = [:]
 
+    // MARK: Quiet phone while reading
+
+    /// Each bot's own phone notification setting, as Grok Bot last reported it.
+    private var notifying: [String: Bool] = [:]
+    /// Bots whose phone notifications Perch has paused because their chat is open in front of
+    /// the user, by bot id, with when the chat was last seen open. Saved, so a crash or quit
+    /// never leaves a bot silenced.
+    private var paused: [String: Date] = [:] {
+        didSet { UserDefaults.standard.set(Array(paused.keys), forKey: "perchPausedBots") }
+    }
+    private var quietTimer: Timer?
+
+    /// While a bot's chat is open in the notch or the side panel and the user is at the Mac,
+    /// its messages are being read as they come, so the phone stays quiet. A little after the
+    /// chat closes (or the user walks away) notifications come back on.
+    private func watchQuiet() {
+        for id in UserDefaults.standard.stringArray(forKey: "perchPausedBots") ?? [] { paused[id] = .distantPast }
+        quietTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.quietTick() }
+        quietTimer?.tolerance = 0.5
+    }
+
+    private func quietTick() {
+        let ui = NotchUI.shared
+        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+        var open = Set<String>()
+        if idle < 120 {
+            if ui.expanded, !ui.cardsOnly, let id = ui.selectedID, id.hasPrefix("grok:") { open.insert(String(id.dropFirst(5))) }
+            if let id = SidePanel.shared.agentID, id.hasPrefix("grok:") { open.insert(String(id.dropFirst(5))) }
+        }
+        for id in open {
+            if paused[id] != nil { paused[id] = Date(); continue }
+            // Only bots that notify in the first place, so a bot the user silenced stays that way.
+            guard notifying[id] != false else { continue }
+            paused[id] = Date()
+            request("setAgentNotifyOnUpdates", ["id": id, "isEnabled": false])
+        }
+        for (id, seen) in paused where !open.contains(id) && Date().timeIntervalSince(seen) > 45 {
+            paused[id] = nil
+            notifying[id] = true
+            request("setAgentNotifyOnUpdates", ["id": id, "isEnabled": true])
+        }
+    }
+
     func start() {
+        watchQuiet()
         node = Shell.find("node")
         cli = Self.locateCLI()
         guard node != nil, cli != nil else {
@@ -180,6 +224,8 @@ final class GrokSource {
             agent.hostBundleID = Self.bundleID
             agent.avatarColor = raw["avatarColor"] as? String ?? Palette.grokDefault(for: id)
 
+            // While Perch has a bot paused, its "off" is Perch's doing, not the user's choice.
+            if let on = raw["notifyOnUpdatesEnabled"] as? Bool, paused[id] == nil { notifying[id] = on }
             let running = (raw["isRunning"] as? Bool ?? false) || (raw["isRunningTurn"] as? Bool ?? false)
             let awaiting = !(raw["awaitingUserResponse"] is NSNull) && raw["awaitingUserResponse"] != nil
             // Reading a chat in the notch is reading it; do not let a stale count bring the badge back.
