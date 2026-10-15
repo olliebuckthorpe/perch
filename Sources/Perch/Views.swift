@@ -3954,29 +3954,72 @@ private struct SlackBanner: View {
     let alert: SlackAlert
     @Environment(NotchUI.self) private var ui
     @State private var hovered = false
+    @State private var reply = ""
+    @State private var state: String?
+    @FocusState private var focused: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "number.square.fill").font(.system(size: 22))
-                .foregroundStyle(.white.opacity(0.85))
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(alert.sender).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-                    Text("\(alert.place) · \(alert.workspace.capitalized)").font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "number.square.fill").font(.system(size: 22))
+                    .foregroundStyle(.white.opacity(0.85))
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(alert.sender).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                        Text("\(alert.place) · \(alert.workspace.capitalized)").font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                        Spacer(minLength: 0)
+                        Button {
+                            if let link = alert.link { NSWorkspace.shared.open(link) }
+                            ui.collapse()
+                        } label: {
+                            Image(systemName: "arrow.up.forward.app").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                        }
+                        .buttonStyle(Press()).help("Open in Slack")
+                    }
+                    Text(alert.text).font(.system(size: 12)).foregroundStyle(.white.opacity(0.8))
+                        .lineLimit(4).fixedSize(horizontal: false, vertical: true)
                 }
-                Text(alert.text).font(.system(size: 12)).foregroundStyle(.white.opacity(0.8))
-                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 0)
+            // Reply straight from here; it posts as you, in the same conversation or thread.
+            if state == "sent" {
+                Label("Sent", systemImage: "checkmark").font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.green)
+            } else {
+                HStack(spacing: 6) {
+                    TextField(state == "failed" ? "Did not send. Try again, or open Slack" : "Reply to \(alert.sender)", text: $reply)
+                        .textFieldStyle(.plain).font(.system(size: 12)).focused($focused)
+                        .onSubmit(send)
+                    Button(action: send) {
+                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
+                            .foregroundStyle(reply.isEmpty ? .white.opacity(0.25) : .white)
+                    }
+                    .buttonStyle(Press()).disabled(reply.isEmpty || state == "sending")
+                }
+                .padding(.horizontal, 9).padding(.vertical, 6)
+                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded {
+                    ui.controller?.panel.makeKey()
+                    focused = true
+                })
+            }
         }
         .padding(10)
         .background(.white.opacity(hovered ? 0.1 : 0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .contentShape(Rectangle())
         .onHover { hovered = $0 }
-        .onTapGesture {
-            if let link = alert.link { NSWorkspace.shared.open(link) }
-            ui.collapse()
+        .animation(.easeOut(duration: 0.15), value: state)
+    }
+
+    private func send() {
+        let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, state != "sending" else { return }
+        state = "sending"
+        SlackSource.shared.reply(to: alert, text: text) { ok in
+            state = ok ? "sent" : "failed"
+            if ok {
+                reply = ""
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { ui.collapse() }
+            }
         }
     }
 }

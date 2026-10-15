@@ -12,6 +12,9 @@ struct SlackAlert: Identifiable, Equatable {
     let sender: String
     let text: String
     let ts: String
+    /// The thread it belongs to, if any. A reply goes into the same thread.
+    var thread: String?
+    var direct = false
 
     /// Opens the conversation in the Slack app.
     var link: URL? {
@@ -34,6 +37,13 @@ final class SlackSource {
     private let dir = "\(Shell.home)/.perch/slack"
     private var links: [String: Workspace] = [:]
     private var timer: Timer?
+
+    /// Sends a reply as the user: in a thread, into that thread; to a mention in a channel, as a
+    /// reply in a thread under it; to a direct message, straight into the conversation.
+    func reply(to alert: SlackAlert, text: String, done: @escaping (Bool) -> Void) {
+        guard let link = links.values.first(where: { $0.name == alert.workspace }) else { return done(false) }
+        link.post(channel: alert.channel, text: text, thread: alert.thread ?? (alert.direct ? nil : alert.ts), done: done)
+    }
 
     func start() {
         scan()
@@ -75,6 +85,12 @@ private final class Workspace {
         self.apps = apps
         self.appToken = appToken
         self.userToken = userToken
+    }
+
+    func post(channel: String, text: String, thread: String?, done: @escaping (Bool) -> Void) {
+        var params = ["channel": channel, "text": text]
+        if let thread { params["thread_ts"] = thread }
+        api("chat.postMessage", token: userToken, params) { o in done(o != nil) }
     }
 
     private func api(_ method: String, token: String, _ params: [String: String] = [:], done: @escaping ([String: Any]?) -> Void) {
@@ -169,8 +185,10 @@ private final class Workspace {
         resolve(sender: sender, botName: (event["bot_profile"] as? [String: Any])?["name"] as? String ?? event["username"] as? String,
                 channel: channel, direct: direct) { [weak self] who, place in
             guard let self else { return }
-            let alert = SlackAlert(id: "\(self.name)-\(ts)", workspace: self.name, priority: self.priority, team: self.team,
+            var alert = SlackAlert(id: "\(self.name)-\(ts)", workspace: self.name, priority: self.priority, team: self.team,
                                    channel: channel, place: place, sender: who, text: self.tidy(body, event: event), ts: ts)
+            alert.thread = event["thread_ts"] as? String
+            alert.direct = direct
             NotchUI.shared.slack(alert)
         }
     }

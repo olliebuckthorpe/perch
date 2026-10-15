@@ -1,29 +1,47 @@
 {
   "display_information": {
     "name": "Perch",
-    "description": "Shows your Slack DMs, mentions and app alerts in the Mac notch. Read only.",
+    "description": "Shows your Slack DMs, mentions and app alerts in the Mac notch, and sends your replies from there.",
     "background_color": "#111111"
   },
   "features": {
-    "bot_user": { "display_name": "Perch", "always_online": false }
+    "bot_user": {
+      "display_name": "Perch",
+      "always_online": false
+    }
   },
   "oauth_config": {
     "scopes": {
       "user": [
-        "channels:history", "channels:read",
-        "groups:history", "groups:read",
-        "im:history", "im:read",
-        "mpim:history", "mpim:read",
-        "users:read", "team:read"
+        "channels:history",
+        "channels:read",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "mpim:history",
+        "mpim:read",
+        "users:read",
+        "team:read",
+        "chat:write"
       ],
-      "bot": ["users:read"]
+      "bot": [
+        "users:read"
+      ]
     }
   },
   "settings": {
     "event_subscriptions": {
-      "user_events": ["message.channels", "message.groups", "message.im", "message.mpim"]
+      "user_events": [
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "message.mpim"
+      ]
     },
-    "interactivity": { "is_enabled": false },
+    "interactivity": {
+      "is_enabled": false
+    },
     "org_deploy_enabled": false,
     "socket_mode_enabled": true,
     "token_rotation_enabled": false
