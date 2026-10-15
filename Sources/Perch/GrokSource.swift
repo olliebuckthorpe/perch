@@ -153,6 +153,7 @@ final class GrokSource {
             guard let id = row["id"], let name = row["name"] else { continue }
             let agent = store.upsert(source: .grok, sessionID: id, name: name)
             agent.avatarColor = row["color"]
+            agent.avatarShape = row["shape"].flatMap { $0.isEmpty ? nil : $0 } ?? GrokShapes.defaultName(for: id)
             agent.hostBundleID = Self.bundleID
         }
         startBridge()
@@ -306,6 +307,7 @@ final class GrokSource {
             agent.name = name
             agent.hostBundleID = Self.bundleID
             agent.avatarColor = raw["avatarColor"] as? String ?? Palette.grokDefault(for: id)
+            agent.avatarShape = (raw["avatarShape"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? GrokShapes.defaultName(for: id)
 
             // While Perch has a bot paused, its "off" is Perch's doing, not the user's choice.
             if let on = raw["notifyOnUpdatesEnabled"] as? Bool, paused[id] == nil { notifying[id] = on }
@@ -337,7 +339,7 @@ final class GrokSource {
             if open, (raw["unreadCount"] as? Int ?? 0) > 0 { request("setAgentUnread", ["id": id, "isUnread": false]) }
         }
         for a in store.grokBots where !live.contains(a.id) { store.remove(a) }
-        UserDefaults.standard.set(store.grokBots.map { ["id": $0.sessionID, "name": $0.name, "color": $0.avatarColor ?? ""] },
+        UserDefaults.standard.set(store.grokBots.map { ["id": $0.sessionID, "name": $0.name, "color": $0.avatarColor ?? "", "shape": $0.avatarShape ?? ""] },
                                   forKey: "grokRoster")
     }
 

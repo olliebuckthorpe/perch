@@ -9,6 +9,8 @@ struct GrokBall: View {
     let color: Color
     let outlined: Bool
     let working: Bool
+    /// The bot's shape; nil for Grok Bot's plain ball.
+    var shape: GrokShapes.Shape? = nil
     @State private var hovered = false
     @State private var hoverAt = Date.distantPast
     private var clock: EyeClock { EyeClock.shared }
@@ -53,14 +55,14 @@ struct GrokBall: View {
     private func draw(_ g: inout GraphicsContext, _ canvas: CGSize, _ p: BallPose) {
         let radius = canvas.width / 2 * p.scale
         let center = CGPoint(x: canvas.width / 2 + p.dx * canvas.width, y: canvas.height / 2 + p.dy * canvas.height)
-        let head = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
+        let head = headPath(p, center: center, radius: radius)
         g.fill(head, with: .color(color))
         if outlined {
             // A black ball would vanish against the black island: one thin, soft rim just inside its edge.
             let line = max(1, size * 0.05)
-            let rim = Path(ellipseIn: CGRect(x: center.x - radius + line / 2, y: center.y - radius + line / 2,
-                                             width: radius * 2 - line, height: radius * 2 - line))
-            g.stroke(rim, with: .color(.white.opacity(0.55)), lineWidth: line)
+            var rimmed = g
+            rimmed.clip(to: head)
+            rimmed.stroke(head, with: .color(.white.opacity(0.55)), lineWidth: line * 2)
         }
         var inside = g
         inside.clip(to: head)
@@ -71,8 +73,40 @@ struct GrokBall: View {
         }
     }
 
+    /// The outline: a circle for the plain ball, otherwise the bot's shape, leaning as the head
+    /// turns and a little narrower when it looks to the side.
+    private func headPath(_ p: BallPose, center: CGPoint, radius: CGFloat) -> Path {
+        guard let shape else {
+            return Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
+        }
+        let lean = p.roll * 0.8 * .pi / 180
+        let squeeze = 1 - 0.12 * abs(sin(p.yaw * .pi / 180))
+        let fit = radius * 0.97
+        var path = Path()
+        for (i, pt) in shape.outline.enumerated() {
+            let u = pt.x * squeeze, v = -pt.y
+            let x = u * cos(lean) - v * sin(lean), y = u * sin(lean) + v * cos(lean)
+            let q = CGPoint(x: center.x + x * fit, y: center.y - y * fit)
+            if i == 0 { path.move(to: q) } else { path.addLine(to: q) }
+        }
+        path.closeSubpath()
+        return path
+    }
+
     /// One eye: a rounded shape in the ball's surface, turned with the ball and projected flat.
     private func eyePath(side: Double, pose p: BallPose, center: CGPoint, radius: CGFloat) -> Path? {
+        // Each shape sets its own eye size and spacing, as Grok Bot does.
+        var p = p
+        if let shape {
+            p.w *= shape.eyeW
+            p.h *= shape.eyeH
+            p.gap *= shape.eyeGap
+            // A shape is not a ball: its eyes keep nearer the middle so they stay on it.
+            p.yaw *= 0.55
+            p.pitch = p.pitch.truncatingRemainder(dividingBy: 360)
+            if p.pitch > 180 { p.pitch -= 360 }
+            if abs(p.pitch) < 90 { p.pitch *= 0.6 }
+        }
         let lon = side * p.gap / 2
         // Where the eye sits and the two directions along the surface there.
         let m = SIMD3(sin(lon), 0, cos(lon))
@@ -100,7 +134,7 @@ struct GrokBall: View {
             }
             let roll = p.roll * .pi / 180
             let x = q.x * cos(roll) - q.y * sin(roll), y = q.x * sin(roll) + q.y * cos(roll)
-            points.append(CGPoint(x: center.x + x * radius, y: center.y - y * radius))
+            points.append(CGPoint(x: center.x + x * radius, y: center.y - y * radius + (shape?.eyeDrop ?? 0) * radius))
         }
         guard visible, blinkH > 0.004 else { return nil }
         var path = Path()

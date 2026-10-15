@@ -5356,3 +5356,25 @@ private func freeDownloadsURL(_ name: String) -> URL {
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
     }
 }
+
+/// Every Grok shape at rest, off screen, for comparing with Grok Bot's own picker.
+@MainActor func renderShapesPreview(to path: String) {
+    let names = ["blob"] + GrokShapes.all.keys.sorted()
+    let colors: [Color] = [.blue, .green, .purple, .brown, .pink, .orange, .cyan, .red]
+    let view = LazyVGrid(columns: Array(repeating: GridItem(.fixed(78)), count: 9), spacing: 8) {
+        ForEach(Array(names.enumerated()), id: \.offset) { i, name in
+            VStack(spacing: 3) {
+                GrokBall(size: 56, color: colors[i % colors.count], outlined: false, working: false,
+                         shape: GrokShapes.named(name)).still(BallPose.rest)
+                Text(name).font(.system(size: 9)).foregroundStyle(.gray)
+            }
+            .frame(width: 78, height: 80).background(Color(white: 0.96))
+        }
+    }
+    .padding(8).background(.white)
+    let renderer = ImageRenderer(content: view)
+    renderer.scale = 2
+    if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+}

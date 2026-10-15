@@ -81,6 +81,8 @@ final class Agent: Identifiable {
     var colorIndex = 0
     /// Grok Bot's own avatar colour id ("violet", "brown", ...), when the agent has one.
     var avatarColor: String?
+    /// Grok Bot's avatar shape ("hex", "cloud"...), saved or worked out the way Grok Bot does.
+    var avatarShape: String?
     var pending: PendingRequest?
     /// A background hook parked in an idle Claude Code session. Answering it wakes the session.
     var waiter: HookRequest?

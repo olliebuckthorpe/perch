@@ -276,7 +276,8 @@ struct FaceView: View {
     @ViewBuilder private var grokBody: some View {
         let black = agent.avatarColor == "black"
         // A black blob needs an edge to show up against the island.
-        GrokBall(size: size, color: black ? .black : agent.color, outlined: black, working: agent.status == .working)
+        GrokBall(size: size, color: black ? .black : agent.color, outlined: black, working: agent.status == .working,
+                 shape: GrokShapes.named(agent.avatarShape))
     }
 
     private var bodyShape: AnyShape {
