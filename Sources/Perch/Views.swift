@@ -138,6 +138,8 @@ private struct ExpandedBody: View {
                 ClipboardPanel()
             } else {
                 TopBar()
+                    .overlay(alignment: .top) { ToastBanner() }
+                    .zIndex(5)
                 if ui.showingTasks {
                     // The board gets the full width; the island stays the same size either way.
                     TasksView()
@@ -4709,6 +4711,74 @@ private struct SlackFileView: View {
     }
 }
 
+/// A message from another chat while one is open: who and what, sliding down over the top of
+/// the island. Click to go to it; it slips away by itself after a few seconds.
+private struct ToastBanner: View {
+    @Environment(NotchUI.self) private var ui
+    @Environment(AgentStore.self) private var store
+
+    var body: some View {
+        if let toast = ui.toast {
+            HStack(spacing: 10) {
+                switch toast {
+                case .agent(let id):
+                    if let agent = store.find(id) {
+                        FaceView(agent: agent, size: 26)
+                        lines(agent.name, agent.lastMessage.isEmpty ? agent.detail : agent.lastMessage)
+                    }
+                case .slack(let alert):
+                    SlackAvatar(url: alert.picture, channel: false, size: 26)
+                    lines(alert.direct ? alert.sender : "\(alert.sender) in \(alert.place)", alert.text)
+                }
+                Spacer(minLength: 4)
+                Button {
+                    withAnimation(.easeIn(duration: 0.15)) { ui.toast = nil }
+                } label: {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.white.opacity(0.5))
+                        .frame(width: 20, height: 20).contentShape(Rectangle())
+                }
+                .buttonStyle(Press())
+            }
+            .padding(.horizontal, 11).padding(.vertical, 9)
+            .frame(maxWidth: 440)
+            .background(Color(white: 0.16), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.white.opacity(0.14), lineWidth: 1))
+            .shadow(color: .black.opacity(0.5), radius: 12, y: 6)
+            .contentShape(Rectangle())
+            .onTapGesture { open(toast) }
+            .onHover { ui.toastHovered = $0 }
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .id(toast.key)
+        }
+    }
+
+    private func lines(_ title: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+            Text(oneLine(text, max: 140)).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.65)).lineLimit(2)
+        }
+    }
+
+    private func open(_ toast: NotchUI.Toast) {
+        withAnimation(.easeIn(duration: 0.15)) { ui.toast = nil }
+        switch toast {
+        case .agent(let id):
+            ui.select(id)
+        case .slack(let alert):
+            // Into that conversation in the notch, if Perch knows it; otherwise Slack itself.
+            let store = SlackConversations.shared
+            let directory = SlackDirectory.shared.targets.filter { $0.workspace == alert.workspace }
+            let person = store.dmChannel.first { $0.value == alert.channel && $0.key.hasPrefix("\(alert.workspace):") }
+                .map { String($0.key.dropFirst(alert.workspace.count + 1)) }
+            if let target = directory.first(where: { $0.id == (person ?? alert.channel) }) {
+                ui.openSlack(target)
+            } else if let link = alert.link {
+                NSWorkspace.shared.open(link)
+            }
+        }
+    }
+}
+
 /// A Slack message in the notch: who, where, and what they said. Click to open it in Slack.
 private struct SlackBanner: View {
     let alert: SlackAlert
@@ -5176,4 +5246,19 @@ private func freeDownloadsURL(_ name: String) -> URL {
     }
     ui.query = before
     ui.searchResults = shown
+}
+
+/// Draws the in-island banner for a chat into a picture, off screen, for checking the design.
+@MainActor func renderToastPreview(_ id: String, to path: String) {
+    let ui = NotchUI.shared
+    let before = ui.toast
+    ui.toast = .agent(id)
+    let view = VStack { ToastBanner() }.environment(AgentStore.shared).environment(ui)
+        .frame(width: 560, height: 90).background(.black)
+    let renderer = ImageRenderer(content: view)
+    renderer.scale = 2
+    if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+    ui.toast = before
 }

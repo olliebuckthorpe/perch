@@ -153,6 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "reply" where parts.count > 1:
             let bits = parts[1].components(separatedBy: "|")
             if bits.count == 2, let agent = AgentStore.shared.find(bits[0]) { CodingSessions.shared.reply(agent, text: bits[1]) }
+        case "toastview" where parts.count > 1:
+            let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
+            DispatchQueue.main.async { MainActor.assumeIsolated { renderToastPreview(bits[0], to: bits[1]) } }
         case "searchview" where parts.count > 1:
             let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
             DispatchQueue.main.async { MainActor.assumeIsolated { renderSearchPreview(bits[0], to: bits[1]) } }

@@ -482,6 +482,7 @@ final class NotchUI {
 
     func collapse() {
         enlarged = nil
+        toast = nil
         guard expanded else { return }
         expanded = false
         cardsOnly = false
@@ -617,9 +618,50 @@ final class NotchUI {
 
     /// A Slack message: drop the banner down, like an agent's. A less important workspace does
     /// not push aside a banner from a more important one that is still showing.
+    /// Something new from another conversation while the island is open on a chat: a small
+    /// banner over the top of it, like a phone's, rather than pulling the view away.
+    enum Toast: Equatable {
+        case agent(String)
+        case slack(SlackAlert)
+        var key: String {
+            switch self {
+            case .agent(let id): return id
+            case .slack(let a): return a.id
+            }
+        }
+    }
+    var toast: Toast?
+    var toastHovered = false
+    @ObservationIgnored private var toastWork: DispatchWorkItem?
+
+    func showToast(_ toast: Toast) {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) { self.toast = toast }
+        hideToastSoon()
+    }
+
+    func hideToastSoon(after delay: Double = 5) {
+        toastWork?.cancel()
+        let key = toast?.key
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.toast?.key == key else { return }
+            if self.toastHovered { return self.hideToastSoon(after: 2) }
+            withAnimation(.easeIn(duration: 0.2)) { self.toast = nil }
+        }
+        toastWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
     func slack(_ alert: SlackAlert) {
         guard pendingLinks.isEmpty else { return }
-        if expanded && !autoOpened { return }
+        if expanded && !autoOpened {
+            // Already reading that very conversation: it shows up there by itself.
+            let reading = slackTarget.map { t in t.workspace == alert.workspace && (t.id == alert.channel || alert.direct) } ?? false
+            if !reading {
+                if Settings.sounds { Settings.playSound() }
+                showToast(.slack(alert))
+            }
+            return
+        }
         if let showing = slackAlert, expanded, cardsOnly, showing.priority < alert.priority { return }
         if Settings.sounds { Settings.playSound() }
         autoOpened = true
@@ -648,8 +690,12 @@ final class NotchUI {
         guard let id = store.attentionAgentID, store.find(id) != nil else { return }
         // A link picker is waiting on an answer; do not replace it with a notification.
         guard pendingLinks.isEmpty else { return }
-        // Already open and in use: do not pull the view out from under the user.
-        if expanded && !autoOpened { return }
+        // Already open and in use: do not pull the view out from under the user. Unless it is the
+        // chat on screen, a small banner says what came in.
+        if expanded && !autoOpened {
+            if id != selectedID || cardsOnly { showToast(.agent(id)) }
+            return
+        }
         if !expanded || noticeID != id {
             noticeArmed = false
             // Once it has finished dropping, a pointer that is clear of it can come up and open it.
