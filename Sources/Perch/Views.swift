@@ -4501,14 +4501,17 @@ final class SidePanel {
         guard let panel = window else { return NotchUI.shared.show(agent.id) }
         window = nil
         let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
+        // The reverse of going out: the notch opens on this chat while the panel glides over
+        // into it and melts away, so it lands already open.
+        NotchUI.shared.show(agent.id)
+        let open = NSRect(x: screen.frame.midX - 340, y: screen.frame.maxY - 560, width: 680, height: 560)
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.3
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.6, 1)
-            panel.animator().setFrame(self.notchRect(on: screen), display: true)
+            context.duration = 0.38
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
+            panel.animator().setFrame(open, display: true)
             panel.animator().alphaValue = 0
         }, completionHandler: {
             panel.close()
-            NotchUI.shared.show(agent.id)
         })
     }
 }
