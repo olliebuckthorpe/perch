@@ -183,15 +183,39 @@ private final class Workspace {
         self.userToken = userToken
     }
 
+    /// Which direct message channel belongs to which person, so DMs open without asking Slack each time.
+    private func directMessages(_ cursor: String?, then: (() -> Void)? = nil) {
+        var params = ["limit": "200", "types": "im"]
+        if let cursor { params["cursor"] = cursor }
+        api("users.conversations", token: userToken, params) { [weak self] o in
+            guard let self else { return }
+            let store = SlackConversations.shared
+            for c in o?["channels"] as? [[String: Any]] ?? [] {
+                if let id = c["id"] as? String, let user = c["user"] as? String { store.dmChannel["\(self.name):\(user)"] = id }
+            }
+            if let next = (o?["response_metadata"] as? [String: Any])?["next_cursor"] as? String, !next.isEmpty {
+                self.directMessages(next, then: then)
+            } else if let then {
+                then()
+            } else {
+                self.warm()
+            }
+        }
+    }
+
     /// The conversation's channel id: a channel's own, or a direct message's once opened.
     private func channel(for target: SlackTarget, done: @escaping (String?) -> Void) {
         if target.channel { return done(target.id) }
         let store = SlackConversations.shared
-        if let known = store.dmChannel["\(name):\(target.id)"] { return done(known) }
+        if let known = store.dmChannel["\(name):\(target.id)"], !known.contains(":dm:") { return done(known) }
         api("conversations.open", token: userToken, ["users": target.id]) { [weak self] o in
-            let id = (o?["channel"] as? [String: Any])?["id"] as? String
-            if let id, let self { store.dmChannel["\(self.name):\(target.id)"] = id }
-            done(id)
+            guard let self else { return done(nil) }
+            if let id = (o?["channel"] as? [String: Any])?["id"] as? String {
+                store.dmChannel["\(self.name):\(target.id)"] = id
+                return done(id)
+            }
+            // Opening needs a permission the key may not have; an existing conversation can still be found.
+            self.directMessages(nil) { done(store.dmChannel["\(self.name):\(target.id)"]) }
         }
     }
 
@@ -244,39 +268,70 @@ private final class Workspace {
         next(0)
     }
 
-    func history(for target: SlackTarget) {
+    func history(for target: SlackTarget, attempt: Int = 0) {
         let store = SlackConversations.shared
         channel(for: target) { [weak self] channel in
-            guard let self, let channel else { return }
+            guard let self else { return }
+            guard let channel else {
+                // Couldn't find the conversation. Show it empty rather than loading forever.
+                let key = "\(self.name):dm:\(target.id)"
+                if attempt < 2 { return DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.history(for: target, attempt: attempt + 1) } }
+                store.dmChannel["\(self.name):\(target.id)"] = key
+                store.lines[store.key(self.name, key)] = store.lines[store.key(self.name, key)] ?? []
+                return
+            }
             let key = store.key(self.name, channel)
             store.loading.insert(key)
             self.api("conversations.history", token: self.userToken, ["channel": channel, "limit": "40"]) { [weak self] o in
                 guard let self else { return }
+                guard let o else {
+                    // Slack sometimes refuses when asked too quickly. Keep what is shown and try again.
+                    if attempt < 3 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + Double(attempt + 1) * 1.5) { self.history(for: target, attempt: attempt + 1) }
+                    } else {
+                        store.loading.remove(key)
+                        if store.lines[key] == nil { store.lines[key] = [] }
+                    }
+                    return
+                }
                 store.loading.remove(key)
-                let raw = (o?["messages"] as? [[String: Any]] ?? []).reversed()
-                var lines: [SlackLine] = []
-                let group = DispatchGroup()
-                for m in raw {
-                    guard m["subtype"] as? String != "channel_join" else { continue }
-                    let user = m["user"] as? String ?? ""
-                    let ts = m["ts"] as? String ?? UUID().uuidString
-                    let bot = (m["bot_profile"] as? [String: Any])?["name"] as? String ?? m["username"] as? String
-                    let i = lines.count
-                    lines.append(SlackLine(id: ts, sender: bot ?? self.names[user] ?? "", mine: user == self.me,
-                                           text: self.tidy(m["text"] as? String ?? "", event: m, full: true), picture: self.pictures[user],
-                                           files: SlackFile.list(m, workspace: self.name)))
-                    if bot == nil, self.names[user] == nil, !user.isEmpty {
-                        group.enter()
-                        self.resolve(sender: user, botName: nil, channel: channel, direct: true) { who, _ in
-                            lines[i].sender = who
-                            lines[i].picture = self.pictures[user]
-                            group.leave()
-                        }
+                let raw = (o["messages"] as? [[String: Any]] ?? []).reversed()
+                    .filter { $0["subtype"] as? String != "channel_join" }
+                let build = { [weak self] () -> [SlackLine] in
+                    guard let self else { return [] }
+                    return raw.map { m in
+                        let user = m["user"] as? String ?? ""
+                        let bot = (m["bot_profile"] as? [String: Any])?["name"] as? String ?? m["username"] as? String
+                        return SlackLine(id: m["ts"] as? String ?? UUID().uuidString,
+                                         sender: bot ?? self.names[user] ?? (user == self.me ? "You" : ""),
+                                         mine: user == self.me,
+                                         text: self.tidy(m["text"] as? String ?? "", event: m, full: true),
+                                         picture: self.pictures[user], files: SlackFile.list(m, workspace: self.name))
                     }
                 }
-                group.notify(queue: .main) { store.lines[key] = lines }
+                // Shown straight away; names Perch doesn't know yet fill in as they arrive.
+                store.lines[key] = build()
+                var unknown = Set<String>()
+                for m in raw {
+                    if let user = m["user"] as? String, m["bot_profile"] == nil, !user.isEmpty { unknown.insert(user) }
+                    let text = m["text"] as? String ?? ""
+                    for match in text.matches(of: #/<@([A-Z0-9]+)/#) { unknown.insert(String(match.1)) }
+                }
+                unknown = unknown.filter { $0 != self.me && self.names[$0] == nil }
+                guard !unknown.isEmpty else { return }
+                let group = DispatchGroup()
+                for user in unknown {
+                    group.enter()
+                    self.resolve(sender: user, botName: nil, channel: channel, direct: true) { _, _ in group.leave() }
+                }
+                group.notify(queue: .main) { store.lines[key] = build() }
             }
         }
+    }
+
+    /// Recent conversations load quietly once connected, so opening one is instant.
+    private func warm() {
+        for target in NotchUI.shared.slackRecent where target.workspace == name { history(for: target) }
     }
 
     /// A message arriving live goes into its conversation if that conversation is loaded.
@@ -330,6 +385,7 @@ private final class Workspace {
                 } else {
                     let dir = SlackDirectory.shared
                     dir.targets = dir.targets.filter { $0.workspace != self.name } + found
+                    self.directMessages(nil)
                 }
             }
         }
