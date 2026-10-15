@@ -4601,7 +4601,19 @@ extension EnvironmentValues {
 }
 
 final class SidePanelWindow: NSPanel {
-    override var canBecomeKey: Bool { true }
+    /// A panel put back after a relaunch must not take the keyboard from whatever the user is
+    /// typing in. It only can once they click into it.
+    var waitsForClick = false
+    override var canBecomeKey: Bool { !waitsForClick }
+
+    override func sendEvent(_ event: NSEvent) {
+        if waitsForClick, event.type == .leftMouseDown || event.type == .rightMouseDown {
+            waitsForClick = false
+            makeKey()
+        }
+        super.sendEvent(event)
+    }
+
     override var canBecomeMain: Bool { false }
 }
 
@@ -4665,7 +4677,8 @@ final class SidePanel {
             NotificationCenter.default.addObserver(forName: $0, object: panel, queue: .main) { [weak self] _ in self?.remember() }
         }
         if quietly {
-            // Back where it was after a relaunch, without the flourish.
+            // Back where it was after a relaunch, without the flourish or the keyboard.
+            panel.waitsForClick = true
             panel.setFrame(frame, display: true)
             panel.orderFrontRegardless()
             window = panel
