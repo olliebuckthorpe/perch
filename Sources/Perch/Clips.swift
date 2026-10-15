@@ -149,6 +149,21 @@ final class Clips {
         save()
     }
 
+    /// A file that only exists for a moment (a screen recording's preview hands one over and
+    /// deletes it afterwards): copied onto the shelf so it stays.
+    func keep(copyOf url: URL, named name: String? = nil) {
+        let base = name ?? url.lastPathComponent
+        var target = URL(fileURLWithPath: Self.shelfDir).appendingPathComponent(base)
+        var n = 2
+        while FileManager.default.fileExists(atPath: target.path) {
+            let stem = (base as NSString).deletingPathExtension, ext = (base as NSString).pathExtension
+            target = URL(fileURLWithPath: Self.shelfDir).appendingPathComponent("\(stem) \(n)" + (ext.isEmpty ? "" : ".\(ext)"))
+            n += 1
+        }
+        guard (try? FileManager.default.copyItem(at: url, to: target)) != nil else { return NSSound.beep() }
+        hold([target])
+    }
+
     /// A picture dragged from somewhere that has no file of its own (a web page, say).
     func hold(_ image: NSImage) {
         guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),

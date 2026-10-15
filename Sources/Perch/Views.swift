@@ -777,7 +777,7 @@ private struct TopBar: View {
             }
         }
         .animation(.easeOut(duration: 0.14), value: dropping)
-        .onDrop(of: [.fileURL, .image], isTargeted: $dropping) { providers in
+        .onDrop(of: [.fileURL, .image, .movie, .data], isTargeted: $dropping) { providers in
             shelve(providers)
             return true
         }
@@ -3953,15 +3953,46 @@ extension Agent {
 
 // MARK: Clips
 
-/// Takes whatever was dropped (files, or a picture with no file of its own) onto the shelf.
+/// Takes whatever was dropped onto the shelf: files, pictures with no file of their own, and
+/// files that are only promised (a screen recording's preview, a photo from Photos). Anything
+/// that lives in a temporary place is copied onto the shelf at once, before its source deletes it.
 private func shelve(_ providers: [NSItemProvider]) {
     for provider in providers {
         if provider.hasItemConformingToTypeIdentifier("public.file-url") {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url else { return }
-                DispatchQueue.main.async { Clips.shared.hold([url]) }
+                let temporary = url.path.hasPrefix("/private/var/folders") || url.path.hasPrefix("/var/folders")
+                    || url.path.hasPrefix("/tmp") || url.path.hasPrefix("/private/tmp") || url.path.contains("/TemporaryItems/")
+                if temporary {
+                    // Copied right here, while the file still exists.
+                    let staged = FileManager.default.temporaryDirectory.appendingPathComponent("perch-shelf-\(UUID().uuidString)")
+                    try? FileManager.default.createDirectory(at: staged, withIntermediateDirectories: true)
+                    let copy = staged.appendingPathComponent(url.lastPathComponent)
+                    guard (try? FileManager.default.copyItem(at: url, to: copy)) != nil else { return }
+                    DispatchQueue.main.async { Clips.shared.keep(copyOf: copy); try? FileManager.default.removeItem(at: staged) }
+                } else {
+                    DispatchQueue.main.async { Clips.shared.hold([url]) }
+                }
             }
-        } else {
+            continue
+        }
+        // A promised file: ask for it as a real file and keep a copy before it is cleaned up.
+        let type = provider.registeredTypeIdentifiers.first { id in
+            UTType(id).map { $0.conforms(to: .data) || $0.conforms(to: .movie) || $0.conforms(to: .image) } ?? false
+        }
+        if let type {
+            _ = provider.loadFileRepresentation(forTypeIdentifier: type) { url, _ in
+                guard let url else { return }
+                let staged = FileManager.default.temporaryDirectory.appendingPathComponent("perch-shelf-\(UUID().uuidString)")
+                try? FileManager.default.createDirectory(at: staged, withIntermediateDirectories: true)
+                let name = provider.suggestedName.map { n -> String in
+                    (n as NSString).pathExtension.isEmpty ? n + "." + url.pathExtension : n
+                } ?? url.lastPathComponent
+                let copy = staged.appendingPathComponent(name)
+                guard (try? FileManager.default.copyItem(at: url, to: copy)) != nil else { return }
+                DispatchQueue.main.async { Clips.shared.keep(copyOf: copy, named: name); try? FileManager.default.removeItem(at: staged) }
+            }
+        } else if provider.hasItemConformingToTypeIdentifier("public.image") {
             _ = provider.loadDataRepresentation(forTypeIdentifier: "public.image") { data, _ in
                 guard let data, let image = NSImage(data: data) else { return }
                 DispatchQueue.main.async { Clips.shared.hold(image) }
@@ -4141,7 +4172,7 @@ private struct ShelfPanel: View {
         }
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
-        .onDrop(of: [.fileURL, .image], isTargeted: $dropping) { providers in
+        .onDrop(of: [.fileURL, .image, .movie, .data], isTargeted: $dropping) { providers in
             shelve(providers)
             ui.fileLanded()
             return true
