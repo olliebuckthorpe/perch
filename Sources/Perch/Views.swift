@@ -4061,22 +4061,39 @@ private struct SlackAvatar: View {
     private static let cache = NSCache<NSURL, NSImage>()
     static let logo = NSWorkspace.shared.icon(forFile: "/Applications/Slack.app")
 
+    @ViewBuilder private var picture: some View {
+        if let image {
+            Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+        } else {
+            Color.white.opacity(0.12)
+                .overlay(Image(systemName: channel ? "number" : "person.fill").font(.system(size: size * 0.42 * (channel ? 0.5 : 1)))
+                    .foregroundStyle(.white.opacity(0.6)))
+        }
+    }
+
+    /// A person shows their picture with a small Slack logo; a channel shows the Slack logo
+    /// with the workspace's icon small in the corner.
     var body: some View {
-        ZStack {
-            if let image {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+        Group {
+            if channel {
+                Image(nsImage: Self.logo).resizable().frame(width: size, height: size)
             } else {
-                Color.white.opacity(0.12)
-                    .overlay(Image(systemName: channel ? "number" : "person.fill").font(.system(size: size * 0.42))
-                        .foregroundStyle(.white.opacity(0.6)))
+                picture.frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
             }
         }
-        .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
         .overlay(alignment: .bottomTrailing) {
-            Image(nsImage: Self.logo).resizable().frame(width: size * 0.5, height: size * 0.5)
-                .background(Color.black, in: RoundedRectangle(cornerRadius: size * 0.12, style: .continuous))
-                .offset(x: size * 0.16, y: size * 0.16)
+            Group {
+                if channel {
+                    picture.frame(width: size * 0.46, height: size * 0.46)
+                        .clipShape(RoundedRectangle(cornerRadius: size * 0.12, style: .continuous))
+                        .padding(1)
+                } else {
+                    Image(nsImage: Self.logo).resizable().frame(width: size * 0.5, height: size * 0.5)
+                }
+            }
+            .background(Color.black, in: RoundedRectangle(cornerRadius: size * 0.14, style: .continuous))
+            .offset(x: size * 0.16, y: size * 0.16)
         }
         .task(id: url) {
             guard let url else { return }
