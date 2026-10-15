@@ -56,7 +56,11 @@ struct GrokBall: View {
         let head = Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
         g.fill(head, with: .color(color))
         if outlined {
-            g.stroke(head.strokedPath(.init(lineWidth: max(1.2, size * 0.07))).offsetBy(dx: 0, dy: 0), with: .color(.white.opacity(0.9)))
+            // A black ball would vanish against the black island: one thin, soft rim just inside its edge.
+            let line = max(1, size * 0.05)
+            let rim = Path(ellipseIn: CGRect(x: center.x - radius + line / 2, y: center.y - radius + line / 2,
+                                             width: radius * 2 - line, height: radius * 2 - line))
+            g.stroke(rim, with: .color(.white.opacity(0.55)), lineWidth: line)
         }
         var inside = g
         inside.clip(to: head)
