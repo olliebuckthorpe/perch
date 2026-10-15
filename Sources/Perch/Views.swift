@@ -1480,8 +1480,10 @@ private struct TaskCard: View {
                 }
                 if !floating { pushBox }
             }
-            // Hand it to Remmi: shown while the pointer is on the card.
-            if !floating, bot != nil, hovered || pushing {
+            // Hand it to Remmi: shown while the pointer is on the card. Its space is always kept,
+            // so the text never re-wraps and the card never changes size as the pointer passes.
+            if !floating, bot != nil {
+                let showing = hovered || pushing
                 Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { pushing.toggle() } } label: {
                     Image(systemName: "paperplane.fill").font(.system(size: 10))
                         .foregroundStyle(.white.opacity(pushing ? 0.95 : 0.6))
@@ -1490,7 +1492,9 @@ private struct TaskCard: View {
                 }
                 .buttonStyle(Press(reach: 3))
                 .help("Push to \(bot?.name ?? "Remmi") with a note")
-                .transition(.opacity)
+                .opacity(showing ? 1 : 0)
+                .allowsHitTesting(showing)
+                .animation(.easeOut(duration: 0.1), value: showing)
             }
         }
         .padding(.horizontal, 9).padding(.vertical, 8)
