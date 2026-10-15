@@ -5328,3 +5328,24 @@ private func freeDownloadsURL(_ name: String) -> URL {
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
     }
 }
+
+/// The working loop as a grid of frames, off screen, for comparing with a recording of Grok Bot.
+@MainActor func renderBallPreview(to path: String) {
+    let ball = GrokBall(size: 60, color: .black, outlined: false, working: true)
+    let times = stride(from: 0.0, to: 14.4, by: 0.3).map { $0 }
+    let view = LazyVGrid(columns: Array(repeating: GridItem(.fixed(70)), count: 12), spacing: 8) {
+        ForEach(times, id: \.self) { t in
+            VStack(spacing: 2) {
+                ball.still(BallPose.at(t, in: BallPose.working, looping: false))
+                Text(String(format: "%.1f", t)).font(.system(size: 9)).foregroundStyle(.gray)
+            }
+            .frame(width: 70, height: 80).background(Color(white: 0.88))
+        }
+    }
+    .padding(8).background(Color(white: 0.95))
+    let renderer = ImageRenderer(content: view)
+    renderer.scale = 2
+    if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+}

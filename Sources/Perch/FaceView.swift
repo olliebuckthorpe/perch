@@ -54,114 +54,6 @@ extension Agent {
     var color: Color { avatarColor.flatMap { Palette.grok[$0] } ?? Palette.color(colorIndex) }
 }
 
-/// Where a Grok bot's eyes are, as fractions of the face. Moving between poses is what makes
-/// the face look like a ball rolling: the eyes slide, tilt, and change size and roundness.
-struct EyePose: Equatable {
-    var step = 0
-    var x: CGFloat
-    var y: CGFloat
-    var tilt: Double
-    var w: CGFloat
-    var h: CGFloat
-    var gap: CGFloat
-    /// The far eye is a little smaller, as it would be on a ball turned away.
-    var far: CGFloat = 1
-
-    static let rest = EyePose(x: 0.15, y: -0.19, tilt: -24, w: 0.10, h: 0.23, gap: 0.21, far: 0.74)
-    static let facing = EyePose(x: 0, y: -0.02, tilt: 0, w: 0.115, h: 0.27, gap: 0.31)
-
-    /// The look-around Grok Bot's avatars do: face left, swing up close, go wide-eyed looking
-    /// left then down, look straight out for a moment, and roll back to rest.
-    static let lookAround: [EyePose] = [
-        rest,
-        EyePose(step: 1, x: -0.22, y: -0.02, tilt: -4, w: 0.105, h: 0.26, gap: 0.29),
-        EyePose(step: 2, x: -0.22, y: -0.02, tilt: -4, w: 0.105, h: 0.26, gap: 0.29),
-        EyePose(step: 3, x: 0.13, y: -0.15, tilt: -32, w: 0.15, h: 0.36, gap: 0.3, far: 0.85),
-        EyePose(step: 4, x: 0.13, y: -0.15, tilt: -32, w: 0.15, h: 0.36, gap: 0.3, far: 0.85),
-        EyePose(step: 5, x: -0.2, y: -0.06, tilt: -8, w: 0.25, h: 0.2, gap: 0.33, far: 0.9),
-        EyePose(step: 6, x: -0.2, y: -0.06, tilt: -8, w: 0.25, h: 0.2, gap: 0.33, far: 0.9),
-        EyePose(step: 7, x: -0.17, y: 0.2, tilt: -22, w: 0.25, h: 0.19, gap: 0.33, far: 0.9),
-        EyePose(step: 8, x: -0.17, y: 0.2, tilt: -22, w: 0.25, h: 0.19, gap: 0.33, far: 0.9),
-        EyePose(step: 9, x: 0, y: -0.02, tilt: 0, w: 0.115, h: 0.27, gap: 0.31),
-        EyePose(step: 10, x: 0, y: -0.02, tilt: 0, w: 0.115, h: 0.27, gap: 0.31),
-    ]
-
-    /// The same pose pulled in towards the middle just far enough that both eyes sit inside
-    /// the head, with a little margin from its edge.
-    var fitted: EyePose {
-        let limit: CGFloat = 0.42
-        let a = CGFloat(tilt * .pi / 180)
-        let reach = max(w, h) / 2
-        func worst(_ k: CGFloat) -> CGFloat {
-            [-1.0, 1.0].map { side -> CGFloat in
-                let cx = x * k + side * gap / 2 * cos(a), cy = y * k + side * gap / 2 * sin(a)
-                return (cx * cx + cy * cy).squareRoot() + reach
-            }.max() ?? 0
-        }
-        var k: CGFloat = 1
-        while k > 0, worst(k) > limit { k -= 0.05 }
-        var p = self
-        p.x = x * max(0, k)
-        p.y = y * max(0, k)
-        return p
-    }
-
-    /// How long the move into each step takes. Repeated poses are the holds.
-    var duration: Double {
-        switch step {
-        case 1: return 0.5
-        case 2: return 0.45
-        case 3: return 0.4
-        case 4: return 0.25
-        case 5: return 0.16
-        case 6: return 0.3
-        case 7: return 0.5
-        case 8: return 0.25
-        case 9: return 0.32
-        case 10: return 1.0
-        default: return 0.42
-        }
-    }
-}
-
-/// The two eyes. They rest in the corner, turn to face the pointer when it is over them, and
-/// every so often (more often while the bot is working) play the look-around.
-struct GrokEyes: View {
-    let size: CGFloat
-    let lively: Bool
-    @State private var hovered = false
-    private var plays: Int { lively ? EyeClock.shared.lively : EyeClock.shared.calm }
-
-    var body: some View {
-        Group {
-            if hovered {
-                eyes(.facing)
-            } else {
-                PhaseAnimator(EyePose.lookAround, trigger: plays) { pose in
-                    eyes(pose)
-                } animation: { pose in
-                    .easeInOut(duration: pose.duration)
-                }
-            }
-        }
-        .frame(width: size, height: size)
-        .contentShape(Circle())
-        .onHover { over in withAnimation(.easeOut(duration: 0.18)) { hovered = over } }
-    }
-
-    private func eyes(_ raw: EyePose) -> some View {
-        let pose = raw.fitted
-        return HStack(spacing: 0) {
-            Capsule().fill(.white).frame(width: size * pose.w, height: size * pose.h)
-            Spacer(minLength: 0)
-            Capsule().fill(.white).frame(width: size * pose.w * pose.far, height: size * pose.h * pose.far)
-        }
-        .frame(width: size * (pose.gap + pose.w))
-        .rotationEffect(.degrees(pose.tilt))
-        .offset(x: size * pose.x, y: size * pose.y)
-    }
-}
-
 /// One clock for every pair of eyes, so the same bot shown in several places (the notch, the
 /// sidebar, the chat header) looks around in step instead of each copy doing its own thing.
 @Observable
@@ -169,6 +61,11 @@ final class EyeClock {
     static let shared = EyeClock()
     private(set) var calm = 0
     private(set) var lively = 0
+    /// Working bots all share one loop, measured from here, so copies stay in step.
+    let epoch = Date()
+    /// When the latest idle glance began, and whether it is still playing.
+    private(set) var calmAt = Date.distantPast
+    private(set) var calmPlaying = false
 
     private init() {
         tick(lively: false, after: 1)
@@ -179,7 +76,12 @@ final class EyeClock {
     private func tick(lively: Bool, after wait: Double) {
         let t = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
             guard let self else { return }
-            if lively { self.lively += 1 } else { self.calm += 1 }
+            if lively { self.lively += 1 } else {
+                self.calm += 1
+                self.calmAt = Date()
+                self.calmPlaying = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 6.2) { self.calmPlaying = false }
+            }
             self.tick(lively: lively, after: lively ? Double.random(in: 6...9) : Double.random(in: 28...60))
         }
         t.tolerance = 0.2
@@ -373,10 +275,8 @@ struct FaceView: View {
     /// Grok Bot's own look: a round blob whose two highlight eyes move as if painted on a ball.
     @ViewBuilder private var grokBody: some View {
         let black = agent.avatarColor == "black"
-        Circle().fill(black ? Color.black : agent.color)
-            // A black blob needs an edge to show up against the island.
-            .overlay(Circle().strokeBorder(.white.opacity(black ? 0.9 : 0), lineWidth: max(1.2, size * 0.07)))
-        GrokEyes(size: size, lively: agent.status == .working)
+        // A black blob needs an edge to show up against the island.
+        GrokBall(size: size, color: black ? .black : agent.color, outlined: black, working: agent.status == .working)
     }
 
     private var bodyShape: AnyShape {
