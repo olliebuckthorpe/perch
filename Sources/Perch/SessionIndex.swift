@@ -12,6 +12,7 @@ final class SessionIndex {
         let path: String
         let cwd: String?
         let modified: Date
+        var source: AgentSource = .claude
     }
 
     private(set) var entries: [Entry] = []

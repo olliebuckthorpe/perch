@@ -248,7 +248,7 @@ private struct SearchBar: View {
         @Bindable var ui = ui
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
-            TextField("Search chats and bots", text: $ui.query)
+            TextField("Search every chat, bot and Slack thread", text: $ui.query)
                 .textFieldStyle(.plain).font(.system(size: 12.5)).focused($focused)
                 .onKeyPress(.downArrow) {
                     ui.searchIndex = min(ui.searchIndex + 1, max(0, SearchItem.all(store, ui).count - 1))
@@ -281,10 +281,11 @@ private struct SearchBar: View {
             ui.controller?.panel.makeKey()
             focused = true
         })
-        .onChange(of: focused) { _, on in if on { SessionIndex.shared.refresh() } }
+        .onChange(of: focused) { _, on in if on { SessionIndex.shared.refresh(); ThreadSearch.shared.refresh() } }
         .onChange(of: ui.query) { ui.searchIndex = 0 }
         .onAppear {
             SessionIndex.shared.refresh()
+            ThreadSearch.shared.refresh()
             DispatchQueue.main.async { focused = true }
         }
     }
@@ -306,18 +307,58 @@ enum SearchItem: Identifiable {
         }
     }
 
-    /// Everything matching the search, in the order shown: live chats and bots, older Claude
-    /// Code sessions by title, then the option to start fresh. With nothing typed, every live one.
+    /// A line of each result's conversation around what matched, by result id.
+    static var snippets: [String: String] = [:]
+    /// Results found by meaning alone.
+    static var related = Set<String>()
+
+    /// Everything matching the search, best first: chats from every app (live or older), bots and
+    /// Slack conversations, matched on what was said as well as titles, then people on Slack to
+    /// message, then the option to start fresh. With nothing typed, every live one.
     static func all(_ store: AgentStore, _ ui: NotchUI) -> [SearchItem] {
         let q = ui.query.trimmingCharacters(in: .whitespaces).lowercased()
         let everyone = store.sessions + store.grokBots
         guard !q.isEmpty else { return everyone.prefix(14).map { .agent($0) } }
-        let live = everyone.filter { $0.name.lowercased().contains(q) || $0.detail.lowercased().contains(q) }
-        let older = SessionIndex.shared.entries
-            .filter { $0.title.lowercased().contains(q) && store.find("claude:\($0.id)") == nil }
+        let search = ThreadSearch.shared
+        _ = search.version
+        // Slack conversations Perch has loaded, so what was said there can be found too.
+        let conversations = SlackConversations.shared
+        let directory = SlackDirectory.shared.targets
+        var slackChats: [(SlackTarget, [SlackLine])] = []
+        for (key, lines) in conversations.lines where !lines.isEmpty {
+            let parts = key.split(separator: ":", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            let (workspace, channel) = (parts[0], parts[1])
+            let person = conversations.dmChannel.first { $0.value == channel && $0.key.hasPrefix("\(workspace):") }
+                .map { String($0.key.dropFirst(workspace.count + 1)) }
+            if let target = directory.first(where: { $0.workspace == workspace && $0.id == (person ?? channel) }) {
+                slackChats.append((target, lines))
+            }
+        }
+        let hits = search.search(q, live: everyone, slack: slackChats)
+        var items: [SearchItem] = []
+        var seen = Set<String>()
+        snippets = [:]
+        related = []
+        for hit in hits.prefix(14) {
+            let item: SearchItem
+            switch hit.target {
+            case .agent(let id):
+                guard let agent = store.find(id) else { continue }
+                item = .agent(agent)
+            case .older(let entry):
+                if let agent = store.find("\(entry.source.rawValue):\(entry.id)") { item = .agent(agent) } else { item = .older(entry) }
+            case .slack(let target):
+                item = .slack(target)
+            }
+            guard seen.insert(item.id).inserted else { continue }
+            if let snippet = hit.snippet { snippets[item.id] = snippet }
+            if hit.related { related.insert(item.id) }
+            items.append(item)
+        }
         // People and channels on Slack, to message directly.
-        let slack = SlackDirectory.shared.matching(q).prefix(4).map { SearchItem.slack($0) }
-        return live.prefix(8).map { .agent($0) } + slack + older.prefix(6).map { .older($0) } + [.newChat(ui.query)]
+        let people = SlackDirectory.shared.matching(q).prefix(4).map { SearchItem.slack($0) }.filter { !seen.contains($0.id) }
+        return items + people + [.newChat(ui.query)]
     }
 
     func open(_ ui: NotchUI) {
@@ -372,34 +413,77 @@ private struct SearchResults: View {
     }
 
     @ViewBuilder private func row(_ item: SearchItem) -> some View {
+        let snippet = SearchItem.snippets[item.id]
         switch item {
         case .agent(let agent):
-            HStack(spacing: 7) {
-                FaceView(agent: agent, size: 18)
-                Text(agent.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-                    .lineLimit(1).layoutPriority(1)
-                Text(agent.detail.isEmpty ? agent.source.label : agent.detail)
-                    .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
-                Spacer(minLength: 4)
-                StatusChip(agent: agent).layoutPriority(1)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 7) {
+                    FaceView(agent: agent, size: 18)
+                    Text(agent.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                        .lineLimit(1).layoutPriority(1)
+                    if snippet == nil {
+                        Text(agent.detail.isEmpty ? agent.source.label : agent.detail)
+                            .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+                    } else {
+                        Text(agent.source.label).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.35)).lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    tag(item)
+                    StatusChip(agent: agent).layoutPriority(1)
+                }
+                found(snippet)
             }
             .padding(.horizontal, 6).padding(.vertical, 5)
             .contentShape(Rectangle())
             .onTapGesture { item.open(ui) }
         case .older(let entry):
-            PlainRow(icon: "clock", title: entry.title, trailing: nil) { item.open(ui) }
-        case .newChat(let prompt):
-            PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(prompt)", trailing: nil) { item.open(ui) }
-        case .slack(let target):
-            HStack(spacing: 7) {
-                SlackAvatar(url: target.picture, channel: target.channel, size: 18)
-                Text(target.label).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-                Text("Slack · \(target.workspace.capitalized)").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5))
-                Spacer(minLength: 4)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 7) {
+                    Image(systemName: "clock").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).frame(width: 18)
+                    Text(entry.title).font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.85)).lineLimit(1)
+                    Text(entry.source.label).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.35)).lineLimit(1)
+                    Spacer(minLength: 4)
+                    tag(item)
+                    Text(entry.modified.formatted(.relative(presentation: .named)))
+                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.3)).lineLimit(1)
+                }
+                found(snippet)
             }
             .padding(.horizontal, 6).padding(.vertical, 5)
             .contentShape(Rectangle())
             .onTapGesture { item.open(ui) }
+        case .newChat(let prompt):
+            PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(prompt)", trailing: nil) { item.open(ui) }
+        case .slack(let target):
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 7) {
+                    SlackAvatar(url: target.picture, channel: target.channel, size: 18)
+                    Text(target.label).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                    Text("Slack · \(target.workspace.capitalized)").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5))
+                    Spacer(minLength: 4)
+                    tag(item)
+                }
+                found(snippet)
+            }
+            .padding(.horizontal, 6).padding(.vertical, 5)
+            .contentShape(Rectangle())
+            .onTapGesture { item.open(ui) }
+        }
+    }
+
+    /// The bit of the conversation that matched, under the title.
+    @ViewBuilder private func found(_ snippet: String?) -> some View {
+        if let snippet {
+            Text(snippet).font(.system(size: 11)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                .padding(.leading, 25)
+        }
+    }
+
+    @ViewBuilder private func tag(_ item: SearchItem) -> some View {
+        if SearchItem.related.contains(item.id) {
+            Text("Related").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.white.opacity(0.5))
+                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                .background(.white.opacity(0.08), in: Capsule())
         }
     }
 }
@@ -1988,6 +2072,8 @@ struct ChatView: View {
             }
         }
         .padding(.top, 2)
+        // A picture clicked in this chat, enlarged over it.
+        .overlay { Lightbox(side: sideWindow != nil) }
         // Reload when the agent says something new or changes state.
         .task(id: "\(agent.id)|\(agent.status.rawValue)|\(agent.lastMessage.count)|\(agent.tick)") { Threads.load(agent) }
         // Having the chat open in front of you is reading it, however it came to be open and
@@ -2128,6 +2214,8 @@ struct ChatView: View {
 
     private struct Picture: View {
         let path: String
+        @Environment(NotchUI.self) private var ui
+        @Environment(\.sideWindow) private var sideWindow
         @State private var image: NSImage?
         @State private var hovered = false
 
@@ -2164,8 +2252,11 @@ struct ChatView: View {
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay(alignment: .topTrailing) { if hovered { SaveButton { saveToDownloads(path: path) } } }
             .onHover { hovered = $0 }
-            .onTapGesture { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
-            .help("Open the image")
+            .onTapGesture {
+                guard let full = NSImage(contentsOfFile: path) ?? image else { return }
+                ui.enlarge(full, name: URL(fileURLWithPath: path).lastPathComponent, side: sideWindow != nil)
+            }
+            .help("Enlarge")
             .task(id: path) { ChatView.thumbnail(path) { image = $0 } }
         }
     }
@@ -2854,6 +2945,8 @@ private struct SwipeToReply: ViewModifier {
 private struct BoxPicture: View {
     let path: String
     var maxWidth: CGFloat = 300
+    @Environment(NotchUI.self) private var ui
+    @Environment(\.sideWindow) private var sideWindow
     @State private var image: NSImage?
     @State private var hovered = false
 
@@ -2873,14 +2966,10 @@ private struct BoxPicture: View {
         }
         .onHover { hovered = $0 }
         .onTapGesture {
-            // Saved to a temporary file so Preview can open it full size.
-            guard let image, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
-                  let png = rep.representation(using: .png, properties: [:]) else { return }
-            let file = FileManager.default.temporaryDirectory.appendingPathComponent(URL(fileURLWithPath: path).lastPathComponent)
-            try? png.write(to: file)
-            NSWorkspace.shared.open(file)
+            guard let image else { return }
+            ui.enlarge(image, name: URL(fileURLWithPath: path).lastPathComponent, side: sideWindow != nil)
         }
-        .help("Open full size")
+        .help("Enlarge")
         .task(id: path) { GrokSource.shared.boxImage(path) { image = $0 } }
     }
 }
@@ -4291,6 +4380,7 @@ private struct SlackComposer: View {
             }
         }
         .frame(height: 452, alignment: .top)
+        .overlay { Lightbox(side: false) }
         .onAppear {
             SlackSource.shared.history(for: target)
             ui.controller?.panel.makeKey()
@@ -4362,6 +4452,7 @@ private struct FileBadge: View {
 /// when the workspace's key can't read files, it opens in Slack instead.
 private struct SlackFileView: View {
     let file: SlackFile
+    @Environment(NotchUI.self) private var ui
     @State private var image: NSImage?
     @State private var hovered = false
     @State private var opening = false
@@ -4407,8 +4498,17 @@ private struct SlackFileView: View {
         }
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
-        .onTapGesture(perform: open)
-        .help("Open \(file.name)")
+        .onTapGesture {
+            guard file.image, let image else { return open() }
+            // The preview first, swapped for the full picture once it has downloaded.
+            ui.enlarge(image, name: file.name, side: false)
+            download { data in
+                if let data, let full = NSImage(data: data), ui.enlarged?.name == file.name {
+                    ui.enlarge(full, name: file.name, side: false)
+                }
+            }
+        }
+        .help(file.image ? "Enlarge" : "Open \(file.name)")
         .task(id: file.id) {
             guard file.image, let thumb = file.thumb ?? file.url else { return }
             SlackSource.shared.fetch(thumb, workspace: file.workspace) { data in
@@ -4815,6 +4915,46 @@ private struct SideRoot: View {
             .background(.black, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
             .preferredColorScheme(.dark)
+    }
+}
+
+// MARK: Enlarged pictures
+
+/// A clicked picture, shown big over the chat it came from. The ✕, a click outside it, or Esc
+/// goes back to the chat.
+private struct Lightbox: View {
+    let side: Bool
+    @Environment(NotchUI.self) private var ui
+
+    var body: some View {
+        if let shown = ui.enlarged, shown.side == side {
+            ZStack(alignment: .topTrailing) {
+                Color.black.opacity(0.92)
+                    .contentShape(Rectangle())
+                    .onTapGesture { close() }
+                Image(nsImage: shown.image).resizable().aspectRatio(contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .padding(.horizontal, 16).padding(.vertical, 34)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .allowsHitTesting(false)
+                HStack(spacing: 6) {
+                    SaveButton { saveToDownloads(image: shown.image, name: shown.name) }
+                    Button(action: close) {
+                        Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.white).frame(width: 26, height: 26)
+                            .background(.white.opacity(0.16), in: Circle())
+                    }
+                    .buttonStyle(Press()).help("Back to the chat")
+                    .padding(6)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+        }
+    }
+
+    private func close() {
+        withAnimation(.easeOut(duration: 0.15)) { ui.enlarged = nil }
     }
 }
 

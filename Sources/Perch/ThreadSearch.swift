@@ -1,0 +1,430 @@
+import Foundation
+import NaturalLanguage
+import Observation
+
+/// Search across every chat Perch knows about: live and older Claude Code and Codex sessions,
+/// Grok bots, and Slack conversations. It reads what was said, not only titles.
+///
+/// Matching is forgiving: whole words, the start of words, small typos, and words that mean
+/// much the same thing ("prices" finds "pricing"). On top of that an on-device language model
+/// spots threads about the same topic even when they share no words. Nothing leaves the Mac.
+@Observable
+final class ThreadSearch {
+    static let shared = ThreadSearch()
+
+    enum Target {
+        case agent(String)
+        case older(SessionIndex.Entry)
+        case slack(SlackTarget)
+    }
+
+    struct Doc {
+        let key: String
+        let target: Target
+        let title: String
+        let text: String
+        let modified: Date
+        var words: Set<String> = []
+        var titleWords: Set<String> = []
+        var vector: [Float]?
+    }
+
+    struct Hit {
+        let target: Target
+        let snippet: String?
+        let score: Double
+        /// Found by meaning alone, sharing no words with the search.
+        let related: Bool
+    }
+
+    /// Bumped when the index or a meaning lookup changes, so open results refresh.
+    private(set) var version = 0
+
+    @ObservationIgnored private var files: [String: Doc] = [:]
+    @ObservationIgnored private var building = false
+    @ObservationIgnored private var builtAt = Date.distantPast
+    @ObservationIgnored private var cache: (query: String, version: Int, hits: [Hit])?
+    @ObservationIgnored private var meaning: [String: [String: Float]] = [:]
+    @ObservationIgnored private var asking = Set<String>()
+    @ObservationIgnored private let queue = DispatchQueue(label: "perch.search", qos: .utility)
+    @ObservationIgnored private lazy var model: NLContextualEmbedding? = {
+        guard let m = NLContextualEmbedding(language: .english) else { return nil }
+        if !m.hasAvailableAssets { m.requestAssets { _, _ in } ; return nil }
+        return (try? m.load()) != nil ? m : nil
+    }()
+    @ObservationIgnored private lazy var words = NLEmbedding.wordEmbedding(for: .english)
+    private static let store = "\(Shell.home)/.perch/search-index.json"
+
+    // MARK: Building the index
+
+    /// Reads chat transcripts in the background. Only files changed since last time are read again.
+    func refresh() {
+        guard !building, Date().timeIntervalSince(builtAt) > 90 else { return }
+        building = true
+        queue.async { [weak self] in
+            guard let self else { return }
+            if self.files.isEmpty { self.files = Self.loadSaved() }
+            let fm = FileManager.default
+            let cutoff = Date().addingTimeInterval(-60 * 86400)
+            var paths: [(String, Date, AgentSource)] = []
+            let claude = "\(Shell.home)/.claude/projects"
+            for project in (try? fm.contentsOfDirectory(atPath: claude)) ?? [] where !project.hasSuffix("--perch") {
+                for file in (try? fm.contentsOfDirectory(atPath: "\(claude)/\(project)")) ?? [] where file.hasSuffix(".jsonl") {
+                    let path = "\(claude)/\(project)/\(file)"
+                    if let m = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date, m > cutoff {
+                        paths.append((path, m, .claude))
+                    }
+                }
+            }
+            if let walker = fm.enumerator(atPath: "\(Shell.home)/.codex/sessions") {
+                for case let file as String in walker where file.hasSuffix(".jsonl") {
+                    let path = "\(Shell.home)/.codex/sessions/\(file)"
+                    if let m = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date, m > cutoff {
+                        paths.append((path, m, .codex))
+                    }
+                }
+            }
+            var next: [String: Doc] = [:]
+            var changed = false
+            for (path, modified, source) in paths.sorted(by: { $0.1 > $1.1 }).prefix(500) {
+                if var known = self.files[path], known.modified == modified {
+                    if known.words.isEmpty { Self.tokenize(&known) }
+                    next[path] = known
+                    continue
+                }
+                guard var doc = Self.read(path, source: source, modified: modified) else { continue }
+                Self.tokenize(&doc)
+                doc.vector = self.embed(doc.title + ". " + String(doc.text.prefix(700)))
+                next[path] = doc
+                changed = true
+            }
+            // Vectors for anything saved before the model was ready.
+            for (path, doc) in next where doc.vector == nil {
+                next[path]?.vector = self.embed(doc.title + ". " + String(doc.text.prefix(700)))
+            }
+            if changed || next.count != self.files.count { Self.save(next) }
+            DispatchQueue.main.async {
+                self.files = next
+                self.builtAt = Date()
+                self.building = false
+                self.version += 1
+            }
+        }
+    }
+
+    /// The title, project and what was said in a Claude Code or Codex transcript.
+    private static func read(_ path: String, source: AgentSource, modified: Date) -> Doc? {
+        guard let h = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? h.close() }
+        let size = (try? h.seekToEnd()) ?? 0
+        // The start (what the chat is about) and the end (where it got to) are what matter;
+        // the middle of a long session is mostly tool output.
+        let span: UInt64 = 320 << 10
+        var chunks: [Data] = []
+        try? h.seek(toOffset: 0)
+        if let head = try? h.read(upToCount: Int(min(size, span))) { chunks.append(head) }
+        if size > span * 2 {
+            try? h.seek(toOffset: size - span)
+            if let tail = try? h.readToEnd() { chunks.append(tail) }
+        }
+        var said: [String] = []
+        var firstPrompt: String?
+        var cwd: String?
+        var id: String?
+        for chunk in chunks {
+            for line in String(decoding: chunk, as: UTF8.self).split(separator: "\n") where line.count < 400_000 {
+                guard let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
+                if source == .claude {
+                    if cwd == nil { cwd = o["cwd"] as? String }
+                    guard let type = o["type"] as? String, type == "user" || type == "assistant",
+                          o["isMeta"] as? Bool != true, let message = o["message"] as? [String: Any] else { continue }
+                    let text = Self.text(message["content"])
+                    guard Self.isChat(text) else { continue }
+                    if type == "user", firstPrompt == nil { firstPrompt = text }
+                    said.append(text)
+                } else {
+                    let payload = o["payload"] as? [String: Any]
+                    if o["type"] as? String == "session_meta" {
+                        cwd = payload?["cwd"] as? String
+                        id = payload?["id"] as? String
+                        continue
+                    }
+                    guard o["type"] as? String == "response_item", payload?["type"] as? String == "message",
+                          let role = payload?["role"] as? String, role == "user" || role == "assistant" else { continue }
+                    let text = Self.text(payload?["content"])
+                    guard Self.isChat(text) else { continue }
+                    if role == "user", firstPrompt == nil { firstPrompt = text }
+                    said.append(text)
+                }
+            }
+        }
+        guard !said.isEmpty else { return nil }
+        let file = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        let sessionID = id ?? (source == .codex ? String(file.suffix(36)) : file)
+        var title = source == .claude ? CodingSessions.transcriptInfo(path, span: 96 << 10).title : nil
+        if title == nil { title = firstPrompt.map { oneLine($0, max: 70) } }
+        let entry = SessionIndex.Entry(id: sessionID, title: title ?? "Untitled chat", path: path, cwd: cwd,
+                                       modified: modified, source: source)
+        // Enough of the conversation to search, without holding whole transcripts in memory.
+        var text = said.joined(separator: "\n")
+        if text.count > 12_000 { text = String(text.prefix(5_000)) + "\n" + String(text.suffix(7_000)) }
+        return Doc(key: path, target: .older(entry), title: entry.title, text: text, modified: modified)
+    }
+
+    private static func text(_ content: Any?) -> String {
+        if let s = content as? String { return s }
+        guard let parts = content as? [[String: Any]] else { return "" }
+        return parts.compactMap { part -> String? in
+            let type = part["type"] as? String
+            guard type == "text" || type == "input_text" || type == "output_text" else { return nil }
+            return part["text"] as? String
+        }.joined(separator: "\n")
+    }
+
+    /// Real conversation, not the context and instructions tools slip into the transcript.
+    private static func isChat(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return false }
+        for prefix in ["<environment_context", "<user_instructions", "<app-context", "<command-", "<local-command",
+                       "<system-reminder", "# AGENTS.md", "<permissions", "<external_", "<multi_agent", "Caveat:"] where t.hasPrefix(prefix) {
+            return false
+        }
+        return true
+    }
+
+    private static func tokenize(_ doc: inout Doc) {
+        doc.titleWords = Set(terms(doc.title))
+        doc.words = Set(terms(doc.text)).union(doc.titleWords)
+    }
+
+    static func terms(_ s: String) -> [String] {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .filter { $0.count >= 2 }.map(String.init)
+    }
+
+    // MARK: Meaning
+
+    private func embed(_ text: String) -> [Float]? {
+        guard let model, let result = try? model.embeddingResult(for: text, language: .english) else { return nil }
+        var sum = [Double](repeating: 0, count: model.dimension)
+        var n = 0.0
+        result.enumerateTokenVectors(in: text.startIndex..<text.endIndex) { v, _ in
+            for i in 0..<min(v.count, sum.count) { sum[i] += v[i] }
+            n += 1
+            return true
+        }
+        guard n > 0 else { return nil }
+        let norm = sqrt(sum.reduce(0) { $0 + $1 * $1 })
+        return norm > 0 ? sum.map { Float($0 / norm) } : nil
+    }
+
+    /// How close in meaning each indexed thread is to the search, worked out in the background.
+    private func askMeaning(_ query: String, docs: [Doc]) {
+        guard query.count >= 4, meaning[query] == nil, !asking.contains(query) else { return }
+        asking.insert(query)
+        let keyed = docs.compactMap { d in d.vector.map { (d.key, $0) } }
+        queue.async { [weak self] in
+            guard let self, let q = self.embed(query) else {
+                DispatchQueue.main.async { self?.asking.remove(query) }
+                return
+            }
+            var scores: [String: Float] = [:]
+            for (key, v) in keyed { scores[key] = zip(q, v).reduce(0) { $0 + $1.0 * $1.1 } }
+            DispatchQueue.main.async {
+                self.asking.remove(query)
+                if self.meaning.count > 40 { self.meaning.removeAll() }
+                self.meaning[query] = scores
+                self.version += 1
+            }
+        }
+    }
+
+    // MARK: Searching
+
+    /// The best threads for a search, best first.
+    func search(_ raw: String, live: [Agent], slack: [(SlackTarget, [SlackLine])]) -> [Hit] {
+        let query = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return [] }
+        if let cache, cache.query == query, cache.version == version { return cache.hits }
+
+        // Live chats are searched from what is on screen; their transcripts are skipped to avoid doubles.
+        var docs: [Doc] = []
+        var liveKeys = Set<String>()
+        for agent in live {
+            let text = agent.thread.suffix(60).map(\.text).joined(separator: "\n") + "\n" + agent.detail + "\n" + agent.lastMessage
+            var doc = Doc(key: agent.id, target: .agent(agent.id), title: agent.name, text: text, modified: agent.lastActivity)
+            if let path = agent.transcriptPath, let indexed = files[path] {
+                doc.vector = indexed.vector
+                liveKeys.insert(path)
+            }
+            Self.tokenize(&doc)
+            docs.append(doc)
+        }
+        for (path, doc) in files where !liveKeys.contains(path) {
+            if case .older(let e) = doc.target, live.contains(where: { $0.id == "\(e.source.rawValue):\(e.id)" }) { continue }
+            docs.append(doc)
+        }
+        for (target, lines) in slack {
+            let text = lines.map { "\($0.sender): \($0.text)" }.joined(separator: "\n")
+            var doc = Doc(key: "slack:\(target.workspace):\(target.id)", target: .slack(target), title: target.label,
+                          text: text, modified: Date())
+            Self.tokenize(&doc)
+            docs.append(doc)
+        }
+
+        let tokens = Array(Set(Self.terms(query))).filter { !Self.stop.contains($0) || Self.terms(query).count == 1 }
+        let expansions = tokens.map(expand)
+        askMeaning(query, docs: docs)
+        let closeness = meaning[query] ?? [:]
+        let values = closeness.values.map(Double.init)
+        let mean = values.isEmpty ? 0 : values.reduce(0, +) / Double(values.count)
+        let spread = values.isEmpty ? 1 : max(0.005, sqrt(values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count)))
+
+        var hits: [Hit] = []
+        for doc in docs {
+            var total = 0.0
+            var matched = 0
+            var found: [String] = []
+            for options in expansions {
+                var best = 0.0
+                var bestWord: String?
+                for (word, weight) in options {
+                    let inTitle = doc.titleWords.contains(word)
+                    guard inTitle || doc.words.contains(word) else { continue }
+                    let w = weight * (inTitle ? 1.6 : 1)
+                    if w > best { best = w; bestWord = word }
+                }
+                if best > 0 { matched += 1 }
+                total += best
+                if let bestWord { found.append(bestWord) }
+            }
+            let coverage = tokens.isEmpty ? 0 : Double(matched) / Double(tokens.count)
+            var score = tokens.isEmpty ? 0 : total / Double(tokens.count)
+            // Most of the words have to be there for a keyword match to count.
+            if coverage < (tokens.count <= 2 ? 1 : 0.6) { score = 0 }
+            if doc.title.lowercased().contains(query) { score += 1 }
+            let z = closeness[doc.key].map { (Double($0) - mean) / spread } ?? 0
+            let related = score == 0 && z >= 2.3
+            if score == 0 && !related { continue }
+            score += max(0, z - 1) * 0.35
+            // A gentle nudge towards recent threads.
+            let age = Date().timeIntervalSince(doc.modified) / 86400
+            score += 0.25 * exp(-max(0, age) / 7)
+            let snippet = found.isEmpty ? nil : Self.snippet(doc.text, around: found)
+            hits.append(Hit(target: doc.target, snippet: snippet, score: score, related: related))
+        }
+        hits.sort { $0.score > $1.score }
+        // Meaning alone is a weaker signal, so only a few of those.
+        var relatedLeft = 3
+        hits = hits.filter { !$0.related || { relatedLeft -= 1; return relatedLeft >= 0 }() }
+        cache = (query, version, hits)
+        return hits
+    }
+
+    private static let stop: Set<String> = ["the", "and", "for", "with", "that", "this", "about", "from", "to", "of", "in", "on", "my", "me", "it", "is", "was", "where", "what", "we", "chat", "thread"]
+
+    @ObservationIgnored private var vocabulary: (count: Int, words: [String])?
+
+    /// Each search word and what it can match, with how much each counts: the word itself, longer
+    /// words it starts, near misspellings, and words with a similar meaning.
+    @ObservationIgnored private var expanded: [String: (Int, [String: Double])] = [:]
+
+    private func expand(_ token: String) -> [String: Double] {
+        if let (count, known) = expanded[token], count == files.count { return known }
+        let out = expanding(token)
+        if expanded.count > 300 { expanded.removeAll() }
+        expanded[token] = (files.count, out)
+        return out
+    }
+
+    private func expanding(_ token: String) -> [String: Double] {
+        var out: [String: Double] = [token: 1]
+        let vocab = allWords()
+        if token.count >= 2 {
+            for word in vocab where word.count > token.count && word.hasPrefix(token) { out[word] = max(out[word] ?? 0, 0.85) }
+        }
+        if token.count >= 4 {
+            let limit = token.count >= 7 ? 2 : 1
+            for word in vocab where out[word] == nil && abs(word.count - token.count) <= limit {
+                if Self.distance(token, word, limit: limit) <= limit { out[word] = 0.7 }
+            }
+        }
+        if token.count >= 3, let neighbours = words?.neighbors(for: token, maximumCount: 8, distanceType: .cosine) {
+            for (word, d) in neighbours where d < 0.95 && out[word] == nil { out[word] = 0.45 }
+        }
+        return out
+    }
+
+    private func allWords() -> [String] {
+        let count = files.count
+        if let vocabulary, vocabulary.count == count { return vocabulary.words }
+        var set = Set<String>()
+        for doc in files.values { set.formUnion(doc.words) }
+        let list = Array(set)
+        vocabulary = (count, list)
+        return list
+    }
+
+    /// Edit distance, giving up once it passes the limit.
+    private static func distance(_ a: String, _ b: String, limit: Int) -> Int {
+        let a = Array(a), b = Array(b)
+        var prev = Array(0...b.count)
+        for i in 1...max(1, a.count) where !a.isEmpty {
+            var cur = [i] + Array(repeating: 0, count: b.count)
+            var rowMin = i
+            for j in 1...max(1, b.count) where !b.isEmpty {
+                cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+                rowMin = min(rowMin, cur[j])
+            }
+            if rowMin > limit { return limit + 1 }
+            prev = cur
+        }
+        return prev[b.count]
+    }
+
+    /// A short line of the conversation around the first matching word.
+    private static func snippet(_ text: String, around words: [String]) -> String? {
+        let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        for word in words {
+            guard let r = folded.range(of: word) else { continue }
+            let start = folded.index(r.lowerBound, offsetBy: -50, limitedBy: folded.startIndex) ?? folded.startIndex
+            let end = folded.index(r.upperBound, offsetBy: 90, limitedBy: folded.endIndex) ?? folded.endIndex
+            let lo = text.index(text.startIndex, offsetBy: folded.distance(from: folded.startIndex, to: start))
+            let hi = text.index(text.startIndex, offsetBy: folded.distance(from: folded.startIndex, to: end))
+            let piece = text[lo..<hi].replacingOccurrences(of: "\n", with: " ")
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            return (start > folded.startIndex ? "…" : "") + piece + (end < folded.endIndex ? "…" : "")
+        }
+        return nil
+    }
+
+    // MARK: Saving
+
+    private struct Saved: Codable {
+        let path: String, id: String, title: String, cwd: String?, source: String, modified: Date, text: String, vector: [Float]?
+    }
+
+    private static func save(_ docs: [String: Doc]) {
+        let rows: [Saved] = docs.values.compactMap { d in
+            guard case .older(let e) = d.target else { return nil }
+            return Saved(path: d.key, id: e.id, title: d.title, cwd: e.cwd, source: e.source.rawValue,
+                         modified: d.modified, text: d.text, vector: d.vector)
+        }
+        guard let data = try? JSONEncoder().encode(rows) else { return }
+        FileManager.default.createFile(atPath: store, contents: data, attributes: [.posixPermissions: 0o600])
+    }
+
+    private static func loadSaved() -> [String: Doc] {
+        guard let data = FileManager.default.contents(atPath: store),
+              let rows = try? JSONDecoder().decode([Saved].self, from: data) else { return [:] }
+        var out: [String: Doc] = [:]
+        for r in rows {
+            let entry = SessionIndex.Entry(id: r.id, title: r.title, path: r.path, cwd: r.cwd, modified: r.modified,
+                                           source: AgentSource(rawValue: r.source) ?? .claude)
+            out[r.path] = Doc(key: r.path, target: .older(entry), title: r.title, text: r.text, modified: r.modified, vector: r.vector)
+        }
+        return out
+    }
+}

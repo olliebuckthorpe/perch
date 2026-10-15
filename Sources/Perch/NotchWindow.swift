@@ -328,6 +328,20 @@ final class NotchUI {
     private var typing: Bool { controller?.panel.isKeyWindow ?? false }
 
     /// Cmd+V with an image on the clipboard attaches it to the reply being written.
+    struct Enlarged {
+        let image: NSImage
+        let name: String
+        /// Shown over the side panel's chat rather than the notch's.
+        let side: Bool
+    }
+
+    /// A picture clicked in a chat, shown big over it.
+    var enlarged: Enlarged?
+
+    func enlarge(_ image: NSImage, name: String, side: Bool) {
+        withAnimation(.easeOut(duration: 0.18)) { enlarged = Enlarged(image: image, name: name, side: side) }
+    }
+
     /// Pictures pasted into a chat open in the side panel go to that chat.
     func pasteImages(into id: String) -> Bool {
         let images = Attachment.fromPasteboard()
@@ -446,6 +460,7 @@ final class NotchUI {
     }
 
     func collapse() {
+        enlarged = nil
         guard expanded else { return }
         expanded = false
         cardsOnly = false
@@ -470,6 +485,7 @@ final class NotchUI {
     }
 
     func select(_ id: String) {
+        enlarged = nil
         composing = false
         browsing = false
         showingProfiles = false
@@ -745,6 +761,10 @@ final class NotchController {
             return event
         }) { monitors.append(m) }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] event in
+            if event.keyCode == 53, self?.ui.enlarged != nil {
+                withAnimation(.easeOut(duration: 0.15)) { self?.ui.enlarged = nil }
+                return nil
+            }
             if event.keyCode == 53 {
                 if self?.ui.showingClips == true { self?.ui.closeClips() } else { self?.ui.collapse() }
                 return nil

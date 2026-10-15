@@ -507,10 +507,10 @@ final class CodingSessions {
 
     /// Brings a session found by search into the notch so it can be read and replied to.
     func adopt(_ entry: SessionIndex.Entry) -> Agent {
-        let agent = store.upsert(source: .claude, sessionID: entry.id, name: entry.title)
+        let agent = store.upsert(source: entry.source, sessionID: entry.id, name: entry.title)
         agent.transcriptPath = entry.path
         agent.cwd = entry.cwd
-        agent.hostBundleID = Self.claudeBundleID
+        agent.hostBundleID = entry.source == .codex ? Self.codexBundleID : Self.claudeBundleID
         agent.lastActivity = Date()
         agent.kept = true
         titled.insert(agent.id)
