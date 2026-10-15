@@ -66,6 +66,14 @@ struct NotchContent: View {
         .frame(width: max(leftWidth + ui.notch.width + rightWidth, 60))
         .background(.black)
         .clipShape(shape)
+        // A faint rim down the sides and along the bottom, so the open island stands apart from
+        // a dark screen behind it. It fades out towards the top, where it meets the menu bar.
+        .overlay {
+            shape.strokeBorder(LinearGradient(colors: [.white.opacity(0), .white.opacity(0.11), .white.opacity(0.17)],
+                                              startPoint: .top, endPoint: .bottom), lineWidth: 1)
+                .opacity(ui.expanded ? 1 : 0)
+                .allowsHitTesting(false)
+        }
         .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { frame in
             ui.controller?.islandFrameChanged(frame)
         }
@@ -2052,16 +2060,25 @@ struct ChatView: View {
                 }
                 .buttonStyle(Press()).help("Keep open at the side")
             }
-            Button(action: open) {
-                Image(systemName: "arrow.up.forward.app").font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
+            if sideWindow != nil {
+                // The side panel closes here; double-clicking the header still opens the real chat.
+                Button { SidePanel.shared.close() } label: {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
+                }
+                .buttonStyle(Press()).help("Close")
+            } else {
+                Button(action: open) {
+                    Image(systemName: "arrow.up.forward.app").font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
+                }
+                .buttonStyle(Press()).help("Open in its own app")
             }
-            .buttonStyle(Press()).help("Open in its own app")
         }
         .padding(.horizontal, 2)
-        .contentShape(Rectangle())
-        // Double-clicking the header jumps to the real chat in its own app.
-        .onTapGesture(count: 2, perform: open)
+        // Double-clicking the header jumps to the real chat in its own app. Caught natively behind
+        // the header, so its buttons still react on the first click with no wait.
+        .background(DoubleClick(action: open))
     }
 
     private static let imageNote = try! NSRegularExpression(pattern: #"\[(?:Image|File) attached, saved at ([^\]]+)\]"#)
@@ -3600,11 +3617,49 @@ struct Press: ButtonStyle {
     var reach: CGFloat = 6
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .reach(reach, reach)
-            .scaleEffect(configuration.isPressed ? 0.96 : 1)
-            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+        PressBody(configuration: configuration, reach: reach)
     }
+}
+
+/// Reacts the instant the pointer arrives and the moment it presses: a brighter hover, a quick
+/// dip on press, and a snappy spring back.
+private struct PressBody: View {
+    let configuration: ButtonStyleConfiguration
+    let reach: CGFloat
+    @State private var hovered = false
+
+    var body: some View {
+        configuration.label
+            .brightness(configuration.isPressed ? 0.25 : hovered ? 0.15 : 0)
+            .reach(reach, reach)
+            .scaleEffect(configuration.isPressed ? 0.9 : 1)
+            .animation(configuration.isPressed ? .easeOut(duration: 0.05) : .spring(response: 0.18, dampingFraction: 0.6),
+                       value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.08), value: hovered)
+            .onHover { hovered = $0 }
+    }
+}
+
+/// Catches a double-click on empty space behind other views, without slowing their own clicks.
+struct DoubleClick: NSViewRepresentable {
+    let action: () -> Void
+
+    final class Catcher: NSView {
+        var action: (() -> Void)?
+        override func mouseDown(with event: NSEvent) {
+            if event.clickCount == 2 { action?() } else { super.mouseDown(with: event) }
+        }
+        override var mouseDownCanMoveWindow: Bool { true }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    }
+
+    func makeNSView(context: Context) -> Catcher {
+        let view = Catcher()
+        view.action = action
+        return view
+    }
+
+    func updateNSView(_ view: Catcher, context: Context) { view.action = action }
 }
 
 extension View {
@@ -4134,11 +4189,10 @@ private struct SlackComposer: View {
                 Text("Slack · \(target.workspace.capitalized)").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
                 Spacer()
             }
-            .contentShape(Rectangle())
-            .onTapGesture(count: 2) {
+            .background(DoubleClick {
                 SlackSource.shared.open(target)
                 ui.collapse()
-            }
+            })
             // The conversation so far, newest at the bottom, live as messages arrive.
             ScrollViewReader { proxy in
                 ScrollView {
