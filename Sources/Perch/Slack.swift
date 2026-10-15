@@ -28,6 +28,28 @@ final class SlackDirectory {
     }
 }
 
+/// One message in a Slack conversation, as shown in the notch.
+struct SlackLine: Identifiable, Equatable {
+    let id: String
+    let sender: String
+    let mine: Bool
+    let text: String
+    var picture: URL?
+}
+
+/// The open Slack conversations' recent messages, kept live as new ones arrive.
+@Observable
+final class SlackConversations {
+    static let shared = SlackConversations()
+    /// By "workspace:channel".
+    var lines: [String: [SlackLine]] = [:]
+    /// The channel a direct message to a person lives in, once known, by "workspace:user".
+    var dmChannel: [String: String] = [:]
+    var loading = Set<String>()
+
+    func key(_ workspace: String, _ channel: String) -> String { "\(workspace):\(channel)" }
+}
+
 /// One Slack message worth a banner.
 struct SlackAlert: Identifiable, Equatable {
     let id: String
@@ -74,10 +96,15 @@ final class SlackSource {
         link.post(channel: alert.channel, text: text, thread: alert.thread ?? (alert.direct ? nil : alert.ts), done: done)
     }
 
-    /// A fresh message to a person or channel, as the user.
-    func send(to target: SlackTarget, text: String, done: @escaping (Bool) -> Void) {
+    /// A fresh message to a person or channel, as the user, with any files attached.
+    func send(to target: SlackTarget, text: String, files: [URL] = [], done: @escaping (Bool) -> Void) {
         guard let link = links.values.first(where: { $0.name == target.workspace }) else { return done(false) }
-        link.send(to: target, text: text, done: done)
+        link.send(to: target, text: text, files: files, done: done)
+    }
+
+    /// Loads a conversation's recent messages into `SlackConversations`.
+    func history(for target: SlackTarget) {
+        links.values.first(where: { $0.name == target.workspace })?.history(for: target)
     }
 
     func start() {
@@ -124,13 +151,97 @@ private final class Workspace {
         self.userToken = userToken
     }
 
-    func send(to target: SlackTarget, text: String, done: @escaping (Bool) -> Void) {
-        guard !target.channel else { return post(channel: target.id, text: text, thread: nil, done: done) }
-        // A direct message needs its conversation opened (or found) first.
+    /// The conversation's channel id: a channel's own, or a direct message's once opened.
+    private func channel(for target: SlackTarget, done: @escaping (String?) -> Void) {
+        if target.channel { return done(target.id) }
+        let store = SlackConversations.shared
+        if let known = store.dmChannel["\(name):\(target.id)"] { return done(known) }
         api("conversations.open", token: userToken, ["users": target.id]) { [weak self] o in
-            guard let self, let channel = (o?["channel"] as? [String: Any])?["id"] as? String else { return done(false) }
-            self.post(channel: channel, text: text, thread: nil, done: done)
+            let id = (o?["channel"] as? [String: Any])?["id"] as? String
+            if let id, let self { store.dmChannel["\(self.name):\(target.id)"] = id }
+            done(id)
         }
+    }
+
+    func send(to target: SlackTarget, text: String, files: [URL], done: @escaping (Bool) -> Void) {
+        channel(for: target) { [weak self] channel in
+            guard let self, let channel else { return done(false) }
+            if files.isEmpty { return self.post(channel: channel, text: text, thread: nil, done: done) }
+            self.upload(files, to: channel, comment: text, done: done)
+        }
+    }
+
+    /// Slack's file upload: ask for a place to put each file, send it there, then share them all
+    /// into the conversation in one go with the message as the comment.
+    private func upload(_ files: [URL], to channel: String, comment: String, done: @escaping (Bool) -> Void) {
+        var ids: [[String: String]] = []
+        func next(_ i: Int) {
+            guard i < files.count else {
+                guard let data = try? JSONSerialization.data(withJSONObject: ids),
+                      let list = String(data: data, encoding: .utf8) else { return done(false) }
+                var params = ["files": list, "channel_id": channel]
+                if !comment.isEmpty { params["initial_comment"] = comment }
+                return api("files.completeUploadExternal", token: userToken, params) { done($0 != nil) }
+            }
+            let file = files[i]
+            guard let data = try? Data(contentsOf: file) else { return done(false) }
+            api("files.getUploadURLExternal", token: userToken, ["filename": file.lastPathComponent, "length": String(data.count)]) { o in
+                guard let o, let url = (o["upload_url"] as? String).flatMap(URL.init(string:)), let id = o["file_id"] as? String else { return done(false) }
+                var req = URLRequest(url: url)
+                req.httpMethod = "POST"
+                URLSession.shared.uploadTask(with: req, from: data) { _, response, _ in
+                    DispatchQueue.main.async {
+                        guard (response as? HTTPURLResponse)?.statusCode == 200 else { return done(false) }
+                        ids.append(["id": id, "title": file.lastPathComponent])
+                        next(i + 1)
+                    }
+                }.resume()
+            }
+        }
+        next(0)
+    }
+
+    func history(for target: SlackTarget) {
+        let store = SlackConversations.shared
+        channel(for: target) { [weak self] channel in
+            guard let self, let channel else { return }
+            let key = store.key(self.name, channel)
+            store.loading.insert(key)
+            self.api("conversations.history", token: self.userToken, ["channel": channel, "limit": "40"]) { [weak self] o in
+                guard let self else { return }
+                store.loading.remove(key)
+                let raw = (o?["messages"] as? [[String: Any]] ?? []).reversed()
+                var lines: [SlackLine] = []
+                let group = DispatchGroup()
+                for m in raw {
+                    guard m["subtype"] as? String != "channel_join" else { continue }
+                    let user = m["user"] as? String ?? ""
+                    let ts = m["ts"] as? String ?? UUID().uuidString
+                    let bot = (m["bot_profile"] as? [String: Any])?["name"] as? String ?? m["username"] as? String
+                    let i = lines.count
+                    lines.append(SlackLine(id: ts, sender: bot ?? self.names[user] ?? "", mine: user == self.me,
+                                           text: self.tidy(m["text"] as? String ?? "", event: m), picture: self.pictures[user]))
+                    if bot == nil, self.names[user] == nil, !user.isEmpty {
+                        group.enter()
+                        self.resolve(sender: user, botName: nil, channel: channel, direct: true) { who, _ in
+                            lines[i] = SlackLine(id: ts, sender: who, mine: user == self.me, text: lines[i].text, picture: self.pictures[user])
+                            group.leave()
+                        }
+                    }
+                }
+                group.notify(queue: .main) { store.lines[key] = lines }
+            }
+        }
+    }
+
+    /// A message arriving live goes into its conversation if that conversation is loaded.
+    private func record(_ event: [String: Any], channel: String, sender: String, who: String) {
+        let store = SlackConversations.shared
+        let key = store.key(name, channel)
+        guard store.lines[key] != nil, let ts = event["ts"] as? String,
+              store.lines[key]?.contains(where: { $0.id == ts }) != true else { return }
+        store.lines[key]?.append(SlackLine(id: ts, sender: who, mine: sender == me,
+                                           text: tidy(event["text"] as? String ?? "", event: event), picture: pictures[sender]))
     }
 
     /// Loads the people and channels in this workspace for search.
@@ -271,7 +382,16 @@ private final class Workspace {
         let subtype = event["subtype"] as? String
         guard subtype == nil || subtype == "bot_message" || subtype == "thread_broadcast" || subtype == "file_share" else { return }
         let sender = event["user"] as? String ?? ""
-        guard sender != me, let channel = event["channel"] as? String else { return }
+        guard let channel = event["channel"] as? String else { return }
+        // Every message keeps an open conversation current, including your own from elsewhere.
+        let loaded = SlackConversations.shared.lines[SlackConversations.shared.key(name, channel)] != nil
+        if loaded {
+            let bot = (event["bot_profile"] as? [String: Any])?["name"] as? String ?? event["username"] as? String
+            resolve(sender: sender, botName: bot, channel: channel, direct: true) { [weak self] who, _ in
+                self?.record(event, channel: channel, sender: sender, who: who)
+            }
+        }
+        guard sender != me else { return }
         let body = event["text"] as? String ?? ""
         let kind = event["channel_type"] as? String ?? ""
         let direct = kind == "im" || kind == "mpim"

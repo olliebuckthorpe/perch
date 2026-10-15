@@ -330,8 +330,7 @@ enum SearchItem: Identifiable {
         case .slack(let target):
             ui.query = ""
             ui.browsing = false
-            ui.selectedID = nil
-            ui.slackTarget = target
+            ui.openSlack(target)
         }
     }
 }
@@ -706,9 +705,15 @@ private struct Rail: View {
                 .transition(.asymmetric(insertion: .opacity,
                                         removal: .opacity.combined(with: .offset(x: -28)).combined(with: .scale(scale: 0.94, anchor: .leading))))
             }
+            // Slack conversations you have opened, until cleared.
+            ForEach(ui.slackRecent) { target in
+                SlackRailRow(target: target, selected: ui.slackTarget?.id == target.id)
+                    .transition(.opacity.combined(with: .offset(x: -20)))
+            }
             Spacer(minLength: 0)
         }
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: agents.map(\.id))
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: ui.slackRecent.map(\.id))
         .frame(width: 176)
     }
 
@@ -2023,8 +2028,7 @@ struct ChatView: View {
             if let sideWindow {
                 // Back into the notch, on this same chat.
                 Button {
-                    SidePanel.shared.close()
-                    ui.show(agent.id)
+                    SidePanel.shared.returnToNotch(agent)
                 } label: {
                     Image(systemName: "rectangle.topthird.inset.filled").font(.system(size: 12))
                         .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
@@ -2097,6 +2101,7 @@ struct ChatView: View {
     private struct Picture: View {
         let path: String
         @State private var image: NSImage?
+        @State private var hovered = false
 
         private var isImage: Bool { UTType(filenameExtension: URL(fileURLWithPath: path).pathExtension)?.conforms(to: .image) == true }
 
@@ -2129,6 +2134,8 @@ struct ChatView: View {
             }
             .frame(maxWidth: 230, maxHeight: 170)
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(alignment: .topTrailing) { if hovered { SaveButton { saveToDownloads(path: path) } } }
+            .onHover { hovered = $0 }
             .onTapGesture { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
             .help("Open the image")
             .task(id: path) { ChatView.thumbnail(path) { image = $0 } }
@@ -2820,6 +2827,7 @@ private struct BoxPicture: View {
     let path: String
     var maxWidth: CGFloat = 300
     @State private var image: NSImage?
+    @State private var hovered = false
 
     var body: some View {
         Group {
@@ -2832,6 +2840,10 @@ private struct BoxPicture: View {
         }
         .frame(maxWidth: maxWidth, maxHeight: 260, alignment: .leading)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(alignment: .topTrailing) {
+            if hovered, let image { SaveButton { saveToDownloads(image: image, name: URL(fileURLWithPath: path).lastPathComponent) } }
+        }
+        .onHover { hovered = $0 }
         .onTapGesture {
             // Saved to a temporary file so Preview can open it full size.
             guard let image, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
@@ -3998,6 +4010,35 @@ enum References {
 
 // MARK: Slack
 
+private struct SlackRailRow: View {
+    let target: SlackTarget
+    let selected: Bool
+    @Environment(NotchUI.self) private var ui
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            SlackAvatar(url: target.picture, channel: target.channel, size: 16).frame(width: 20, height: 20)
+            Text(target.label).font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                .foregroundStyle(.white.opacity(selected ? 0.95 : 0.7)).lineLimit(1)
+            Spacer(minLength: 0)
+            if hovered {
+                Button { withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { ui.dropSlack(target) } } label: {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.6)).frame(width: 16, height: 16)
+                        .background(.white.opacity(0.12), in: Circle())
+                }
+                .buttonStyle(Press()).help("Remove from the sidebar")
+            }
+        }
+        .padding(.horizontal, 5).padding(.vertical, 4)
+        .background(.white.opacity(selected ? 0.14 : hovered ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture { ui.openSlack(target) }
+        .onHover { hovered = $0 }
+    }
+}
+
 /// A profile picture (or workspace icon for a channel) with the Slack logo in its corner, so a
 /// Slack row is told apart from a chat at a glance.
 private struct SlackAvatar: View {
@@ -4042,8 +4083,15 @@ private struct SlackComposer: View {
     let target: SlackTarget
     @Environment(NotchUI.self) private var ui
     @State private var text = ""
+    @State private var files: [URL] = []
     @State private var state: String?
     @State private var ask = 0
+
+    private var lines: [SlackLine]? {
+        let store = SlackConversations.shared
+        let channel = target.channel ? target.id : store.dmChannel["\(target.workspace):\(target.id)"]
+        return channel.flatMap { store.lines[store.key(target.workspace, $0)] }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -4058,49 +4106,136 @@ private struct SlackComposer: View {
                 Text("Slack · \(target.workspace.capitalized)").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
                 Spacer()
             }
-            Spacer(minLength: 0)
-            if state == "sent" {
-                Label("Sent to \(target.label)", systemImage: "checkmark").font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Palette.green)
+            // The conversation so far, newest at the bottom, live as messages arrive.
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let lines {
+                            if lines.isEmpty {
+                                Text("No messages yet.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
+                            }
+                            ForEach(lines) { line in
+                                HStack(alignment: .top, spacing: 8) {
+                                    if line.mine { Spacer(minLength: 50) }
+                                    if !line.mine { SlackAvatar(url: line.picture, channel: false, size: 22) }
+                                    VStack(alignment: line.mine ? .trailing : .leading, spacing: 2) {
+                                        if !line.mine {
+                                            Text(line.sender).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
+                                        }
+                                        Text(line.text).font(.system(size: 12.5)).textSelection(.enabled)
+                                            .foregroundStyle(line.mine ? Color.black.opacity(0.88) : .white.opacity(0.9))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .padding(.horizontal, 10).padding(.vertical, 7)
+                                            .background(line.mine ? Color(red: 0.92, green: 0.87, blue: 0.95) : Color(white: 0.17),
+                                                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    }
+                                    if !line.mine { Spacer(minLength: 40) }
+                                }
+                                .id(line.id)
+                            }
+                        } else {
+                            ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(.top, 30)
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
+                .onChange(of: lines?.last?.id) { _, id in
+                    if let id { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) } }
+                }
+                .onAppear { if let id = lines?.last?.id { proxy.scrollTo(id, anchor: .bottom) } }
             }
             if state == "failed" {
                 Text("Did not send. Check Slack is set up to send for this workspace.")
                     .font(.system(size: 11)).foregroundStyle(Palette.red)
             }
-            HStack(alignment: .bottom, spacing: 6) {
-                GrowingText(text: $text, placeholder: "Message \(target.label)", focusAsk: ask,
-                            onFocus: { _ in }, onSubmit: send, onTab: { false })
-                    .fixedSize(horizontal: false, vertical: true)
-                    .overlay(alignment: .topLeading) {
-                        if text.isEmpty {
-                            Text("Message \(target.label)").font(.system(size: 13)).foregroundStyle(.white.opacity(0.35))
-                                .allowsHitTesting(false)
+            VStack(alignment: .leading, spacing: 6) {
+                if !files.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(files, id: \.self) { file in
+                            HStack(spacing: 4) {
+                                Image(nsImage: NSWorkspace.shared.icon(forFile: file.path)).resizable().frame(width: 16, height: 16)
+                                Text(file.lastPathComponent).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                                Button { files.removeAll { $0 == file } } label: {
+                                    Image(systemName: "xmark").font(.system(size: 7.5, weight: .bold))
+                                }
+                                .buttonStyle(Press())
+                            }
+                            .foregroundStyle(.white.opacity(0.8))
+                            .padding(.horizontal, 7).padding(.vertical, 4)
+                            .background(.white.opacity(0.1), in: Capsule())
+                            .frame(maxWidth: 170)
                         }
                     }
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
-                        .foregroundStyle(text.isEmpty ? .white.opacity(0.2) : .white)
                 }
-                .buttonStyle(Press()).disabled(text.isEmpty || state == "sending")
+                HStack(alignment: .bottom, spacing: 6) {
+                    GrowingText(text: $text, placeholder: "Message \(target.label)", focusAsk: ask,
+                                onFocus: { _ in }, onSubmit: send, onTab: { false })
+                        .fixedSize(horizontal: false, vertical: true)
+                        .overlay(alignment: .topLeading) {
+                            if text.isEmpty {
+                                Text("Message \(target.label)").font(.system(size: 13)).foregroundStyle(.white.opacity(0.35))
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    Button(action: choose) {
+                        Image(systemName: "paperclip").font(.system(size: 13)).foregroundStyle(.white.opacity(0.45))
+                    }
+                    .buttonStyle(Press()).help("Attach files")
+                    Button(action: send) {
+                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
+                            .foregroundStyle(text.isEmpty && files.isEmpty ? .white.opacity(0.2) : .white)
+                    }
+                    .buttonStyle(Press()).disabled((text.isEmpty && files.isEmpty) || state == "sending")
+                }
             }
             .padding(.horizontal, 11).padding(.vertical, 8)
             .background(Color(white: 0.15), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(.white.opacity(0.2), lineWidth: 1))
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                for provider in providers {
+                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                        if let url { DispatchQueue.main.async { files.append(url) } }
+                    }
+                }
+                return true
+            }
         }
         .frame(height: 452, alignment: .top)
         .onAppear {
+            SlackSource.shared.history(for: target)
             ui.controller?.panel.makeKey()
             ask += 1
         }
     }
 
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.prompt = "Attach"
+        panel.level = .popUpMenu
+        ui.heldOpen = true
+        NSApp.activate(ignoringOtherApps: true)
+        panel.begin { response in
+            ui.heldOpen = false
+            if response == .OK { files.append(contentsOf: panel.urls) }
+            ui.openSlack(target)
+        }
+    }
+
     private func send() {
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty, state != "sending" else { return }
+        guard !message.isEmpty || !files.isEmpty, state != "sending" else { return }
         state = "sending"
-        SlackSource.shared.send(to: target, text: message) { ok in
-            state = ok ? "sent" : "failed"
-            if ok { text = "" }
+        let sending = files
+        SlackSource.shared.send(to: target, text: message, files: sending) { ok in
+            state = ok ? nil : "failed"
+            if ok {
+                text = ""
+                files = []
+                // Shows up in the conversation by itself, from Slack's own record.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { SlackSource.shared.history(for: target) }
+            }
         }
     }
 }
@@ -4338,13 +4473,43 @@ final class SidePanel {
             .environment(AgentStore.shared).environment(NotchUI.shared)
             .environment(\.sideWindow, panel)
         panel.contentView = FirstClickHostingView(rootView: root)
+        // Grows out of the notch and glides over to the side.
+        panel.setFrame(notchRect(on: screen), display: false)
+        panel.alphaValue = 0
         panel.orderFrontRegardless()
         window = panel
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.38
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
+            panel.animator().setFrame(frame, display: true)
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    /// A small rectangle where the notch is, for the panel to grow out of and shrink back into.
+    private func notchRect(on screen: NSScreen) -> NSRect {
+        NSRect(x: screen.frame.midX - 120, y: screen.frame.maxY - 60, width: 240, height: 50)
     }
 
     func close() {
         window?.close()
         window = nil
+    }
+
+    /// Shrinks back up into the notch, then the chat opens there.
+    func returnToNotch(_ agent: Agent) {
+        guard let panel = window else { return NotchUI.shared.show(agent.id) }
+        window = nil
+        let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.3
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.6, 1)
+            panel.animator().setFrame(self.notchRect(on: screen), display: true)
+            panel.animator().alphaValue = 0
+        }, completionHandler: {
+            panel.close()
+            NotchUI.shared.show(agent.id)
+        })
     }
 }
 
@@ -4359,4 +4524,56 @@ private struct SideRoot: View {
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
             .preferredColorScheme(.dark)
     }
+}
+
+// MARK: Saving pictures
+
+/// A small download button for the corner of a picture.
+private struct SaveButton: View {
+    let action: () -> Void
+    @State private var done = false
+
+    var body: some View {
+        Button {
+            action()
+            done = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { done = false }
+        } label: {
+            Image(systemName: done ? "checkmark" : "arrow.down.to.line").font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white).frame(width: 26, height: 26)
+                .background(.black.opacity(0.65), in: Circle())
+        }
+        .buttonStyle(Press())
+        .padding(6)
+        .help("Save to Downloads")
+    }
+}
+
+/// Copies a picture into Downloads (never overwriting one already there) and shows it in Finder.
+private func saveToDownloads(path: String) {
+    let source = URL(fileURLWithPath: path)
+    let target = freeDownloadsURL(source.lastPathComponent)
+    guard (try? FileManager.default.copyItem(at: source, to: target)) != nil else { return NSSound.beep() }
+    NSWorkspace.shared.activateFileViewerSelecting([target])
+}
+
+private func saveToDownloads(image: NSImage, name: String) {
+    guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+          let png = rep.representation(using: .png, properties: [:]) else { return NSSound.beep() }
+    let base = (name as NSString).deletingPathExtension
+    let target = freeDownloadsURL("\(base).png")
+    guard (try? png.write(to: target)) != nil else { return NSSound.beep() }
+    NSWorkspace.shared.activateFileViewerSelecting([target])
+}
+
+private func freeDownloadsURL(_ name: String) -> URL {
+    let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+    var url = dir.appendingPathComponent(name)
+    let base = (name as NSString).deletingPathExtension, ext = (name as NSString).pathExtension
+    var n = 2
+    while FileManager.default.fileExists(atPath: url.path) {
+        url = dir.appendingPathComponent("\(base) \(n)" + (ext.isEmpty ? "" : ".\(ext)"))
+        n += 1
+    }
+    return url
 }

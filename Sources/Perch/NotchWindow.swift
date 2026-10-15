@@ -31,8 +31,47 @@ final class NotchUI {
     /// Showing the Notion to-do list in the right-hand pane.
     var showingTasks = false
     var showingClips = false
-    /// Writing a new Slack message to this person or channel.
-    var slackTarget: SlackTarget?
+    /// The Slack conversation open in the notch.
+    var slackTarget: SlackTarget? {
+        didSet { if let t = slackTarget { keepSlack(t) } }
+    }
+
+    /// Slack conversations opened recently: they stay in the sidebar until cleared.
+    var slackRecent: [SlackTarget] = {
+        guard let rows = UserDefaults.standard.array(forKey: "slackRecent") as? [[String: String]] else { return [] }
+        return rows.compactMap { r in
+            guard let w = r["w"], let id = r["id"], let name = r["name"] else { return nil }
+            return SlackTarget(workspace: w, id: id, name: name, channel: r["c"] == "1", picture: r["p"].flatMap(URL.init(string:)))
+        }
+    }() {
+        didSet {
+            let rows = slackRecent.map { t -> [String: String] in
+                var r = ["w": t.workspace, "id": t.id, "name": t.name, "c": t.channel ? "1" : "0"]
+                if let p = t.picture { r["p"] = p.absoluteString }
+                return r
+            }
+            UserDefaults.standard.set(rows, forKey: "slackRecent")
+        }
+    }
+
+    private func keepSlack(_ t: SlackTarget) {
+        guard !slackRecent.contains(where: { $0.id == t.id && $0.workspace == t.workspace }) else { return }
+        slackRecent.append(t)
+    }
+
+    func dropSlack(_ t: SlackTarget) {
+        slackRecent.removeAll { $0.id == t.id && $0.workspace == t.workspace }
+        if slackTarget?.id == t.id { slackTarget = nil }
+    }
+
+    func openSlack(_ t: SlackTarget) {
+        composing = false
+        browsing = false
+        showingTasks = false
+        showingProfiles = false
+        selectedID = nil
+        slackTarget = t
+    }
     /// Back from the clipboard: to the chat if it was opened beside one, otherwise closed.
     func closeClips() {
         if clipsInline {

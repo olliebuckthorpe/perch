@@ -108,6 +108,10 @@ enum Threads {
 
     static let replyMarker = "Treat this as their next message:\n\n"
 
+    /// Between messages that were held while the agent was busy and then delivered together,
+    /// so the chat can still show them as the separate messages they were.
+    static let queueSeparator = "\n\n(next message)\n\n"
+
     static func load(_ agent: Agent) {
         switch agent.source {
         case .grok:
@@ -177,7 +181,11 @@ enum Threads {
             if let m = codex ? codexMessage(o) : claudeMessage(o, raw: line) {
                 // One message can be logged twice; show it once.
                 if m.user, out.suffix(4).contains(where: { $0.fromUser && $0.text == m.text }) { continue }
-                out.append(ChatMessage(id: id, fromUser: m.user, text: m.text))
+                let pieces = m.user ? m.text.components(separatedBy: queueSeparator.trimmingCharacters(in: .newlines))
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } : [m.text]
+                for (n, piece) in pieces.enumerated() {
+                    out.append(ChatMessage(id: pieces.count > 1 ? "\(id)-\(n)" : id, fromUser: m.user, text: piece))
+                }
             }
         }
         return (Array(out.suffix(40)), context)

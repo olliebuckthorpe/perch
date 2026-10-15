@@ -165,7 +165,7 @@ final class CodingSessions {
             if event == "PostToolUse" { info(event: event, agent: agent, json: j, tool: tool, input: input, headless: headless) }
             agent.waiter?.respond()
             if !agent.queued.isEmpty {
-                deliver(agent.queued.joined(separator: "\n\n"), to: agent, through: req)
+                deliver(agent.queued.joined(separator: Threads.queueSeparator), to: agent, through: req)
                 agent.queued = []
                 return
             }
@@ -211,7 +211,7 @@ final class CodingSessions {
             if !last.isEmpty { agent.lastMessage = last }
             if !agent.queued.isEmpty {
                 // Something was sent from the notch mid-turn: it becomes the next prompt straight away.
-                let text = agent.queued.joined(separator: "\n\n")
+                let text = agent.queued.joined(separator: Threads.queueSeparator)
                 agent.queued = []
                 agent.status = .working
                 agent.detail = oneLine(text)
@@ -563,7 +563,7 @@ final class CodingSessions {
             if code == 0 { self.adopt(agent) }
             // Anything typed while it was busy goes in as the next turn.
             if code == 0, !agent.queued.isEmpty {
-                let next = agent.queued.joined(separator: "\n\n")
+                let next = agent.queued.joined(separator: Threads.queueSeparator)
                 agent.queued = []
                 self.resume(agent, text: next)
             }
