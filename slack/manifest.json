@@ -23,7 +23,9 @@
         "mpim:read",
         "users:read",
         "team:read",
-        "chat:write"
+        "chat:write",
+        "im:write",
+        "mpim:write"
       ],
       "bot": [
         "users:read"

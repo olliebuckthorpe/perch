@@ -164,6 +164,8 @@ private struct ExpandedBody: View {
                 TasksView()
             } else if ui.showingProfiles {
                 ProfilesView()
+            } else if let target = ui.slackTarget {
+                SlackComposer(target: target).id(target.id)
             } else if ui.composing {
                 NewChatView()
             } else if let id = ui.selectedID, let agent = store.find(id) {
@@ -285,12 +287,14 @@ enum SearchItem: Identifiable {
     case agent(Agent)
     case older(SessionIndex.Entry)
     case newChat(String)
+    case slack(SlackTarget)
 
     var id: String {
         switch self {
         case .agent(let a): return a.id
         case .older(let e): return "older:\(e.id)"
         case .newChat: return "new"
+        case .slack(let t): return "slack:\(t.workspace):\(t.id)"
         }
     }
 
@@ -303,7 +307,9 @@ enum SearchItem: Identifiable {
         let live = everyone.filter { $0.name.lowercased().contains(q) || $0.detail.lowercased().contains(q) }
         let older = SessionIndex.shared.entries
             .filter { $0.title.lowercased().contains(q) && store.find("claude:\($0.id)") == nil }
-        return live.prefix(8).map { .agent($0) } + older.prefix(6).map { .older($0) } + [.newChat(ui.query)]
+        // People and channels on Slack, to message directly.
+        let slack = SlackDirectory.shared.matching(q).prefix(4).map { SearchItem.slack($0) }
+        return live.prefix(8).map { .agent($0) } + slack + older.prefix(6).map { .older($0) } + [.newChat(ui.query)]
     }
 
     func open(_ ui: NotchUI) {
@@ -321,6 +327,11 @@ enum SearchItem: Identifiable {
             ui.drafts["new"] = prompt
             ui.query = ""
             ui.composing = true
+        case .slack(let target):
+            ui.query = ""
+            ui.browsing = false
+            ui.selectedID = nil
+            ui.slackTarget = target
         }
     }
 }
@@ -372,6 +383,9 @@ private struct SearchResults: View {
             PlainRow(icon: "clock", title: entry.title, trailing: nil) { item.open(ui) }
         case .newChat(let prompt):
             PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(prompt)", trailing: nil) { item.open(ui) }
+        case .slack(let target):
+            PlainRow(icon: target.channel ? "number" : "person.crop.circle",
+                     title: "Message \(target.label) on Slack · \(target.workspace.capitalized)", trailing: nil) { item.open(ui) }
         }
     }
 }
@@ -3948,6 +3962,75 @@ enum References {
 }
 
 // MARK: Slack
+
+/// A fresh Slack message to someone or a channel, chosen from search. Sends as you.
+private struct SlackComposer: View {
+    let target: SlackTarget
+    @Environment(NotchUI.self) private var ui
+    @State private var text = ""
+    @State private var state: String?
+    @State private var ask = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 7) {
+                Button { ui.slackTarget = nil; ui.browse() } label: {
+                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
+                }
+                .buttonStyle(Press())
+                Image(systemName: target.channel ? "number.square.fill" : "person.crop.circle.fill").font(.system(size: 16))
+                    .foregroundStyle(.white.opacity(0.85))
+                Text(target.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                Text("Slack · \(target.workspace.capitalized)").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+                Spacer()
+            }
+            Spacer(minLength: 0)
+            if state == "sent" {
+                Label("Sent to \(target.label)", systemImage: "checkmark").font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Palette.green)
+            }
+            if state == "failed" {
+                Text("Did not send. Check Slack is set up to send for this workspace.")
+                    .font(.system(size: 11)).foregroundStyle(Palette.red)
+            }
+            HStack(alignment: .bottom, spacing: 6) {
+                GrowingText(text: $text, placeholder: "Message \(target.label)", focusAsk: ask,
+                            onFocus: { _ in }, onSubmit: send, onTab: { false })
+                    .fixedSize(horizontal: false, vertical: true)
+                    .overlay(alignment: .topLeading) {
+                        if text.isEmpty {
+                            Text("Message \(target.label)").font(.system(size: 13)).foregroundStyle(.white.opacity(0.35))
+                                .allowsHitTesting(false)
+                        }
+                    }
+                Button(action: send) {
+                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
+                        .foregroundStyle(text.isEmpty ? .white.opacity(0.2) : .white)
+                }
+                .buttonStyle(Press()).disabled(text.isEmpty || state == "sending")
+            }
+            .padding(.horizontal, 11).padding(.vertical, 8)
+            .background(Color(white: 0.15), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(.white.opacity(0.2), lineWidth: 1))
+        }
+        .frame(height: 452, alignment: .top)
+        .onAppear {
+            ui.controller?.panel.makeKey()
+            ask += 1
+        }
+    }
+
+    private func send() {
+        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty, state != "sending" else { return }
+        state = "sending"
+        SlackSource.shared.send(to: target, text: message) { ok in
+            state = ok ? "sent" : "failed"
+            if ok { text = "" }
+        }
+    }
+}
 
 /// A Slack message in the notch: who, where, and what they said. Click to open it in Slack.
 private struct SlackBanner: View {

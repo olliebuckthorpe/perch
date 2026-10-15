@@ -1,6 +1,31 @@
 import AppKit
 import Observation
 
+/// Someone or somewhere to message on Slack.
+struct SlackTarget: Identifiable, Hashable {
+    let workspace: String
+    let id: String
+    let name: String
+    let channel: Bool
+    var label: String { channel ? "#\(name)" : name }
+}
+
+/// Everyone and every channel the user can message, per workspace, for search.
+@Observable
+final class SlackDirectory {
+    static let shared = SlackDirectory()
+    var targets: [SlackTarget] = []
+
+    func matching(_ q: String) -> [SlackTarget] {
+        let q = q.lowercased()
+        return targets.filter { $0.name.lowercased().contains(q) }
+            .sorted { a, b in
+                let (x, y) = (a.name.lowercased().hasPrefix(q), b.name.lowercased().hasPrefix(q))
+                return x != y ? x : a.name.count < b.name.count
+            }
+    }
+}
+
 /// One Slack message worth a banner.
 struct SlackAlert: Identifiable, Equatable {
     let id: String
@@ -45,6 +70,12 @@ final class SlackSource {
         link.post(channel: alert.channel, text: text, thread: alert.thread ?? (alert.direct ? nil : alert.ts), done: done)
     }
 
+    /// A fresh message to a person or channel, as the user.
+    func send(to target: SlackTarget, text: String, done: @escaping (Bool) -> Void) {
+        guard let link = links.values.first(where: { $0.name == target.workspace }) else { return done(false) }
+        link.send(to: target, text: text, done: done)
+    }
+
     func start() {
         scan()
         // New workspaces are picked up without restarting.
@@ -87,6 +118,58 @@ private final class Workspace {
         self.userToken = userToken
     }
 
+    func send(to target: SlackTarget, text: String, done: @escaping (Bool) -> Void) {
+        guard !target.channel else { return post(channel: target.id, text: text, thread: nil, done: done) }
+        // A direct message needs its conversation opened (or found) first.
+        api("conversations.open", token: userToken, ["users": target.id]) { [weak self] o in
+            guard let self, let channel = (o?["channel"] as? [String: Any])?["id"] as? String else { return done(false) }
+            self.post(channel: channel, text: text, thread: nil, done: done)
+        }
+    }
+
+    /// Loads the people and channels in this workspace for search.
+    private func loadDirectory() {
+        var found: [SlackTarget] = []
+        func people(_ cursor: String?) {
+            var params = ["limit": "200"]
+            if let cursor { params["cursor"] = cursor }
+            api("users.list", token: userToken, params) { [weak self] o in
+                guard let self else { return }
+                for u in o?["members"] as? [[String: Any]] ?? [] {
+                    guard u["deleted"] as? Bool != true, u["is_bot"] as? Bool != true, let id = u["id"] as? String,
+                          id != "USLACKBOT", id != self.me else { continue }
+                    let profile = u["profile"] as? [String: Any]
+                    let name = (profile?["real_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                        ?? profile?["display_name"] as? String ?? u["name"] as? String ?? id
+                    found.append(SlackTarget(workspace: self.name, id: id, name: name, channel: false))
+                }
+                if let next = (o?["response_metadata"] as? [String: Any])?["next_cursor"] as? String, !next.isEmpty {
+                    people(next)
+                } else {
+                    channels(nil)
+                }
+            }
+        }
+        func channels(_ cursor: String?) {
+            var params = ["limit": "200", "exclude_archived": "true", "types": "public_channel,private_channel"]
+            if let cursor { params["cursor"] = cursor }
+            api("users.conversations", token: userToken, params) { [weak self] o in
+                guard let self else { return }
+                for c in o?["channels"] as? [[String: Any]] ?? [] {
+                    guard let id = c["id"] as? String, let name = c["name"] as? String else { continue }
+                    found.append(SlackTarget(workspace: self.name, id: id, name: name, channel: true))
+                }
+                if let next = (o?["response_metadata"] as? [String: Any])?["next_cursor"] as? String, !next.isEmpty {
+                    channels(next)
+                } else {
+                    let dir = SlackDirectory.shared
+                    dir.targets = dir.targets.filter { $0.workspace != self.name } + found
+                }
+            }
+        }
+        people(nil)
+    }
+
     func post(channel: String, text: String, thread: String?, done: @escaping (Bool) -> Void) {
         var params = ["channel": channel, "text": text]
         if let thread { params["thread_ts"] = thread }
@@ -112,7 +195,10 @@ private final class Workspace {
                 guard let self else { return }
                 self.me = o?["user_id"] as? String ?? ""
                 self.team = o?["team_id"] as? String ?? ""
-                if self.me.isEmpty { self.later() } else { self.connect() }
+                if self.me.isEmpty { self.later() } else {
+                    self.loadDirectory()
+                    self.connect()
+                }
             }
             return
         }

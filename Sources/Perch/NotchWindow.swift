@@ -31,6 +31,8 @@ final class NotchUI {
     /// Showing the Notion to-do list in the right-hand pane.
     var showingTasks = false
     var showingClips = false
+    /// Writing a new Slack message to this person or channel.
+    var slackTarget: SlackTarget?
     /// Back from the clipboard: to the chat if it was opened beside one, otherwise closed.
     func closeClips() {
         if clipsInline {
@@ -382,6 +384,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingClips = false
+        slackTarget = nil
         clipsInline = false
         showingShelf = false
         browsing = true
@@ -410,6 +413,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingClips = false
+        slackTarget = nil
         clipsInline = false
         showingShelf = false
         focusReply = false
@@ -424,6 +428,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingClips = false
+        slackTarget = nil
         clipsInline = false
         showingShelf = false
         selectedID = id
@@ -447,6 +452,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingClips = false
+        slackTarget = nil
         clipsInline = false
         showingShelf = false
         focusReply = true
