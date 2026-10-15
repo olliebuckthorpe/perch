@@ -366,8 +366,6 @@ enum SearchItem: Identifiable {
             times[item.id] = hit.modified
             items.append(item)
         }
-        // Found by meaning alone: after everything that actually contains the words.
-        items = items.filter { !related.contains($0.id) } + items.filter { related.contains($0.id) }
         // People and channels on Slack, to message directly.
         let found = SlackDirectory.shared.matching(q).prefix(4).map { SearchItem.slack($0) }.filter { !seen.contains($0.id) }
         // Typing a name means that person, bot or chat: those come first, ahead of chats that
@@ -384,7 +382,7 @@ enum SearchItem: Identifiable {
             let words = ThreadSearch.terms(title)
             return !terms.isEmpty && terms.allSatisfy { t in words.contains { $0.hasPrefix(t) } }
         }
-        let byName = (items.filter { named($0) && !SearchItem.related.contains($0.id) } + found)
+        let byName = (items.filter(named) + found)
         people = Set(byName.map(\.id))
         let rest = items.filter { !people.contains($0.id) }
         return byName + rest + [.newChat(ui.query)]
@@ -424,7 +422,6 @@ private struct SearchResults: View {
     private func section(_ item: SearchItem) -> String? {
         if ui.query.trimmingCharacters(in: .whitespaces).isEmpty { return nil }
         if case .newChat = item { return "" }
-        if SearchItem.related.contains(item.id) { return "Related" }
         if SearchItem.people.contains(item.id) { return "Top matches" }
         return "Chats"
     }
@@ -522,16 +519,21 @@ private struct SearchResults: View {
         return date.formatted(.dateTime.day().month(.abbreviated))
     }
 
-    /// The snippet in grey with the matching words picked out in white.
+    /// The snippet in grey with the matching words picked out in white (whole words, and the
+    /// longer words they begin).
     private static func highlighted(_ text: String, _ words: [String]) -> AttributedString {
         var out = AttributedString(text)
         out.foregroundColor = .white.opacity(0.45)
+        let ns = text as NSString
         for word in words where word.count >= 2 {
-            var from = out.startIndex
-            while let r = out[from...].range(of: word, options: [.caseInsensitive, .diacriticInsensitive]) {
-                out[r].foregroundColor = .white.opacity(0.95)
-                out[r].font = .system(size: 11.5, weight: .semibold)
-                from = r.upperBound
+            let pattern = "\\b" + NSRegularExpression.escapedPattern(for: word) + "\\w*"
+            guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+                guard let r = Range(m.range, in: text),
+                      let lo = AttributedString.Index(r.lowerBound, within: out),
+                      let hi = AttributedString.Index(r.upperBound, within: out) else { continue }
+                out[lo..<hi].foregroundColor = .white.opacity(0.95)
+                out[lo..<hi].font = .system(size: 11.5, weight: .semibold)
             }
         }
         return out

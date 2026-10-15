@@ -109,6 +109,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let took = ui.pasteImages()
             NSLog("perch paste: %@ selected=%@ attachments=%@", String(took), ui.selectedID ?? "nil",
                   String(describing: ui.attachments.mapValues(\.count)))
+        case "nearest" where parts.count > 1:
+            let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
+            DispatchQueue.global().async {
+                let rows = ThreadSearch.shared.nearest(bits[0]).prefix(12).map { String(format: "%.3f ", $0.1) + $0.0 }
+                let all = ThreadSearch.shared.nearest(bits[0]).map(\.1)
+                let median = all.isEmpty ? 0 : all[all.count / 2]
+                try? (rows + [String(format: "median %.3f of %d", median, all.count)]).joined(separator: "\n")
+                    .write(toFile: bits[1], atomically: true, encoding: .utf8)
+            }
         case "search" where parts.count > 1:
             // search:<query>|<file>: writes the results as text, without touching the island.
             let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
@@ -122,7 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case .older(let e): name = "\(e.source.rawValue) " + e.title
                     case .slack(let t): name = "slack " + t.label
                     }
-                    return String(format: "%.2f ", hit.score) + (hit.related ? "[related] " : "") + name + " | " + (hit.snippet ?? "")
+                    return String(format: "%.2f (%.2f) ", hit.score, hit.close) + (hit.related ? "[related] " : "") + name + " | " + (hit.snippet ?? "")
                 }
                 try? lines.joined(separator: "\n").write(toFile: bits[1], atomically: true, encoding: .utf8)
             }

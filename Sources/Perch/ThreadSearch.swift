@@ -28,7 +28,8 @@ final class ThreadSearch {
         var titleWords: Set<String> = []
         /// How often each word comes up, for weighting a thread that is about it over a passing mention.
         var counts: [String: Int] = [:]
-        var vector: [Float]?
+        /// Meaning vectors for a few passages of the thread (its start, then spread through it).
+        var vectors: [[Float]] = []
     }
 
     struct Hit {
@@ -40,6 +41,7 @@ final class ThreadSearch {
         /// The words in the thread that matched, for highlighting.
         var matches: [String] = []
         var modified = Date()
+        var close = 0.0
     }
 
     /// Bumped when the index or a meaning lookup changes, so open results refresh.
@@ -47,18 +49,14 @@ final class ThreadSearch {
 
     @ObservationIgnored private var files: [String: Doc] = [:]
     @ObservationIgnored private var building = false
+    /// Transcripts with nothing to search, by when they were last changed.
+    @ObservationIgnored private var skipped: [String: Date] = [:]
     @ObservationIgnored private var builtAt = Date.distantPast
     @ObservationIgnored private var cache: (query: String, version: Int, hits: [Hit])?
     @ObservationIgnored private var meaning: [String: [String: Float]] = [:]
     @ObservationIgnored private var asking = Set<String>()
     @ObservationIgnored private let queue = DispatchQueue(label: "perch.search", qos: .utility)
-    @ObservationIgnored private lazy var model: NLContextualEmbedding? = {
-        guard let m = NLContextualEmbedding(language: .english) else { return nil }
-        if !m.hasAvailableAssets { m.requestAssets { _, _ in } ; return nil }
-        return (try? m.load()) != nil ? m : nil
-    }()
-    @ObservationIgnored private lazy var words = NLEmbedding.wordEmbedding(for: .english)
-    private static let store = "\(Shell.home)/.perch/search-index-3.json"
+    private static let store = "\(Shell.home)/.perch/search-index-4.json"
 
     // MARK: Building the index
 
@@ -91,21 +89,34 @@ final class ThreadSearch {
             }
             var next: [String: Doc] = [:]
             var changed = false
+
             for (path, modified, source) in paths.sorted(by: { $0.1 > $1.1 }).prefix(500) {
-                if var known = self.files[path], known.modified == modified {
+                if var known = self.files[path], abs(known.modified.timeIntervalSince(modified)) < 1 {
                     if known.words.isEmpty { Self.tokenize(&known) }
                     next[path] = known
                     continue
                 }
-                guard var doc = Self.read(path, source: source, modified: modified) else { continue }
-                Self.tokenize(&doc)
-                doc.vector = self.embed(doc.title + ". " + String(doc.text.prefix(700)))
-                next[path] = doc
-                changed = true
+                // Each file's working memory is let go before the next, so a first full read
+                // never balloons.
+                // Helper runs and empty sessions have nothing to search: remembered, not re-read.
+                if let skip = self.skipped[path], abs(skip.timeIntervalSince(modified)) < 1 { continue }
+                autoreleasepool {
+                    guard var doc = Self.read(path, source: source, modified: modified) else {
+                        self.skipped[path] = modified
+                        return
+                    }
+                    Self.tokenize(&doc)
+                    doc.vectors = Self.passages(doc).compactMap(Embedder.shared.embed)
+                    next[path] = doc
+                    changed = true
+                }
             }
             // Vectors for anything saved before the model was ready.
-            for (path, doc) in next where doc.vector == nil {
-                next[path]?.vector = self.embed(doc.title + ". " + String(doc.text.prefix(700)))
+            if Embedder.shared.ready {
+                for (path, doc) in next where doc.vectors.isEmpty {
+                    next[path]?.vectors = Self.passages(doc).compactMap(Embedder.shared.embed)
+                    changed = true
+                }
             }
             if changed || next.count != self.files.count { Self.save(next) }
             DispatchQueue.main.async {
@@ -137,7 +148,11 @@ final class ThreadSearch {
         var cwd: String?
         var id: String?
         for chunk in chunks {
-            for line in String(decoding: chunk, as: UTF8.self).split(separator: "\n") where line.count < 400_000 {
+            for line in String(decoding: chunk, as: UTF8.self).split(separator: "\n") where line.utf8.count < 60_000 {
+                // Only lines that can be messages (or the session's details) are worth parsing;
+                // tool output is most of a transcript and none of what was said.
+                guard line.contains("\"user\"") || line.contains("\"assistant\"") || line.contains("session_meta")
+                        || (cwd == nil && line.contains("\"cwd\"")) else { continue }
                 guard let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
                 if source == .claude {
                     if cwd == nil { cwd = o["cwd"] as? String }
@@ -224,44 +239,38 @@ final class ThreadSearch {
 
     // MARK: Meaning
 
-    private func embed(_ text: String) -> [Float]? {
-        guard let model, let result = try? model.embeddingResult(for: text, language: .english) else { return nil }
-        var sum = [Double](repeating: 0, count: model.dimension)
-        var n = 0.0
-        result.enumerateTokenVectors(in: text.startIndex..<text.endIndex) { v, _ in
-            for i in 0..<min(v.count, sum.count) { sum[i] += v[i] }
-            n += 1
-            return true
+    /// The parts of a thread worth reading for meaning: its title and opening, then a few
+    /// passages spread through the rest.
+    private static func passages(_ doc: Doc) -> [String] {
+        let text = doc.text
+        var out = [doc.title + ". " + String(text.prefix(700))]
+        let count = text.count
+        guard count > 900 else { return out }
+        let picks = min(4, count / 900)
+        for i in 1...picks {
+            let at = count * i / (picks + 1)
+            let start = text.index(text.startIndex, offsetBy: max(0, at - 450))
+            let end = text.index(start, offsetBy: min(900, text.distance(from: start, to: text.endIndex)))
+            out.append(String(text[start..<end]))
         }
-        guard n > 0 else { return nil }
-        let norm = sqrt(sum.reduce(0) { $0 + $1 * $1 })
-        return norm > 0 ? sum.map { Float($0 / norm) } : nil
+        return out
     }
 
-    /// How close in meaning each indexed thread is to the search, worked out in the background.
+    /// How close in meaning each thread is to the search (its closest passage), worked out in
+    /// the background.
     private func askMeaning(_ query: String, docs: [Doc]) {
-        guard query.count >= 4, meaning[query] == nil, !asking.contains(query) else { return }
+        guard query.count >= 3, Embedder.shared.ready, meaning[query] == nil, !asking.contains(query) else { return }
         asking.insert(query)
-        // Very short threads give the model too little to go on and land close to everything.
-        let keyed = docs.filter { $0.text.count >= 400 }.compactMap { d in d.vector.map { (d.key, $0) } }
+        let keyed = docs.filter { !$0.vectors.isEmpty }.map { ($0.key, $0.vectors) }
         queue.async { [weak self] in
-            guard let self, let raw = self.embed(query), !keyed.isEmpty else {
+            guard let self, let q = Embedder.shared.query(query), !keyed.isEmpty else {
                 DispatchQueue.main.async { self?.asking.remove(query) }
                 return
             }
-            // Everything this model produces leans the same way, which lets a few threads look
-            // close to every search. Measuring from the average thread instead fixes that.
-            var mean = [Float](repeating: 0, count: raw.count)
-            for (_, v) in keyed { for i in 0..<min(v.count, mean.count) { mean[i] += v[i] } }
-            mean = mean.map { $0 / Float(keyed.count) }
-            func centred(_ v: [Float]) -> [Float] {
-                let c = zip(v, mean).map { $0 - $1 }
-                let n = sqrt(c.reduce(0) { $0 + $1 * $1 })
-                return n > 0 ? c.map { $0 / n } : c
-            }
-            let q = centred(raw)
             var scores: [String: Float] = [:]
-            for (key, v) in keyed { scores[key] = zip(q, centred(v)).reduce(0) { $0 + $1.0 * $1.1 } }
+            for (key, vectors) in keyed {
+                scores[key] = vectors.map { v in zip(q, v).reduce(0) { $0 + $1.0 * $1.1 } }.max() ?? 0
+            }
             DispatchQueue.main.async {
                 self.asking.remove(query)
                 if self.meaning.count > 40 { self.meaning.removeAll() }
@@ -269,6 +278,15 @@ final class ThreadSearch {
                 self.version += 1
             }
         }
+    }
+
+    /// The threads closest in meaning to a search, with how close, for tuning.
+    func nearest(_ query: String) -> [(String, Float)] {
+        guard let q = Embedder.shared.query(query) else { return [] }
+        return files.values.compactMap { d -> (String, Float)? in
+            guard !d.vectors.isEmpty else { return nil }
+            return (d.title, d.vectors.map { v in zip(q, v).reduce(0) { $0 + $1.0 * $1.1 } }.max() ?? 0)
+        }.sorted { $0.1 > $1.1 }
     }
 
     // MARK: Searching
@@ -288,7 +306,7 @@ final class ThreadSearch {
             if let path = agent.transcriptPath, let indexed = files[path] {
                 // What is on screen now plus everything said earlier in the session.
                 doc = Doc(key: agent.id, target: .agent(agent.id), title: agent.name, text: text + "\n" + indexed.text,
-                          modified: agent.lastActivity, vector: indexed.vector)
+                          modified: agent.lastActivity, vectors: indexed.vectors)
                 liveKeys.insert(path)
             }
             Self.tokenize(&doc)
@@ -310,9 +328,11 @@ final class ThreadSearch {
         let expansions = tokens.map(expand)
         askMeaning(query, docs: docs)
         let closeness = meaning[query] ?? [:]
-        let values = closeness.values.map(Double.init)
-        let mean = values.isEmpty ? 0 : values.reduce(0, +) / Double(values.count)
-        let spread = values.isEmpty ? 1 : max(0.005, sqrt(values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count)))
+        // Closeness is judged against the typical thread for this search: the model scores
+        // everything in a narrow band, so what matters is standing out from the middle.
+        let values = closeness.values.map(Double.init).sorted(by: >)
+        let median = values.isEmpty ? 1 : values[values.count / 2]
+        let fourth = values.count > 3 ? values[3] : (values.last ?? 1)
 
         var hits: [Hit] = []
         for doc in docs {
@@ -345,10 +365,12 @@ final class ThreadSearch {
                 score += 0.9
                 phrase = true
             }
-            let z = closeness[doc.key].map { (Double($0) - mean) / spread } ?? 0
-            let related = score == 0 && z >= 3.3 && doc.text.count >= 400
+            let close = Double(closeness[doc.key] ?? 0)
+            // About the same thing without sharing the words: clearly closer than most threads.
+            let related = score == 0 && close >= fourth && close >= median + 0.08
             if score == 0 && !related { continue }
-            score += min(0.35, max(0, z - 1.5) * 0.12)
+            score += max(0, close - median - 0.03) * 7
+            if related { score += 0.4 }
             // A gentle nudge towards recent threads.
             let age = Date().timeIntervalSince(doc.modified) / 86400
             score += 0.25 * exp(-max(0, age) / 7)
@@ -357,11 +379,11 @@ final class ThreadSearch {
             if let near, tokens.count > 1 { score += 0.3 * Double(min(near.together, tokens.count) - 1) }
             let snippet = near?.text
             hits.append(Hit(target: doc.target, snippet: snippet, score: score, related: related,
-                            matches: phrase ? [query] + found : found, modified: doc.modified))
+                            matches: phrase ? [query] + found : found, modified: doc.modified, close: close))
         }
         hits.sort { $0.score > $1.score }
         // Meaning alone is a weaker signal, so only a few of those.
-        var relatedLeft = 3
+        var relatedLeft = 4
         hits = hits.filter { !$0.related || { relatedLeft -= 1; return relatedLeft >= 0 }() }
         cache = (query, version, hits)
         return hits
@@ -396,9 +418,6 @@ final class ThreadSearch {
             for word in vocab where out[word] == nil && word.first == token.first && abs(word.count - token.count) <= limit {
                 if Self.distance(token, word, limit: limit) <= limit { out[word] = 0.7 }
             }
-        }
-        if token.count >= 3, let neighbours = words?.neighbors(for: token, maximumCount: 8, distanceType: .cosine) {
-            for (word, d) in neighbours where d < 0.95 && out[word] == nil { out[word] = 0.45 }
         }
         return out
     }
@@ -468,14 +487,15 @@ final class ThreadSearch {
     // MARK: Saving
 
     private struct Saved: Codable {
-        let path: String, id: String, title: String, cwd: String?, source: String, modified: Date, text: String, vector: [Float]?
+        let path: String, id: String, title: String, cwd: String?, source: String, modified: Date, text: String, vectors: [Data]?
     }
 
     private static func save(_ docs: [String: Doc]) {
         let rows: [Saved] = docs.values.compactMap { d in
             guard case .older(let e) = d.target else { return nil }
             return Saved(path: d.key, id: e.id, title: d.title, cwd: e.cwd, source: e.source.rawValue,
-                         modified: d.modified, text: d.text, vector: d.vector)
+                         modified: d.modified, text: d.text,
+                         vectors: d.vectors.map { v in v.withUnsafeBufferPointer { Data(buffer: $0) } })
         }
         guard let data = try? JSONEncoder().encode(rows) else { return }
         FileManager.default.createFile(atPath: store, contents: data, attributes: [.posixPermissions: 0o600])
@@ -488,7 +508,8 @@ final class ThreadSearch {
         for r in rows {
             let entry = SessionIndex.Entry(id: r.id, title: r.title, path: r.path, cwd: r.cwd, modified: r.modified,
                                            source: AgentSource(rawValue: r.source) ?? .claude)
-            out[r.path] = Doc(key: r.path, target: .older(entry), title: r.title, text: r.text, modified: r.modified, vector: r.vector)
+            out[r.path] = Doc(key: r.path, target: .older(entry), title: r.title, text: r.text, modified: r.modified,
+                              vectors: (r.vectors ?? []).map { d in d.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) } })
         }
         return out
     }

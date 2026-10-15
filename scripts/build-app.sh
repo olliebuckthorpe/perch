@@ -18,6 +18,15 @@ done
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp bridge/grok-bridge.mjs "$APP/Contents/Resources/grok-bridge.mjs"
+# The on-device search model (bge-small, 8-bit), compiled once and reused while unchanged.
+if [ ! -d .build/bge-small.mlmodelc ] || [ models/bge-small-int8.mlpackage -nt .build/bge-small.mlmodelc ]; then
+  rm -rf .build/bge-compiled && mkdir -p .build/bge-compiled
+  xcrun coremlcompiler compile models/bge-small-int8.mlpackage .build/bge-compiled >/dev/null
+  rm -rf .build/bge-small.mlmodelc && mv .build/bge-compiled/bge-small-int8.mlmodelc .build/bge-small.mlmodelc
+fi
+rm -rf "$APP/Contents/Resources/bge-small.mlmodelc"
+cp -R .build/bge-small.mlmodelc "$APP/Contents/Resources/bge-small.mlmodelc"
+cp models/bge-vocab.txt "$APP/Contents/Resources/bge-vocab.txt"
 cp .build/release/Perch "$APP/Contents/MacOS/Perch"
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
