@@ -182,6 +182,27 @@ final class NotchUI {
     }
     /// Which search result the arrow keys are on.
     var searchIndex = 0
+    /// The results for what has been typed, worked out once typing pauses.
+    var searchResults: [SearchItem] = []
+    @ObservationIgnored private var searchWork: DispatchWorkItem?
+
+    /// Searches a moment after the last key, so the list changes once per pause rather than
+    /// jumping on every letter.
+    func searchSoon(immediately: Bool = false) {
+        searchWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let results = SearchItem.compute(AgentStore.shared, self)
+            var quiet = Transaction()
+            quiet.disablesAnimations = true
+            withTransaction(quiet) {
+                self.searchResults = results
+                self.searchIndex = min(self.searchIndex, max(0, results.count - 1))
+            }
+        }
+        searchWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + (immediately ? 0 : 0.12), execute: work)
+    }
     /// Whether the open chat should take the keyboard. Only after a deliberate click, never on hover.
     private(set) var focusReply = false
     /// A message the open chat should bring to the top, and a count so asking twice still works.

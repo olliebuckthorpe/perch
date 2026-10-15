@@ -259,6 +259,8 @@ private struct SearchBar: View {
                     return .handled
                 }
                 .onSubmit {
+                    // Return straight after typing: search now rather than wait for the pause.
+                    if SearchItem.all(store, ui).isEmpty { ui.searchResults = SearchItem.compute(store, ui) }
                     let items = SearchItem.all(store, ui)
                     if items.indices.contains(ui.searchIndex) { items[ui.searchIndex].open(ui) }
                 }
@@ -282,10 +284,16 @@ private struct SearchBar: View {
             focused = true
         })
         .onChange(of: focused) { _, on in if on { SessionIndex.shared.refresh(); ThreadSearch.shared.refresh() } }
-        .onChange(of: ui.query) { ui.searchIndex = 0 }
+        .onChange(of: ui.query) {
+            ui.searchIndex = 0
+            ui.searchSoon()
+        }
+        // New chats read, or a Slack conversation understood: refresh what is shown, quietly.
+        .onChange(of: ThreadSearch.shared.version) { if !ui.query.isEmpty { ui.searchSoon() } }
         .onAppear {
             SessionIndex.shared.refresh()
             ThreadSearch.shared.refresh()
+            DispatchQueue.main.async { ThreadSearch.shared.prepare(live: store.sessions + store.grokBots) }
             DispatchQueue.main.async { focused = true }
         }
     }
@@ -316,16 +324,23 @@ enum SearchItem: Identifiable {
     static var times: [String: Date] = [:]
     /// People and channels on Slack offered to message, rather than conversations found.
     static var people = Set<String>()
+    /// A quiet note of where a result lives, like the Slack workspace.
+    static var places: [String: String] = [:]
 
     /// Everything matching the search, best first: chats from every app (live or older), bots and
     /// Slack conversations, matched on what was said as well as titles, then people on Slack to
     /// message, then the option to start fresh. With nothing typed, every live one.
     static func all(_ store: AgentStore, _ ui: NotchUI) -> [SearchItem] {
+        let q = ui.query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return (store.sessions + store.grokBots).prefix(14).map { .agent($0) } }
+        return ui.searchResults
+    }
+
+    static func compute(_ store: AgentStore, _ ui: NotchUI) -> [SearchItem] {
         let q = ui.query.trimmingCharacters(in: .whitespaces).lowercased()
         let everyone = store.sessions + store.grokBots
-        guard !q.isEmpty else { return everyone.prefix(14).map { .agent($0) } }
+        guard !q.isEmpty else { return [] }
         let search = ThreadSearch.shared
-        _ = search.version
         // Slack conversations Perch has loaded, so what was said there can be found too.
         let conversations = SlackConversations.shared
         let directory = SlackDirectory.shared.targets
@@ -348,6 +363,7 @@ enum SearchItem: Identifiable {
         matches = [:]
         times = [:]
         people = []
+        places = [:]
         for hit in hits.prefix(10) {
             let item: SearchItem
             switch hit.target {
@@ -382,6 +398,7 @@ enum SearchItem: Identifiable {
             let words = ThreadSearch.terms(title)
             return !terms.isEmpty && terms.allSatisfy { t in words.contains { $0.hasPrefix(t) } }
         }
+        for case .slack(let t) in items + found { places["slack:\(t.workspace):\(t.id)"] = "Slack · \(t.workspace.capitalized)" }
         let byName = (items.filter(named) + found)
         people = Set(byName.map(\.id))
         let rest = items.filter { !people.contains($0.id) }
@@ -419,39 +436,32 @@ private struct SearchResults: View {
     /// Rows come in one after another the first time the list appears, not on every keystroke.
     @State private var arrived = false
 
-    private func section(_ item: SearchItem) -> String? {
-        if ui.query.trimmingCharacters(in: .whitespaces).isEmpty { return nil }
-        if case .newChat = item { return "" }
-        if SearchItem.people.contains(item.id) { return "Top matches" }
-        return "Chats"
+    /// Top matches (things called what was typed), then everything else, split by a thin line.
+    private func group(_ item: SearchItem) -> Int {
+        if case .newChat = item { return 2 }
+        return SearchItem.people.contains(item.id) ? 0 : 1
     }
 
     var body: some View {
         let items = SearchItem.all(store, ui)
-        VStack(alignment: .leading, spacing: 1) {
+        let typed = !ui.query.trimmingCharacters(in: .whitespaces).isEmpty
+        VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                let header = section(item)
-                if let header, !header.isEmpty, index == 0 || section(items[index - 1]) != header {
-                    Text(header).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.white.opacity(0.35))
-                        .padding(.horizontal, 8).padding(.top, index == 0 ? 2 : 9).padding(.bottom, 3)
-                }
-                if header == "", index > 0 {
-                    Divider().overlay(.white.opacity(0.08)).padding(.vertical, 5).padding(.horizontal, 6)
+                if typed, index > 0, group(items[index - 1]) != group(item) {
+                    Rectangle().fill(.white.opacity(0.07)).frame(height: 1)
+                        .padding(.vertical, 4).padding(.horizontal, 8)
                 }
                 row(item)
-                    .background(.white.opacity(index == ui.searchIndex ? 0.12 : 0),
-                                in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .opacity(arrived ? 1 : 0).offset(y: arrived ? 0 : 6)
-                    .animation(.easeOut(duration: 0.22).delay(min(Double(index), 8) * 0.025), value: arrived)
+                    .background(.white.opacity(index == ui.searchIndex ? 0.1 : 0),
+                                in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .opacity(arrived ? 1 : 0)
+                    .animation(.easeOut(duration: 0.18).delay(min(Double(index), 6) * 0.02), value: arrived)
             }
-            if items.isEmpty {
+            if items.isEmpty && typed {
                 Text("Nothing matches.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
-                    .padding(.horizontal, 6).padding(.vertical, 5)
+                    .padding(.horizontal, 8).padding(.vertical, 6)
             }
-            Text("↑ ↓ to move, Return to open").font(.system(size: 10)).foregroundStyle(.white.opacity(0.28))
-                .padding(.horizontal, 8).padding(.top, 4)
         }
-        .animation(.easeOut(duration: 0.12), value: ui.searchIndex)
         .onAppear { arrived = true }
     }
 
@@ -480,28 +490,31 @@ private struct SearchResults: View {
         case .newChat(let prompt):
             PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(prompt)", trailing: nil) { item.open(ui) }
         case .slack(let target):
-            result(item, title: "\(target.label)  ·  \(target.channel ? "" : "Slack, ")\(target.workspace.capitalized)") {
+            result(item, title: target.label) {
                 SlackAvatar(url: target.picture, channel: target.channel, size: 18)
             }
         }
     }
 
-    /// A found thread: who or what it is and when, then the line of it that matched.
+    /// A found thread: what it is and when, with the line of it that matched underneath.
     private func result<Icon: View>(_ item: SearchItem, title: String, @ViewBuilder icon: () -> Icon) -> some View {
         let snippet = SearchItem.snippets[item.id]
-        return HStack(alignment: .top, spacing: 9) {
-            icon().frame(width: 20, height: 20)
-            VStack(alignment: .leading, spacing: 2) {
+        return HStack(alignment: snippet == nil ? .center : .top, spacing: 9) {
+            icon().frame(width: 18, height: 18).padding(.top, snippet == nil ? 0 : 1)
+            VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Text(title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                    Text(title).font(.system(size: 12.5, weight: .medium)).foregroundStyle(.white.opacity(0.95)).lineLimit(1)
+                    if let place = SearchItem.places[item.id] {
+                        Text(place).font(.system(size: 11)).foregroundStyle(.white.opacity(0.35)).lineLimit(1)
+                    }
                     Spacer(minLength: 6)
                     if let time = SearchItem.times[item.id] {
-                        Text(Self.when(time)).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.32)).lineLimit(1)
+                        Text(Self.when(time)).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.3)).lineLimit(1)
                     }
                 }
                 if let snippet {
                     Text(Self.highlighted(snippet, SearchItem.matches[item.id] ?? []))
-                        .font(.system(size: 11.5)).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .font(.system(size: 11)).lineLimit(1)
                 }
             }
         }
@@ -523,7 +536,7 @@ private struct SearchResults: View {
     /// longer words they begin).
     private static func highlighted(_ text: String, _ words: [String]) -> AttributedString {
         var out = AttributedString(text)
-        out.foregroundColor = .white.opacity(0.45)
+        out.foregroundColor = .white.opacity(0.4)
         let ns = text as NSString
         for word in words where word.count >= 2 {
             let pattern = "\\b" + NSRegularExpression.escapedPattern(for: word) + "\\w*"
@@ -532,8 +545,7 @@ private struct SearchResults: View {
                 guard let r = Range(m.range, in: text),
                       let lo = AttributedString.Index(r.lowerBound, within: out),
                       let hi = AttributedString.Index(r.upperBound, within: out) else { continue }
-                out[lo..<hi].foregroundColor = .white.opacity(0.95)
-                out[lo..<hi].font = .system(size: 11.5, weight: .semibold)
+                out[lo..<hi].foregroundColor = .white.opacity(0.85)
             }
         }
         return out
@@ -5081,8 +5093,9 @@ private func freeDownloadsURL(_ name: String) -> URL {
 /// Draws the search results for a query into a picture, off screen, for checking the design.
 @MainActor func renderSearchPreview(_ query: String, to path: String) {
     let ui = NotchUI.shared
-    let before = ui.query
+    let before = ui.query, shown = ui.searchResults
     ui.query = query
+    ui.searchResults = SearchItem.compute(AgentStore.shared, ui)
     let view = SearchResults().environment(AgentStore.shared).environment(ui)
         .frame(width: 520).padding(12).background(.black)
     let renderer = ImageRenderer(content: view)
@@ -5091,4 +5104,5 @@ private func freeDownloadsURL(_ name: String) -> URL {
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
     }
     ui.query = before
+    ui.searchResults = shown
 }

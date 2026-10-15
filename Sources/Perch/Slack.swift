@@ -154,6 +154,11 @@ final class SlackSource {
         // New workspaces are picked up without restarting.
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.scan() }
         timer?.tolerance = 2
+        // What was said since, for search: every half hour.
+        let rewarm = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
+            self?.links.values.forEach { $0.warmAll() }
+        }
+        rewarm.tolerance = 120
     }
 
     private func scan() {
@@ -304,7 +309,7 @@ private final class Workspace {
             }
             let key = store.key(self.name, channel)
             store.loading.insert(key)
-            self.api("conversations.history", token: self.userToken, ["channel": channel, "limit": "40"]) { [weak self] o in
+            self.api("conversations.history", token: self.userToken, ["channel": channel, "limit": "80"]) { [weak self] o in
                 guard let self else { return }
                 guard let o else {
                     // Slack sometimes refuses when asked too quickly. Keep what is shown and try again.
@@ -354,6 +359,22 @@ private final class Workspace {
     /// Recent conversations load quietly once connected, so opening one is instant.
     private func warm() {
         for target in NotchUI.shared.slackRecent where target.workspace == name { history(for: target) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.warmAll() }
+    }
+
+    /// Every channel and direct message, loaded quietly one at a time so search can read them.
+    /// Spaced out to stay well inside Slack's limits.
+    func warmAll() {
+        let store = SlackConversations.shared
+        let directory = SlackDirectory.shared.targets.filter { $0.workspace == name }
+        let people = Dictionary(directory.filter { !$0.channel }.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var targets = directory.filter(\.channel)
+        for (key, _) in store.dmChannel where key.hasPrefix("\(name):") {
+            if let person = people[String(key.dropFirst(name.count + 1))] { targets.append(person) }
+        }
+        for (i, target) in targets.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 1.5) { [weak self] in self?.history(for: target) }
+        }
     }
 
     /// A message arriving live goes into its conversation if that conversation is loaded.

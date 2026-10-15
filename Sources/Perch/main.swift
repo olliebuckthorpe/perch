@@ -123,7 +123,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
             ThreadSearch.shared.refresh()
             func run(_ tries: Int) {
+                let started = Date()
                 let hits = ThreadSearch.shared.search(bits[0], live: AgentStore.shared.sessions + AgentStore.shared.grokBots, slack: [])
+                let took = Date().timeIntervalSince(started)
                 let lines = hits.prefix(12).map { hit -> String in
                     let name: String
                     switch hit.target {
@@ -133,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     return String(format: "%.2f (%.2f) ", hit.score, hit.close) + (hit.related ? "[related] " : "") + name + " | " + (hit.snippet ?? "")
                 }
-                try? lines.joined(separator: "\n").write(toFile: bits[1], atomically: true, encoding: .utf8)
+                try? ([String(format: "took %.0f ms: ", took * 1000) + ThreadSearch.lastTimings] + lines).joined(separator: "\n").write(toFile: bits[1], atomically: true, encoding: .utf8)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { run(0) }
         case "unattach" where parts.count > 1:

@@ -23,11 +23,13 @@ final class ThreadSearch {
         let target: Target
         let title: String
         let text: String
-        let modified: Date
+        var modified: Date
         var words: Set<String> = []
         var titleWords: Set<String> = []
         /// How often each word comes up, for weighting a thread that is about it over a passing mention.
         var counts: [String: Int] = [:]
+        /// The text lower-cased and without accents, for quick phrase checks.
+        var folded = ""
         /// Meaning vectors for a few passages of the thread (its start, then spread through it).
         var vectors: [[Float]] = []
     }
@@ -53,8 +55,10 @@ final class ThreadSearch {
     @ObservationIgnored private var skipped: [String: Date] = [:]
     @ObservationIgnored private var builtAt = Date.distantPast
     @ObservationIgnored private var cache: (query: String, version: Int, hits: [Hit])?
-    @ObservationIgnored private var meaning: [String: [String: Float]] = [:]
-    @ObservationIgnored private var asking = Set<String>()
+    @ObservationIgnored private var queryVectors: [String: [Float]] = [:]
+    @ObservationIgnored private var liveDocs: [String: (stamp: String, doc: Doc)] = [:]
+    @ObservationIgnored private var slackDocs: [String: (stamp: String, doc: Doc)] = [:]
+    @ObservationIgnored private var embedding = Set<String>()
     @ObservationIgnored private let queue = DispatchQueue(label: "perch.search", qos: .utility)
     private static let store = "\(Shell.home)/.perch/search-index-4.json"
 
@@ -119,7 +123,13 @@ final class ThreadSearch {
                 }
             }
             if changed || next.count != self.files.count { Self.save(next) }
+            // The word list for typo and word-start matching, built here rather than on a keystroke.
+            var spread: [String: Int] = [:]
+            for doc in next.values { for w in doc.words { spread[w, default: 0] += 1 } }
+            let list = spread.keys.sorted { (spread[$0] ?? 0) > (spread[$1] ?? 0) }
             DispatchQueue.main.async {
+                self.vocabulary = (next.count, list, spread)
+                self.expanded.removeAll()
                 self.files = next
                 self.builtAt = Date()
                 self.building = false
@@ -227,6 +237,7 @@ final class ThreadSearch {
             if i + 1 < body.count, w.count + body[i + 1].count <= 12 { counts[w + body[i + 1], default: 0] += 1 }
         }
         doc.counts = counts
+        doc.folded = doc.text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
         doc.titleWords = Set(title).union(zip(title, title.dropFirst()).map { $0 + $1 })
         doc.words = Set(counts.keys).union(doc.titleWords)
     }
@@ -256,28 +267,50 @@ final class ThreadSearch {
         return out
     }
 
-    /// How close in meaning each thread is to the search (its closest passage), worked out in
-    /// the background.
-    private func askMeaning(_ query: String, docs: [Doc]) {
-        guard query.count >= 3, Embedder.shared.ready, meaning[query] == nil, !asking.contains(query) else { return }
-        asking.insert(query)
-        let keyed = docs.filter { !$0.vectors.isEmpty }.map { ($0.key, $0.vectors) }
+    /// How close in meaning each thread is to the search (its closest passage). The search itself
+    /// takes a few milliseconds to read, so this happens in one go with the rest of the search.
+    private func meaningScores(_ query: String, docs: [Doc]) -> [String: Float] {
+        guard query.count >= 3, Embedder.shared.ready else { return [:] }
+        let q: [Float]
+        if let known = queryVectors[query] { q = known } else {
+            guard let made = Embedder.shared.query(query) else { return [:] }
+            if queryVectors.count > 200 { queryVectors.removeAll() }
+            queryVectors[query] = made
+            q = made
+        }
+        var scores: [String: Float] = [:]
+        for doc in docs where !doc.vectors.isEmpty {
+            var best: Float = -1
+            for v in doc.vectors {
+                var dot: Float = 0
+                for i in 0..<min(q.count, v.count) { dot += q[i] * v[i] }
+                best = max(best, dot)
+            }
+            scores[doc.key] = best
+        }
+        return scores
+    }
+
+    /// Reads a Slack conversation for meaning in the background, then refreshes open results.
+    private func embedSlack(_ key: String, doc: Doc, stamp: String) {
+        guard Embedder.shared.ready, !embedding.contains(key) else { return }
+        embedding.insert(key)
         queue.async { [weak self] in
-            guard let self, let q = Embedder.shared.query(query), !keyed.isEmpty else {
-                DispatchQueue.main.async { self?.asking.remove(query) }
-                return
-            }
-            var scores: [String: Float] = [:]
-            for (key, vectors) in keyed {
-                scores[key] = vectors.map { v in zip(q, v).reduce(0) { $0 + $1.0 * $1.1 } }.max() ?? 0
-            }
+            let vectors = Self.passages(doc).compactMap(Embedder.shared.embed)
             DispatchQueue.main.async {
-                self.asking.remove(query)
-                if self.meaning.count > 40 { self.meaning.removeAll() }
-                self.meaning[query] = scores
+                guard let self else { return }
+                self.embedding.remove(key)
+                if self.slackDocs[key]?.stamp == stamp { self.slackDocs[key]?.doc.vectors = vectors }
                 self.version += 1
             }
         }
+    }
+
+    /// Gets the open chats ready to search, so the first letter typed doesn't wait on them.
+    func prepare(live: [Agent]) {
+        _ = search("\u{1}", live: live, slack: [])
+        cache = nil
+        queue.async { _ = Embedder.shared.query("ready") }
     }
 
     /// The threads closest in meaning to a search, with how close, for tuning.
@@ -296,45 +329,74 @@ final class ThreadSearch {
         let query = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return [] }
         if let cache, cache.query == query, cache.version == version { return cache.hits }
+        var marks: [(String, Date)] = [("start", Date())]
 
-        // Live chats are searched from what is on screen; their transcripts are skipped to avoid doubles.
+        // Live chats are searched from what is on screen; their transcripts are skipped to avoid
+        // doubles. Each one is only re-read when it has changed, so typing stays quick.
         var docs: [Doc] = []
         var liveKeys = Set<String>()
         for agent in live {
-            let text = agent.thread.suffix(60).map(\.text).joined(separator: "\n") + "\n" + agent.detail + "\n" + agent.lastMessage
-            var doc = Doc(key: agent.id, target: .agent(agent.id), title: agent.name, text: text, modified: agent.lastActivity)
-            if let path = agent.transcriptPath, let indexed = files[path] {
-                // What is on screen now plus everything said earlier in the session.
-                doc = Doc(key: agent.id, target: .agent(agent.id), title: agent.name, text: text + "\n" + indexed.text,
-                          modified: agent.lastActivity, vectors: indexed.vectors)
-                liveKeys.insert(path)
+            let indexed = agent.transcriptPath.flatMap { files[$0] }
+            if let path = agent.transcriptPath, indexed != nil { liveKeys.insert(path) }
+            let stamp = "\(agent.name)|\(agent.thread.count)|\(agent.thread.last?.id ?? "")|\(agent.lastMessage.count)|\(indexed?.modified.timeIntervalSince1970 ?? 0)"
+            if let known = liveDocs[agent.id], known.stamp == stamp {
+                var doc = known.doc
+                doc.modified = agent.lastActivity
+                docs.append(doc)
+                continue
             }
+            let text = agent.thread.suffix(60).map(\.text).joined(separator: "\n") + "\n" + agent.detail + "\n" + agent.lastMessage
+            // What is on screen now plus everything said earlier in the session.
+            var doc = Doc(key: agent.id, target: .agent(agent.id), title: agent.name,
+                          text: indexed.map { text + "\n" + $0.text } ?? text,
+                          modified: agent.lastActivity, vectors: indexed?.vectors ?? [])
             Self.tokenize(&doc)
+            liveDocs[agent.id] = (stamp, doc)
             docs.append(doc)
         }
         for (path, doc) in files where !liveKeys.contains(path) {
             if case .older(let e) = doc.target, live.contains(where: { $0.id == "\(e.source.rawValue):\(e.id)" }) { continue }
             docs.append(doc)
         }
-        for (target, lines) in slack {
+        for (target, lines) in slack where !lines.isEmpty {
+            let key = "slack:\(target.workspace):\(target.id)"
+            let stamp = "\(lines.count)|\(lines.last?.id ?? "")"
+            if let known = slackDocs[key], known.stamp == stamp {
+                docs.append(known.doc)
+                continue
+            }
             let text = lines.map { "\($0.sender): \($0.text)" }.joined(separator: "\n")
-            var doc = Doc(key: "slack:\(target.workspace):\(target.id)", target: .slack(target), title: target.label,
-                          text: text, modified: Date())
+            let last = lines.last.flatMap { Double($0.id) }.map { Date(timeIntervalSince1970: $0) } ?? Date()
+            var doc = Doc(key: key, target: .slack(target), title: target.label, text: text, modified: last)
             Self.tokenize(&doc)
+            // Meaning for a conversation is worked out once, in the background.
+            doc.vectors = slackDocs[key]?.doc.vectors ?? []
+            slackDocs[key] = (stamp, doc)
+            embedSlack(key, doc: doc, stamp: stamp)
             docs.append(doc)
         }
 
+        marks.append(("docs", Date()))
+        if query == "\u{1}" { return [] }
         let tokens = Array(Set(Self.terms(query))).filter { !Self.stop.contains($0) || Self.terms(query).count == 1 }
+        soleWord = tokens.count == 1
         let expansions = tokens.map(expand)
-        askMeaning(query, docs: docs)
-        let closeness = meaning[query] ?? [:]
+        // Saying where it was ("slack", "channel") favours conversations from there.
+        let wantsSlack = query.contains("slack"), wantsChannel = query.contains("channel")
+        marks.append(("expand", Date()))
+        let closeness = meaningScores(query, docs: docs)
+        marks.append(("meaning", Date()))
         // Closeness is judged against the typical thread for this search: the model scores
         // everything in a narrow band, so what matters is standing out from the middle.
         let values = closeness.values.map(Double.init).sorted(by: >)
         let median = values.isEmpty ? 1 : values[values.count / 2]
         let fourth = values.count > 3 ? values[3] : (values.last ?? 1)
 
-        var hits: [Hit] = []
+        // First every thread is scored on its words and meaning; the costlier passage finding
+        // (for the excerpt, and words appearing together) is then done for the leaders only.
+        struct Candidate { let doc: Doc; var score: Double; let found: [String]; let phrase: Bool; let related: Bool; let close: Double }
+        var candidates: [Candidate] = []
+        let foldedQuery = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
         for doc in docs {
             var total = 0.0
             var matched = 0
@@ -357,11 +419,14 @@ final class ThreadSearch {
             // Threads with every word come first; ones missing a word drop well behind.
             var score = tokens.isEmpty ? 0 : total / Double(tokens.count) * coverage * coverage
             // Most of the words have to be there for a keyword match to count.
-            if coverage < (tokens.count <= 2 ? 1 : 0.6) { score = 0 }
+            // A long question is mostly about its meaning: some of its words are enough.
+            let needed = tokens.count <= 2 ? 1 : tokens.count >= 4 ? 0.4 : 0.6
+            if coverage < needed { score = 0 }
             if doc.title.lowercased().contains(query) { score += 1 }
             // The search as a whole phrase ("case study") counts for much more than its words apart.
             var phrase = false
-            if tokens.count > 1, doc.text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+            // Only worth looking for in threads that have every word.
+            if tokens.count > 1, coverage == 1, (doc.folded.isEmpty ? doc.text.lowercased() : doc.folded).range(of: foldedQuery, options: .literal) != nil {
                 score += 0.9
                 phrase = true
             }
@@ -369,19 +434,34 @@ final class ThreadSearch {
             // About the same thing without sharing the words: clearly closer than most threads.
             let related = score == 0 && close >= fourth && close >= median + 0.08
             if score == 0 && !related { continue }
-            score += max(0, close - median - 0.03) * 7
+            score += max(0, close - median - 0.03) * (tokens.count >= 4 ? 12 : 7)
             if related { score += 0.4 }
+            if case .slack(let t) = doc.target, score > 0 {
+                if wantsSlack { score += 0.6 }
+                if wantsChannel && t.channel { score += 0.5 }
+            }
             // A gentle nudge towards recent threads.
             let age = Date().timeIntervalSince(doc.modified) / 86400
             score += 0.25 * exp(-max(0, age) / 7)
-            let near = found.isEmpty ? nil : Self.snippet(doc.text, around: phrase ? [query] + found : found)
-            // The words side by side in one passage, not scattered across the thread.
-            if let near, tokens.count > 1 { score += 0.3 * Double(min(near.together, tokens.count) - 1) }
-            let snippet = near?.text
-            hits.append(Hit(target: doc.target, snippet: snippet, score: score, related: related,
-                            matches: phrase ? [query] + found : found, modified: doc.modified, close: close))
+            candidates.append(Candidate(doc: doc, score: score, found: found, phrase: phrase, related: related, close: close))
         }
+        candidates.sort { $0.score > $1.score }
+        var hits: [Hit] = []
+        for (i, c) in candidates.enumerated() {
+            var score = c.score
+            var snippet: String?
+            let words = c.phrase ? [query] + c.found : c.found
+            if i < 16, !words.isEmpty, let near = Self.snippet(c.doc.text, folded: c.doc.folded, around: words) {
+                snippet = near.text
+                // The words side by side in one passage, not scattered across the thread.
+                if tokens.count > 1 { score += 0.3 * Double(min(near.together, tokens.count) - 1) }
+            }
+            hits.append(Hit(target: c.doc.target, snippet: snippet, score: score, related: c.related,
+                            matches: words, modified: c.doc.modified, close: c.close))
+        }
+        marks.append(("score", Date()))
         hits.sort { $0.score > $1.score }
+        Self.lastTimings = zip(marks.dropFirst(), marks).map { "\($0.0) \(Int($0.1.timeIntervalSince($1.1) * 1000))ms" }.joined(separator: ", ")
         // Meaning alone is a weaker signal, so only a few of those.
         var relatedLeft = 4
         hits = hits.filter { !$0.related || { relatedLeft -= 1; return relatedLeft >= 0 }() }
@@ -389,34 +469,52 @@ final class ThreadSearch {
         return hits
     }
 
-    private static let stop: Set<String> = ["the", "and", "for", "with", "that", "this", "about", "from", "to", "of", "in", "on", "my", "me", "it", "is", "was", "where", "what", "we", "chat", "thread", "up", "an", "do", "be", "at", "by", "or", "as", "so", "if", "into", "all"]
+    private static let stop: Set<String> = ["the", "and", "for", "with", "that", "this", "about", "from", "to", "of", "in", "on", "my", "me", "it", "is", "was", "where", "what", "we", "chat", "thread", "up", "an", "do", "be", "at", "by", "or", "as", "so", "if", "into", "all", "stuff", "things", "thing", "something", "some", "any", "which", "who", "when", "how", "why", "there", "their", "had", "have", "did", "said", "talked", "talking", "one", "out", "off", "get", "got", "make", "need", "want", "like", "just", "still", "new", "can", "could", "would", "should", "will", "our", "your", "you", "they", "them", "were", "are", "has", "not", "no", "yes"]
 
-    @ObservationIgnored private var vocabulary: (count: Int, words: [String])?
+    /// Every word across the indexed chats, most widely used first, with how many chats use it.
+    @ObservationIgnored private var vocabulary: (count: Int, words: [String], spread: [String: Int])?
 
     /// Each search word and what it can match, with how much each counts: the word itself, longer
     /// words it starts, near misspellings, and words with a similar meaning.
     @ObservationIgnored private var expanded: [String: (Int, [String: Double])] = [:]
 
+    @ObservationIgnored private var soleWord = false
+    static var lastTimings = ""
+
     private func expand(_ token: String) -> [String: Double] {
-        if let (count, known) = expanded[token], count == files.count { return known }
+        if let (count, known) = expanded[token + (soleWord ? "|1" : "")], count == files.count { return known }
         let out = expanding(token)
         if expanded.count > 300 { expanded.removeAll() }
-        expanded[token] = (files.count, out)
+        expanded[token + (soleWord ? "|1" : "")] = (files.count, out)
         return out
     }
 
     private func expanding(_ token: String) -> [String: Double] {
         var out: [String: Double] = [token: 1]
         let vocab = allWords()
-        if token.count >= 2 {
-            for word in vocab where word.count > token.count && word.hasPrefix(token) { out[word] = max(out[word] ?? 0, 0.85) }
+        // The start of a longer word: always for a lone search word (typing "lin" finds LinkedIn),
+        // but in a sentence short words only match themselves ("out" is not "Outlook").
+        // Only the most widely used words it starts count, so "ca" stays quick.
+        if token.count >= 4 || (token.count >= 2 && soleWord) {
+            var taken = 0
+            for word in vocab where word.count > token.count && word.hasPrefix(token) {
+                out[word] = max(out[word] ?? 0, 0.85)
+                taken += 1
+                if taken >= 60 { break }
+            }
         }
         // Typos only count on longer words, and never in the first letter: short words have too
         // many near neighbours ("lead" and "read").
-        if token.count >= 5 {
+        // Only hunted for when the word itself isn't one used in any chat.
+        if token.count >= 5, vocabulary?.spread[token] == nil {
             let limit = token.count >= 8 ? 2 : 1
+            var taken = 0
             for word in vocab where out[word] == nil && word.first == token.first && abs(word.count - token.count) <= limit {
-                if Self.distance(token, word, limit: limit) <= limit { out[word] = 0.7 }
+                if Self.distance(token, word, limit: limit) <= limit {
+                    out[word] = 0.7
+                    taken += 1
+                    if taken >= 20 { break }
+                }
             }
         }
         return out
@@ -424,11 +522,11 @@ final class ThreadSearch {
 
     private func allWords() -> [String] {
         let count = files.count
-        if let vocabulary, vocabulary.count == count { return vocabulary.words }
-        var set = Set<String>()
-        for doc in files.values { set.formUnion(doc.words) }
-        let list = Array(set)
-        vocabulary = (count, list)
+        if let vocabulary, vocabulary.count == count || building { return vocabulary.words }
+        var spread: [String: Int] = [:]
+        for doc in files.values { for w in doc.words { spread[w, default: 0] += 1 } }
+        let list = spread.keys.sorted { (spread[$0] ?? 0) > (spread[$1] ?? 0) }
+        vocabulary = (count, list, spread)
         return list
     }
 
@@ -450,8 +548,10 @@ final class ThreadSearch {
     }
 
     /// A short stretch of the conversation where the most search words appear together.
-    private static func snippet(_ text: String, around words: [String]) -> (text: String, together: Int)? {
-        let folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+    private static func snippet(_ text: String, folded known: String, around words: [String]) -> (text: String, together: Int)? {
+        // The folded copy lines up with the text character for character only when nothing was
+        // folded away; otherwise fold afresh.
+        let folded = known.count == text.count ? known : text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
         let wanted = Array(Set(words.map { $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) }))
         var spots: [(Int, String)] = []
         for word in wanted {
