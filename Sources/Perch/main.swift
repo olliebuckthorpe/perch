@@ -60,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CodingSessions.shared.start()
         Headphones.shared.keepMacMicrophone()
         SlackSource.shared.start()
+        SidePanel.shared.restore()
         Clips.shared.start()
         // Control+Option+V: the clipboard. Control+Option+R: the pinned bot (Remmi).
         Hotkeys.shared.register(key: kVK_ANSI_V, modifiers: controlKey | optionKey) { NotchUI.shared.toggleClips() }

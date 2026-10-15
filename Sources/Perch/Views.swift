@@ -4581,13 +4581,35 @@ final class SidePanel {
     /// The chat the side panel is showing, for pictures pasted into it.
     private(set) var agentID: String?
 
-    func show(_ agent: Agent) {
+    private static let savedKey = "sidePanel"
+    private var moves: [NSObjectProtocol] = []
+
+    /// Puts back the panel that was open when Perch last quit, once its chat has loaded.
+    func restore(tries: Int = 0) {
+        guard window == nil, let saved = UserDefaults.standard.dictionary(forKey: Self.savedKey),
+              let id = saved["agent"] as? String else { return }
+        guard let agent = AgentStore.shared.agents.first(where: { $0.id == id }) else {
+            // Chats arrive over the first few seconds; give up after a minute.
+            if tries < 60 { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.restore(tries: tries + 1) } }
+            return
+        }
+        let frame = NSRectFromString(saved["frame"] as? String ?? "")
+        let fits = NSScreen.screens.contains { $0.visibleFrame.intersects(frame) }
+        show(agent, at: fits && frame.width > 0 ? frame : nil, quietly: true)
+    }
+
+    private func remember() {
+        guard let window, let agentID else { return UserDefaults.standard.removeObject(forKey: Self.savedKey) }
+        UserDefaults.standard.set(["agent": agentID, "frame": NSStringFromRect(window.frame)], forKey: Self.savedKey)
+    }
+
+    func show(_ agent: Agent, at saved: NSRect? = nil, quietly: Bool = false) {
         agentID = agent.id
-        NotchUI.shared.collapse()
+        if !quietly { NotchUI.shared.collapse() }
         let screen = NSScreen.main ?? NSScreen.screens[0]
         let visible = screen.visibleFrame
         let size = NSSize(width: 380, height: min(720, visible.height - 40))
-        let frame = window?.frame ?? NSRect(x: visible.maxX - size.width - 16, y: visible.maxY - size.height - 16,
+        let frame = saved ?? window?.frame ?? NSRect(x: visible.maxX - size.width - 16, y: visible.maxY - size.height - 16,
                                             width: size.width, height: size.height)
         window?.close()
         let panel = SidePanelWindow(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel, .resizable],
@@ -4605,17 +4627,28 @@ final class SidePanel {
             .environment(AgentStore.shared).environment(NotchUI.shared)
             .environment(\.sideWindow, panel)
         panel.contentView = FirstClickHostingView(rootView: root)
+        moves.forEach(NotificationCenter.default.removeObserver)
+        moves = [NSWindow.didMoveNotification, NSWindow.didResizeNotification].map {
+            NotificationCenter.default.addObserver(forName: $0, object: panel, queue: .main) { [weak self] _ in self?.remember() }
+        }
+        if quietly {
+            // Back where it was after a relaunch, without the flourish.
+            panel.setFrame(frame, display: true)
+            panel.orderFrontRegardless()
+            window = panel
+            return remember()
+        }
         // Grows out of the notch and glides over to the side.
         panel.setFrame(notchRect(on: screen), display: false)
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         window = panel
-        NSAnimationContext.runAnimationGroup { context in
+        NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.38
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
             panel.animator().setFrame(frame, display: true)
             panel.animator().alphaValue = 1
-        }
+        }, completionHandler: { self.remember() })
     }
 
     /// A small rectangle where the notch is, for the panel to grow out of and shrink back into.
@@ -4627,6 +4660,7 @@ final class SidePanel {
         window?.close()
         window = nil
         agentID = nil
+        remember()
     }
 
     /// Shrinks back up into the notch, then the chat opens there.
@@ -4634,6 +4668,9 @@ final class SidePanel {
         guard let panel = window else { return NotchUI.shared.show(agent.id) }
         window = nil
         agentID = nil
+        moves.forEach(NotificationCenter.default.removeObserver)
+        moves = []
+        remember()
         let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
         // The reverse of going out: the notch opens on this chat while the panel glides over
         // into it and melts away, so it lands already open.
