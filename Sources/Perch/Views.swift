@@ -4543,18 +4543,17 @@ private struct SaveButton: View {
                 .foregroundStyle(.white).frame(width: 26, height: 26)
                 .background(.black.opacity(0.65), in: Circle())
         }
-        .buttonStyle(Press())
+        .buttonStyle(.plain)
         .padding(6)
-        .help("Save to Downloads")
+        .help(done ? "Saved to Downloads" : "Save to Downloads")
     }
 }
 
-/// Copies a picture into Downloads (never overwriting one already there) and shows it in Finder.
+/// Copies a picture into Downloads quietly (never overwriting one already there).
 private func saveToDownloads(path: String) {
     let source = URL(fileURLWithPath: path)
     let target = freeDownloadsURL(source.lastPathComponent)
     guard (try? FileManager.default.copyItem(at: source, to: target)) != nil else { return NSSound.beep() }
-    NSWorkspace.shared.activateFileViewerSelecting([target])
 }
 
 private func saveToDownloads(image: NSImage, name: String) {
@@ -4563,7 +4562,6 @@ private func saveToDownloads(image: NSImage, name: String) {
     let base = (name as NSString).deletingPathExtension
     let target = freeDownloadsURL("\(base).png")
     guard (try? png.write(to: target)) != nil else { return NSSound.beep() }
-    NSWorkspace.shared.activateFileViewerSelecting([target])
 }
 
 private func freeDownloadsURL(_ name: String) -> URL {
