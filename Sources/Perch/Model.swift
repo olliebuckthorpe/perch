@@ -66,6 +66,8 @@ final class Agent: Identifiable {
     var name: String
     var detail = ""
     var lastMessage = ""
+    /// What a working Grok bot is doing, in Grok Bot's own words ("Clicking around").
+    var activity: String?
     var status: AgentStatus = .idle
     var unread = 0
     /// How much of the context window the session's last turn used, and the model it ran on.

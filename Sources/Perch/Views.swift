@@ -2088,8 +2088,10 @@ struct ChatView: View {
                             // Its face, busy at work, as in Grok Bot's own chat.
                             HStack(spacing: 7) {
                                 FaceView(agent: agent, size: 18)
-                                Text(agent.source == .grok ? "\(agent.name) is working…" : "Working…")
+                                Text(agent.activity ?? (agent.source == .grok ? "\(agent.name) is working…" : "Working…"))
                                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                                    .contentTransition(.opacity)
+                                    .animation(.easeOut(duration: 0.25), value: agent.activity)
                             }
                             .padding(.top, 2)
                         }

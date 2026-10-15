@@ -20,6 +20,83 @@ final class GrokSource {
     /// The newest transcript entry each bot's cached thread was loaded at.
     private var threadStamp: [String: String] = [:]
 
+    // MARK: What a working bot is doing
+
+    /// The phrase Grok Bot shows under a working bot, from the tool it is using right now.
+    /// Mirrors Grok Bot's own rules and wording. A general "working" or "thinking" gets one of
+    /// a few phrases, picked when it starts and kept until the activity changes.
+    private var activityPick: [String: (kind: String, phrase: String)] = [:]
+
+    private static let thinkingPhrases = ["Thinking it through", "Mulling it over", "Putting it together"]
+    private static let workingPhrases = ["Getting it done", "Making progress", "Working on it", "Handling it", "Chipping away"]
+
+    private func activityText(_ raw: [String: Any], id: String) -> String? {
+        let running = (raw["isRunning"] as? Bool ?? false) || (raw["isRunningTurn"] as? Bool ?? false)
+        guard running else { activityPick[id] = nil; return nil }
+        let a = raw["currentActivity"] as? [String: Any]
+        let tool = a?["tool"] as? String ?? ""
+        let detail = (a?["detail"] as? String).flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+        let target = a?["target"] as? String
+        let kind: String
+        var fixed: String?
+        if a?["kind"] as? String == "thinking" {
+            kind = "thinking"
+        } else {
+            switch tool {
+            case "": kind = "working"
+            case "WebSearch": kind = "searching"; fixed = "Digging around"
+            case "WebFetch": kind = "reading-web"; fixed = "Doing some reading"
+            case "Read", "BoxRead", "Skill": kind = "reading"; fixed = "Reading the file"
+            case "MachineShell": kind = detail != nil ? "drafting" : "yours"; fixed = detail != nil ? "Jotting it down" : "Working on your computer"
+            case "Shell", "BoxShell": kind = detail != nil ? "drafting" : "commands"; fixed = detail != nil ? "Jotting it down" : "Running a few commands"
+            case "CopyToBox", "CopyFromBox": kind = "files"; fixed = "Moving files over"
+            case "Await", "AwaitShell": kind = "waiting"; fixed = "Waiting on results"
+            case "GenerateImage": kind = "photo"; fixed = "Sketching something up"
+            case "GenerateVideo": kind = "video"; fixed = "Filming a clip"
+            case "CloudAgent": kind = "coding"; fixed = "Writing some code"
+            case "Task" where target == "computerUse", "Screenshot", "Computer", "request_box_help":
+                kind = "computer"; fixed = "Clicking around"
+            case "request_user_form", "RequestUserForm": kind = "you"; fixed = "Needs your input"
+            case "remap_user_form_targets", "RemapUserFormTargets": kind = "browsing"; fixed = "Clicking through pages"
+            case "SendToAgent", "UpdateAgent":
+                kind = "bot"
+                let name = target.flatMap { t in store.find("grok:\(t)")?.name }
+                fixed = name.map { "Checking with \($0)" } ?? "Checking with another Bot"
+            case "CreateAgent", "ReactToMessage", "SendIMessage": kind = "messaging"; fixed = "Sending a message"
+            case "CheckSubscriptionUsage": kind = "usage"; fixed = "Checking your usage"
+            case "FetchConnectedActivity": kind = detail == "cursor" ? "working" : "yours"; fixed = detail == "cursor" ? nil : "Working on your computer"
+            default:
+                if tool.hasPrefix("browser_") {
+                    kind = "browsing"; fixed = "Clicking through pages"
+                } else if tool == "CallMcpTool" || ["GetMcpTools", "McpAuth", "SearchPlugins", "GetPlugin", "InstallPlugin",
+                            "UninstallPlugin", "GetMcpServerStatus", "AddMcpServer", "UninstallMcpServer", "AuthenticateMcpServer",
+                            "RestartMcpServers", "SetMcpInstructions", "SearchMcpServers", "InstallMcpServer", "EnableTeamServer"].contains(tool) {
+                    kind = "app"
+                    let service = Self.serviceName(detail)
+                    fixed = service.map { "Working in \($0)" } ?? "Working in a connected app"
+                } else {
+                    kind = "working"
+                }
+            }
+        }
+        if let fixed { activityPick[id] = (kind, fixed); return fixed }
+        if let kept = activityPick[id], kept.kind == kind { return kept.phrase }
+        let phrase = (kind == "thinking" ? Self.thinkingPhrases : Self.workingPhrases).randomElement()!
+        activityPick[id] = (kind, phrase)
+        return phrase
+    }
+
+    /// A connected app's name as Grok Bot shows it: "google-calendar" becomes "Google Calendar".
+    private static func serviceName(_ raw: String?) -> String? {
+        guard var s = raw, !s.isEmpty, s.lowercased() != "cursor" else { return nil }
+        if let cut = s.range(of: "--", options: .backwards) { s = String(s[..<cut.lowerBound]) }
+        for prefix in ["dashboard-", "user-", "cursor-"] where s.hasPrefix(prefix) { s = String(s.dropFirst(prefix.count)) }
+        if s.hasSuffix("-xai") { s = String(s.dropLast(4)) }
+        let words = s.contains(" ") ? [s] : s.split(whereSeparator: { $0 == "-" || $0 == "_" }).map(String.init)
+        let name = words.map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+        return name.isEmpty ? nil : name
+    }
+
     // MARK: Quiet phone while reading
 
     /// Each bot's own phone notification setting, as Grok Bot last reported it.
@@ -226,6 +303,7 @@ final class GrokSource {
 
             // While Perch has a bot paused, its "off" is Perch's doing, not the user's choice.
             if let on = raw["notifyOnUpdatesEnabled"] as? Bool, paused[id] == nil { notifying[id] = on }
+            agent.activity = activityText(raw, id: id)
             let running = (raw["isRunning"] as? Bool ?? false) || (raw["isRunningTurn"] as? Bool ?? false)
             let awaiting = !(raw["awaitingUserResponse"] is NSNull) && raw["awaitingUserResponse"] != nil
             // Reading a chat in the notch is reading it; do not let a stale count bring the badge back.
