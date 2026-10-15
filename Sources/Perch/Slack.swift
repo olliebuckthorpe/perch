@@ -48,6 +48,9 @@ struct SlackFile: Identifiable, Equatable {
     let thumb: URL?
     let url: URL?
     let link: URL?
+    /// Slack's short name for the kind of file, like "csv" or "pdf".
+    var kind = ""
+    var size = 0
 
     static func list(_ event: [String: Any], workspace: String) -> [SlackFile] {
         (event["files"] as? [[String: Any]] ?? []).compactMap { f in
@@ -58,7 +61,9 @@ struct SlackFile: Identifiable, Equatable {
                              image: mime.hasPrefix("image/"),
                              thumb: (f["thumb_480"] as? String ?? f["thumb_360"] as? String).flatMap(URL.init(string:)),
                              url: (f["url_private_download"] as? String ?? f["url_private"] as? String).flatMap(URL.init(string:)),
-                             link: (f["permalink"] as? String).flatMap(URL.init(string:)))
+                             link: (f["permalink"] as? String).flatMap(URL.init(string:)),
+                             kind: f["filetype"] as? String ?? (f["name"] as? String).map { ($0 as NSString).pathExtension } ?? "",
+                             size: f["size"] as? Int ?? 0)
         }
     }
 }

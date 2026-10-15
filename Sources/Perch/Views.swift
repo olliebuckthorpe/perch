@@ -4243,6 +4243,34 @@ private struct SlackComposer: View {
     }
 }
 
+/// A small coloured tile naming a file's kind, like a document icon with "CSV" on it.
+private struct FileBadge: View {
+    let kind: String
+
+    private var color: Color {
+        switch kind.lowercased() {
+        case "csv", "xls", "xlsx", "numbers", "gsheet": return Color(red: 0.2, green: 0.66, blue: 0.4)
+        case "pdf": return Color(red: 0.88, green: 0.3, blue: 0.28)
+        case "doc", "docx", "pages", "gdoc", "txt", "text", "rtf", "markdown", "md": return Color(red: 0.27, green: 0.5, blue: 0.92)
+        case "ppt", "pptx", "key", "keynote", "gpres": return Color(red: 0.93, green: 0.48, blue: 0.22)
+        case "zip", "gzip", "tar", "rar": return Color(white: 0.5)
+        case "mp4", "mov", "mp3", "m4a", "wav": return Color(red: 0.6, green: 0.4, blue: 0.9)
+        default: return Color(white: 0.42)
+        }
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            RoundedRectangle(cornerRadius: 7, style: .continuous).fill(color.gradient)
+            Image(systemName: "doc.text").font(.system(size: 13, weight: .medium)).foregroundStyle(.white.opacity(0.9))
+                .frame(maxHeight: .infinity, alignment: .center).padding(.bottom, 10)
+            Text(kind.isEmpty ? "FILE" : String(kind.uppercased().prefix(4)))
+                .font(.system(size: 8, weight: .heavy)).foregroundStyle(.white).padding(.bottom, 5)
+        }
+        .frame(width: 34, height: 40)
+    }
+}
+
 /// A file shared in Slack: pictures as a preview, anything else as a chip. Clicking opens it;
 /// when the workspace's key can't read files, it opens in Slack instead.
 private struct SlackFileView: View {
@@ -4261,23 +4289,33 @@ private struct SlackFileView: View {
                         if hovered { SaveButton { save() } }
                     }
             } else {
-                HStack(spacing: 7) {
-                    Image(nsImage: NSWorkspace.shared.icon(for: UTType(filenameExtension: (file.name as NSString).pathExtension) ?? .data))
-                        .resizable().frame(width: 22, height: 22)
-                    Text(file.name).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
-                        .foregroundStyle(.white.opacity(0.9))
-                    if opening { ProgressView().controlSize(.mini) }
-                    else if hovered {
-                        Button(action: save) {
-                            Image(systemName: "arrow.down.to.line").font(.system(size: 10.5, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.7))
-                        }
-                        .buttonStyle(Press()).help("Save to Downloads")
+                HStack(spacing: 10) {
+                    FileBadge(kind: file.kind)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(file.name).font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.92))
+                            .lineLimit(2).truncationMode(.middle).fixedSize(horizontal: false, vertical: true)
+                        Text(details).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
                     }
+                    Spacer(minLength: 4)
+                    Group {
+                        if opening { ProgressView().controlSize(.mini) }
+                        else {
+                            Button(action: save) {
+                                Image(systemName: "arrow.down.to.line").font(.system(size: 10.5, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.75)).frame(width: 24, height: 24)
+                                    .background(.white.opacity(0.1), in: Circle())
+                            }
+                            .buttonStyle(Press()).help("Save to Downloads")
+                            .opacity(hovered ? 1 : 0)
+                        }
+                    }
+                    .frame(width: 24)
                 }
-                .padding(.horizontal, 10).padding(.vertical, 7)
-                .frame(maxWidth: 260, alignment: .leading)
-                .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.leading, 9).padding(.trailing, 10).padding(.vertical, 9)
+                .frame(width: 270, alignment: .leading)
+                .background(Color(white: hovered ? 0.2 : 0.16), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.08), lineWidth: 1))
+                .animation(.easeOut(duration: 0.12), value: hovered)
             }
         }
         .contentShape(Rectangle())
@@ -4290,6 +4328,13 @@ private struct SlackFileView: View {
                 image = data.flatMap(NSImage.init(data:))
             }
         }
+    }
+
+    /// "CSV · 24 KB"
+    private var details: String {
+        let kind = file.kind.isEmpty ? "File" : file.kind.uppercased()
+        guard file.size > 0 else { return kind }
+        return "\(kind) · " + ByteCountFormatter.string(fromByteCount: Int64(file.size), countStyle: .file)
     }
 
     private func download(_ done: @escaping (Data?) -> Void) {
