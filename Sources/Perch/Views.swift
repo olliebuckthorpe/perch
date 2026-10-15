@@ -2085,8 +2085,13 @@ struct ChatView: View {
                             .id(item.id)
                         }
                         if agent.status == .working {
-                            Text(agent.source == .grok ? "\(agent.name) is working…" : "Working…")
-                                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                            // Its face, busy at work, as in Grok Bot's own chat.
+                            HStack(spacing: 7) {
+                                FaceView(agent: agent, size: 18)
+                                Text(agent.source == .grok ? "\(agent.name) is working…" : "Working…")
+                                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                            }
+                            .padding(.top, 2)
                         }
                     }
                     .padding(.horizontal, 6)
