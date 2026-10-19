@@ -29,6 +29,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	_ "modernc.org/sqlite"
 )
 
@@ -90,7 +91,9 @@ func main() {
 	store.DeviceProps.Os = proto.String("Perch")
 	client = whatsmeow.NewClient(device, waLog.Noop)
 	// Perch decides when a chat has been read; nothing is marked read just by arriving.
-	client.AddEventHandler(handle)
+	go work()
+	client.AddEventHandler(enqueue)
+	note("started, linked=%v", client.Store.ID != nil)
 
 	go connect()
 	commands()
@@ -144,7 +147,40 @@ func setup() {
 
 // MARK: Events
 
+// note writes what happened to helper.log (event kinds and errors only, never message content).
+func note(format string, args ...any) {
+	f, err := os.OpenFile(filepath.Join(dir, "helper.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(f, "%s %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
+	f.Close()
+}
+
+// queue hands events to a worker of their own. whatsmeow waits for each handler to return
+// before it reads anything else, so asking WhatsApp a question inside one (a group's name, its
+// size) waited on itself forever and nothing more came through. The worker can ask freely.
+var queue = make(chan any, 4096)
+
+func enqueue(evt any) {
+	select {
+	case queue <- evt:
+	default:
+		note("queue full, dropped %T", evt)
+	}
+}
+
+func work() {
+	for evt := range queue {
+		handle(evt)
+	}
+}
+
 func handle(evt any) {
+	switch evt.(type) {
+	case *events.Message, *events.Connected, *events.Disconnected, *events.LoggedOut, *events.HistorySync, *events.StreamReplaced:
+		note("event %T", evt)
+	}
 	switch e := evt.(type) {
 	case *events.Connected:
 		me := ""
@@ -225,6 +261,13 @@ func record(e *events.Message, live bool) map[string]any {
 	}
 	text, kind, mimeType, filename := describe(msg)
 	if kind == "" {
+		// Which parts the message had (names only, no content), to see what is not handled.
+		var parts []string
+		msg.ProtoReflect().Range(func(fd protoreflect.FieldDescriptor, _ protoreflect.Value) bool {
+			parts = append(parts, string(fd.Name()))
+			return true
+		})
+		note("skipped message with %v", parts)
 		return nil
 	}
 	chat := key(e.Info.Chat)
@@ -242,6 +285,7 @@ func record(e *events.Message, live bool) map[string]any {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, chat, e.Info.ID, sender, senderName, boolInt(e.Info.IsFromMe), ts, text,
 		kind, mimeType, filename, raw, boolInt(e.Info.IsFromMe || !live))
 	if err != nil {
+		note("store failed: %v", err)
 		return nil
 	}
 	if added, _ := res.RowsAffected(); added == 0 {
