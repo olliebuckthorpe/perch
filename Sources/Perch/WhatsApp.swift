@@ -254,8 +254,10 @@ final class WhatsAppSource {
                                    thumb: url, url: url, link: nil,
                                    kind: ext.isEmpty ? (label(kind)) : ext, size: 0))
         }
+        // Each person's own picture: the sender's in a group, the other person's in a direct chat.
+        let who = (m["group"] as? Bool == true || chat.hasSuffix("@g.us")) ? (m["sender"] as? String ?? chat) : chat
         return SlackLine(id: id, sender: mine ? "You" : (m["senderName"] as? String ?? ""), mine: mine,
-                         text: m["text"] as? String ?? "", picture: nil, files: files)
+                         text: m["text"] as? String ?? "", picture: mine ? nil : shared.picture(for: who), files: files)
     }
 
     // MARK: Chats
@@ -320,8 +322,16 @@ final class WhatsAppSource {
         return out
     }
 
+    /// The profile picture for a chat or person, fetched when first wanted.
+    func picture(for id: String) -> URL? {
+        if avatars[id] == nil { avatar(id) }
+        return avatars[id]
+    }
+
+    @ObservationIgnored private var asked = Set<String>()
+
     private func avatar(_ chat: String) {
-        guard avatars[chat] == nil else { return }
+        guard avatars[chat] == nil, state == .ready, asked.insert(chat).inserted else { return }
         request("avatar", ["chat": chat]) { [weak self] data in
             if let s = (data as? [String: Any])?["url"] as? String, let url = URL(string: s) { self?.avatars[chat] = url }
         }

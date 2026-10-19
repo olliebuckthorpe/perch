@@ -689,6 +689,12 @@ func avatar(chat string) (any, error) {
 		return nil, err
 	}
 	info, err := client.GetProfilePictureInfo(ctx, j, &whatsmeow.GetProfilePictureParams{Preview: true})
+	// Someone known by their anonymous id: try their phone number instead.
+	if (err != nil || info == nil) && j.Server == types.HiddenUserServer {
+		if pn, perr := client.Store.LIDs.GetPNForLID(ctx, j); perr == nil && !pn.IsEmpty() {
+			info, err = client.GetProfilePictureInfo(ctx, pn, &whatsmeow.GetProfilePictureParams{Preview: true})
+		}
+	}
 	if err != nil || info == nil {
 		return map[string]any{"url": ""}, nil
 	}

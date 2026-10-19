@@ -505,7 +505,7 @@ private struct SearchResults: View {
             PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(prompt)", trailing: nil) { item.open(ui) }
         case .slack(let target):
             result(item, title: target.label) {
-                SlackAvatar(url: target.picture, channel: target.channel, size: 18, whatsapp: target.workspace == WhatsAppSource.workspace)
+                SlackAvatar(url: livePicture(target), channel: target.channel, size: 18, whatsapp: target.workspace == WhatsAppSource.workspace)
             }
         }
     }
@@ -4616,7 +4616,7 @@ private struct SlackRailRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            SlackAvatar(url: target.picture, channel: target.channel, size: 16, whatsapp: target.workspace == WhatsAppSource.workspace).frame(width: 20, height: 20)
+            SlackAvatar(url: livePicture(target), channel: target.channel, size: 16, whatsapp: target.workspace == WhatsAppSource.workspace).frame(width: 20, height: 20)
             let waiting = ui.slackUnread["\(target.workspace):\(target.id)"] ?? 0
             Text(target.label).font(.system(size: 11.5, weight: selected || waiting > 0 ? .semibold : .regular))
                 .foregroundStyle(.white.opacity(selected || waiting > 0 ? 0.95 : 0.7)).lineLimit(1)
@@ -4731,7 +4731,7 @@ private struct SlackComposer: View {
                         .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
                 }
                 .buttonStyle(Press())
-                SlackAvatar(url: target.picture, channel: target.channel, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace)
+                SlackAvatar(url: livePicture(target), channel: target.channel, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace)
                 Text(target.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                 Text(target.workspace == WhatsAppSource.workspace ? "WhatsApp" : "Slack · \(target.workspace.capitalized)")
                     .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
@@ -4905,6 +4905,11 @@ private struct FileBadge: View {
         }
         .frame(width: 34, height: 40)
     }
+}
+
+/// A conversation's picture: for WhatsApp, the profile picture as WhatsApp has it now.
+private func livePicture(_ t: SlackTarget) -> URL? {
+    t.workspace == WhatsAppSource.workspace ? (WhatsAppSource.shared.picture(for: t.id) ?? t.picture) : t.picture
 }
 
 /// Linking WhatsApp: a QR code to scan from the phone, as for WhatsApp Web.
@@ -5093,7 +5098,8 @@ private struct ToastBanner: View {
                         lines(agent.name, agent.lastMessage.isEmpty ? agent.detail : agent.lastMessage)
                     }
                 case .slack(let alert):
-                    SlackAvatar(url: alert.picture, channel: false, size: 26, whatsapp: alert.workspace == WhatsAppSource.workspace)
+                    SlackAvatar(url: alert.workspace == WhatsAppSource.workspace ? livePicture(alert.target) : alert.picture,
+                                channel: false, size: 26, whatsapp: alert.workspace == WhatsAppSource.workspace)
                     lines(alert.direct ? alert.sender : "\(alert.sender) in \(alert.place)", alert.text)
                 }
                 Spacer(minLength: 4)
@@ -5159,7 +5165,8 @@ private struct SlackBanner: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top, spacing: 10) {
-                SlackAvatar(url: alert.picture, channel: false, size: 30, whatsapp: alert.workspace == WhatsAppSource.workspace)
+                SlackAvatar(url: alert.workspace == WhatsAppSource.workspace ? livePicture(alert.target) : alert.picture,
+                            channel: false, size: 30, whatsapp: alert.workspace == WhatsAppSource.workspace)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(alert.sender).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
