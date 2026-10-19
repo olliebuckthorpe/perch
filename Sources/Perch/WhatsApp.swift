@@ -387,7 +387,7 @@ final class WhatsAppSource {
                 if store.lines[key] == nil { store.lines[key] = [] }
                 return
             }
-            store.lines[key] = rows.map { Self.line($0, chat: target.id) }
+            store.replace(key, with: rows.map { Self.line($0, chat: target.id) })
         }
     }
 

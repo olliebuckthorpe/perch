@@ -2149,6 +2149,7 @@ struct ChatView: View {
                                 }
                             }
                             .id(item.id)
+                            .transition(item.message?.fromUser == true ? .sent : .opacity)
                         }
                         if agent.status == .working {
                             // Its face, busy at work, as in Grok Bot's own chat.
@@ -2590,6 +2591,8 @@ private struct ReplyField: View {
     @State private var focused = false
     /// Bumped to put the cursor in the box.
     @State private var focusAsk = 0
+    /// Bumped on each send, for the button's little bounce.
+    @State private var sent = 0
 
     private func focus() {
         focused = true
@@ -2696,7 +2699,7 @@ private struct ReplyField: View {
             .buttonStyle(Press()).disabled(busy)
             .help(listening ? "Stop dictating" : "Dictate a reply")
             Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
+                Image(systemName: "arrow.up.circle.fill").font(.system(size: 15)).symbolEffect(.bounce, value: sent)
                     .foregroundStyle(empty || busy ? .white.opacity(0.2) : agent.theme)
             }
             .buttonStyle(Press())
@@ -2775,6 +2778,7 @@ private struct ReplyField: View {
         let files = ui.attachments[agent.id] ?? []
         guard !(text.isEmpty && files.isEmpty), !busy else { return }
         Dictation.shared.stop()
+        sent += 1
         ui.drafts[agent.id] = nil
         ui.attachments[agent.id] = nil
         if agent.source == .grok {
@@ -4727,6 +4731,7 @@ private struct SlackAvatar: View {
 private struct SlackComposer: View {
     let target: SlackTarget
     @Environment(NotchUI.self) private var ui
+    @State private var sent = 0
     @State private var text = ""
     @State private var files: [URL] = []
     @State private var state: String?
@@ -4764,7 +4769,7 @@ private struct SlackComposer: View {
                             if lines.isEmpty {
                                 Text("No messages yet.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
                             }
-                            ForEach(lines) { line in
+                            ForEach(lines, id: \.viewKey) { line in
                                 HStack(alignment: .top, spacing: 8) {
                                     if line.mine { Spacer(minLength: 50) }
                                     if !line.mine { SlackAvatar(url: line.picture, channel: false, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace) }
@@ -4787,6 +4792,7 @@ private struct SlackComposer: View {
                                     if !line.mine { Spacer(minLength: 40) }
                                 }
                                 .id(line.id)
+                                .transition(line.mine ? .sent : .opacity)
                             }
                         } else {
                             ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(.top, 30)
@@ -4837,7 +4843,7 @@ private struct SlackComposer: View {
                     }
                     .buttonStyle(Press()).help("Attach files")
                     Button(action: send) {
-                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
+                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 15)).symbolEffect(.bounce, value: sent)
                             .foregroundStyle(text.isEmpty && files.isEmpty ? .white.opacity(0.2) : .white)
                     }
                     .buttonStyle(Press()).disabled((text.isEmpty && files.isEmpty) || state == "sending")
@@ -4884,13 +4890,21 @@ private struct SlackComposer: View {
         guard !message.isEmpty || !files.isEmpty, state != "sending" else { return }
         state = "sending"
         let sending = files
+        // Shown straight away, rising into place; the real copy takes its spot when it is back.
+        let store = SlackConversations.shared
+        let whatsapp = target.workspace == WhatsAppSource.workspace
+        let channel = target.channel || whatsapp ? target.id : store.dmChannel["\(target.workspace):\(target.id)"]
+        if !message.isEmpty, let channel { store.showSent(store.key(target.workspace, channel), text: message, whatsapp: whatsapp) }
+        text = ""
+        sent += 1
         SlackSource.shared.send(to: target, text: message, files: sending) { ok in
             state = ok ? nil : "failed"
             if ok {
-                text = ""
                 files = []
-                // Shows up in the conversation by itself, from Slack's own record.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { SlackSource.shared.history(for: target) }
+                // The real copy, from Slack's or WhatsApp's own record.
+                DispatchQueue.main.asyncAfter(deadline: .now() + (whatsapp ? 0.1 : 0.8)) { SlackSource.shared.history(for: target) }
+            } else {
+                text = message
             }
         }
     }
@@ -4996,6 +5010,24 @@ private struct WhatsAppLinkView: View {
         let image = NSImage(size: rep.size)
         image.addRepresentation(rep)
         return image
+    }
+}
+
+/// How a message the user sends arrives: rising from the reply box, growing out of its corner.
+struct SendRise: ViewModifier {
+    let away: Bool
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(away ? 0.86 : 1, anchor: .bottomTrailing)
+            .offset(y: away ? 28 : 0)
+            .opacity(away ? 0 : 1)
+            .blur(radius: away ? 2 : 0)
+    }
+}
+
+extension AnyTransition {
+    static var sent: AnyTransition {
+        .asymmetric(insertion: .modifier(active: SendRise(away: true), identity: SendRise(away: false)), removal: .opacity)
     }
 }
 
@@ -5124,6 +5156,10 @@ struct Ticks: View {
 
     var body: some View {
         let color = level >= 3 ? Color(red: 0.33, green: 0.74, blue: 0.92) : .white.opacity(0.55)
+        if level <= 0 {
+            // Still on its way.
+            Image(systemName: "clock").font(.system(size: size * 0.9)).foregroundStyle(color).frame(width: size * 1.5, alignment: .leading)
+        } else {
         ZStack(alignment: .leading) {
             Image(systemName: "checkmark").font(.system(size: size, weight: .bold))
             if level >= 2 {
@@ -5132,6 +5168,7 @@ struct Ticks: View {
         }
         .foregroundStyle(color)
         .frame(width: size * (level >= 2 ? 1.5 : 1.05), alignment: .leading)
+        }
     }
 }
 

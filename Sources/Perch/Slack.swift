@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Observation
 
 /// Someone or somewhere to message on Slack.
@@ -31,6 +32,10 @@ final class SlackDirectory {
 /// One message in a Slack conversation, as shown in the notch.
 struct SlackLine: Identifiable, Equatable {
     let id: String
+    /// What the screen knows this line by. A message shown the moment it is sent keeps its place
+    /// when the real copy comes back under another id, so it animates in once, not twice.
+    var viewID: String = ""
+    var viewKey: String { viewID.isEmpty ? id : viewID }
     var sender: String
     let mine: Bool
     let text: String
@@ -87,6 +92,34 @@ final class SlackConversations {
     var loading = Set<String>()
 
     func key(_ workspace: String, _ channel: String) -> String { "\(workspace):\(channel)" }
+
+    /// A conversation's lines as just loaded, keeping each line where the screen already has it:
+    /// sent-just-now lines become their real copies, and anything not back yet stays.
+    func replace(_ key: String, with loaded: [SlackLine]) {
+        var fresh = loaded.map { l -> SlackLine in var l = l; if l.viewID.isEmpty { l.viewID = l.id }; return l }
+        let old = lines[key] ?? []
+        let known = Dictionary(old.map { ($0.id, $0.viewKey) }, uniquingKeysWith: { a, _ in a })
+        for i in fresh.indices { if let v = known[fresh[i].id], !v.isEmpty { fresh[i].viewID = v } }
+        var waiting: [SlackLine] = []
+        for local in old where local.id.hasPrefix("local-") {
+            if let i = fresh.lastIndex(where: { $0.mine && $0.text == local.text && $0.viewKey == $0.id }) {
+                fresh[i].viewID = local.viewID
+            } else if Date().timeIntervalSince(local.time ?? .distantPast) < 60 {
+                waiting.append(local)
+            }
+        }
+        lines[key] = fresh + waiting
+    }
+
+    /// A message the user just sent, shown at once while it goes.
+    func showSent(_ key: String, text: String, whatsapp: Bool) {
+        let id = "local-\(UUID().uuidString)"
+        let line = SlackLine(id: id, viewID: id, sender: "You", mine: true, text: text, time: Date(), ticks: whatsapp ? 0 : nil)
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+            if lines[key] == nil { lines[key] = [] }
+            lines[key]?.append(line)
+        }
+    }
 }
 
 /// One Slack message worth a banner.
@@ -375,7 +408,7 @@ private final class Workspace {
                     }
                 }
                 // Shown straight away; names Perch doesn't know yet fill in as they arrive.
-                store.lines[key] = build()
+                store.replace(key, with: build())
                 var unknown = Set<String>()
                 for m in raw {
                     if let user = m["user"] as? String, m["bot_profile"] == nil, !user.isEmpty { unknown.insert(user) }
@@ -389,7 +422,7 @@ private final class Workspace {
                     group.enter()
                     self.resolve(sender: user, botName: nil, channel: channel, direct: true) { _, _ in group.leave() }
                 }
-                group.notify(queue: .main) { store.lines[key] = build() }
+                group.notify(queue: .main) { store.replace(key, with: build()) }
             }
         }
     }

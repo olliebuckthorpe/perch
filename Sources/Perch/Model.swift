@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Observation
 
 enum AgentSource: String {
@@ -110,7 +111,10 @@ final class Agent: Identifiable {
     @discardableResult
     func addLocal(_ text: String) -> String {
         let id = "local-\(UUID().uuidString)"
-        thread.append(ChatMessage(id: id, fromUser: true, text: text))
+        // Rises into place from the reply box, with a soft spring.
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+            thread.append(ChatMessage(id: id, fromUser: true, text: text))
+        }
         return id
     }
 
