@@ -159,6 +159,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { MainActor.assumeIsolated { renderMessagePreview(text, to: parts[1]) } }
         case "shapesview" where parts.count > 1:
             DispatchQueue.main.async { MainActor.assumeIsolated { renderShapesPreview(to: parts[1]) } }
+        case "waview" where parts.count > 1:
+            DispatchQueue.main.async { MainActor.assumeIsolated { renderWhatsAppPreview(to: parts[1]) } }
         case "ballview" where parts.count > 1:
             DispatchQueue.main.async { MainActor.assumeIsolated { renderBallPreview(to: parts[1]) } }
         case "toastview" where parts.count > 1:

@@ -11,6 +11,9 @@ struct WhatsAppChat: Identifiable, Equatable {
     var last: String
     var size = 0
     var community = false
+    /// The last message was the user's own, and how far it got (ticks).
+    var lastMine = false
+    var lastTicks = 0
 
     /// A big group or part of a Community: only worth hearing about when it is talking to the user.
     var crowd: Bool { group && (community || size > WhatsAppSource.smallGroup) }
@@ -180,6 +183,16 @@ final class WhatsAppSource {
             }
         case "message":
             arrived(o)
+        case "status":
+            // Delivered or read on the other side: the ticks move on.
+            guard let chat = o["chat"] as? String, let ids = o["ids"] as? [String], let tick = o["status"] as? Int else { break }
+            let store = SlackConversations.shared
+            let key = store.key(Self.workspace, chat)
+            if var lines = store.lines[key] {
+                for i in lines.indices where ids.contains(lines[i].id) { lines[i].ticks = max(lines[i].ticks ?? 1, tick) }
+                store.lines[key] = lines
+            }
+            if let i = chats.firstIndex(where: { $0.id == chat }), chats[i].lastMine { chats[i].lastTicks = max(chats[i].lastTicks, tick) }
         case "error":
             if case .ready = state { break }
             state = .failed(o["message"] as? String ?? "WhatsApp stopped")
@@ -202,7 +215,9 @@ final class WhatsAppSource {
         let name = o["chatName"] as? String ?? "WhatsApp"
         if let i = chats.firstIndex(where: { $0.id == chat }) {
             chats[i].ts = Date()
-            chats[i].last = line.text
+            chats[i].last = line.text.isEmpty ? Self.label(o["kind"] as? String) : line.text
+            chats[i].lastMine = line.mine
+            chats[i].lastTicks = line.ticks ?? 1
             chats[i].name = name
         } else {
             chats.insert(WhatsAppChat(id: chat, name: name, group: group, ts: Date(), unread: 0, last: line.text), at: 0)
@@ -258,14 +273,17 @@ final class WhatsAppSource {
             let url = URL(string: "perch-wa://media/\(chat)/\(id)")
             let name = (m["filename"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? label(kind)
             let ext = (name as NSString).pathExtension
+            let preview = (m["thumb"] as? String).flatMap { Data(base64Encoded: $0) }
             files.append(SlackFile(id: id, workspace: workspace, name: name, image: kind == "image" || kind == "sticker",
                                    thumb: url, url: url, link: nil,
-                                   kind: ext.isEmpty ? (label(kind)) : ext, size: 0))
+                                   kind: ext.isEmpty ? (label(kind)) : ext, size: 0, preview: preview))
         }
         // Each person's own picture: the sender's in a group, the other person's in a direct chat.
         let who = (m["group"] as? Bool == true || chat.hasSuffix("@g.us")) ? (m["sender"] as? String ?? chat) : chat
+        let time = (m["ts"] as? Double).map { Date(timeIntervalSince1970: $0) }
         return SlackLine(id: id, sender: mine ? "You" : (m["senderName"] as? String ?? ""), mine: mine,
-                         text: m["text"] as? String ?? "", picture: mine ? nil : shared.picture(for: who), files: files)
+                         text: m["text"] as? String ?? "", picture: mine ? nil : shared.picture(for: who), files: files,
+                         time: time, ticks: mine ? max(1, m["status"] as? Int ?? 1) : nil)
     }
 
     // MARK: Chats
@@ -279,7 +297,8 @@ final class WhatsAppSource {
                 return WhatsAppChat(id: id, name: r["name"] as? String ?? "", group: r["group"] as? Bool ?? false,
                                     ts: Date(timeIntervalSince1970: r["ts"] as? Double ?? 0),
                                     unread: r["unread"] as? Int ?? 0, last: last,
-                                    size: r["groupSize"] as? Int ?? 0, community: r["community"] as? Bool ?? false)
+                                    size: r["groupSize"] as? Int ?? 0, community: r["community"] as? Bool ?? false,
+                                    lastMine: r["lastMine"] as? Bool ?? false, lastTicks: max(1, r["lastStatus"] as? Int ?? 1))
             }
             // Unread chats from the last few days wait in the sidebar, as if they had just arrived.
             // Only people and small groups: big groups and Communities stay out of the sidebar.

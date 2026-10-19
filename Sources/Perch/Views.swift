@@ -4619,8 +4619,18 @@ private struct SlackRailRow: View {
         HStack(spacing: 6) {
             SlackAvatar(url: livePicture(target), channel: target.channel, size: 16, whatsapp: target.workspace == WhatsAppSource.workspace).frame(width: 20, height: 20)
             let waiting = ui.slackUnread["\(target.workspace):\(target.id)"] ?? 0
-            Text(liveName(target)).font(.system(size: 11.5, weight: selected || waiting > 0 ? .semibold : .regular))
-                .foregroundStyle(.white.opacity(selected || waiting > 0 ? 0.95 : 0.7)).lineLimit(1)
+VStack(alignment: .leading, spacing: 1) {
+                Text(liveName(target)).font(.system(size: 11.5, weight: selected || waiting > 0 ? .semibold : .regular))
+                    .foregroundStyle(.white.opacity(selected || waiting > 0 ? 0.95 : 0.7)).lineLimit(1)
+                // WhatsApp: a short look at the last message, with ticks when it was the user's.
+                if let chat = WhatsAppSource.shared.chats.first(where: { $0.id == target.id && target.workspace == WhatsAppSource.workspace }),
+                   !chat.last.isEmpty {
+                    HStack(spacing: 3) {
+                        if chat.lastMine { Ticks(level: chat.lastTicks, size: 7.5) }
+                        Text(oneLine(chat.last, max: 60)).font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                    }
+                }
+            }
             Spacer(minLength: 0)
             if waiting > 0 && !hovered {
                 Text("\(waiting)").font(.system(size: 9.5, weight: .bold)).foregroundStyle(.black)
@@ -4758,7 +4768,9 @@ private struct SlackComposer: View {
                                         if !line.mine {
                                             Text(line.sender).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
                                         }
-                                        if !line.text.isEmpty {
+                                        if target.workspace == WhatsAppSource.workspace {
+                                            if !line.text.isEmpty || line.files.isEmpty { WhatsAppBubble(line: line) }
+                                        } else if !line.text.isEmpty {
                                             Text(line.text).font(.system(size: 12.5)).textSelection(.enabled)
                                                 .foregroundStyle(line.mine ? Color.black.opacity(0.88) : .white.opacity(0.9))
                                                 .fixedSize(horizontal: false, vertical: true)
@@ -4983,6 +4995,72 @@ private struct WhatsAppLinkView: View {
     }
 }
 
+/// A WhatsApp message as WhatsApp's dark theme draws it: green for the user's own, grey for
+/// everyone else's, with the time and (on the user's own) the ticks tucked into the corner.
+private struct WhatsAppBubble: View {
+    let line: SlackLine
+
+    static let mine = Color(red: 0.0, green: 0.36, blue: 0.29)
+    static let theirs = Color(red: 0.13, green: 0.17, blue: 0.2)
+
+    var body: some View {
+        // The time sits after the last line, with room left for it so it never covers the text.
+        Text(WhatsAppText.styled(line.text) + spacer)
+            .font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.95)).textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.leading, 9).padding(.trailing, 9).padding(.top, 6).padding(.bottom, 7)
+            .overlay(alignment: .bottomTrailing) { stamp.padding(.trailing, 7).padding(.bottom, 4) }
+            .background(line.mine ? Self.mine : Self.theirs, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    /// Invisible text as wide as the time and ticks, so the last line always leaves room for them.
+    private var spacer: AttributedString {
+        var gap = AttributedString("\u{2002}\u{2002}" + (line.time?.formatted(.dateTime.hour().minute()) ?? "") + (line.mine ? "\u{2009}✓✓" : ""))
+        gap.foregroundColor = .clear
+        gap.font = .system(size: 9.5)
+        return gap
+    }
+
+    private var stamp: some View {
+        HStack(spacing: 3) {
+            if let time = line.time {
+                Text(time.formatted(.dateTime.hour().minute())).font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.55))
+            }
+            if line.mine, let ticks = line.ticks { Ticks(level: ticks) }
+        }
+    }
+}
+
+/// WhatsApp's ticks: one grey once sent, two grey once delivered, two blue once read.
+struct Ticks: View {
+    let level: Int
+    var size: CGFloat = 9
+
+    var body: some View {
+        let color = level >= 3 ? Color(red: 0.33, green: 0.74, blue: 0.92) : .white.opacity(0.55)
+        ZStack(alignment: .leading) {
+            Image(systemName: "checkmark").font(.system(size: size, weight: .bold))
+            if level >= 2 {
+                Image(systemName: "checkmark").font(.system(size: size, weight: .bold)).offset(x: size * 0.45)
+            }
+        }
+        .foregroundStyle(color)
+        .frame(width: size * (level >= 2 ? 1.5 : 1.05), alignment: .leading)
+    }
+}
+
+/// WhatsApp's own formatting (*bold*, _italic_, ~strike~, `code`) into styled text.
+enum WhatsAppText {
+    static func styled(_ text: String) -> AttributedString {
+        var md = text
+        md = md.replacingOccurrences(of: #"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])"#, with: "**$1**", options: .regularExpression)
+        md = md.replacingOccurrences(of: #"(?<![\w_])_(?=\S)([^_\n]+?)(?<=\S)_(?![\w_])"#, with: "*$1*", options: .regularExpression)
+        md = md.replacingOccurrences(of: #"(?<![\w~])~(?=\S)([^~\n]+?)(?<=\S)~(?![\w~])"#, with: "~~$1~~", options: .regularExpression)
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: md, options: options)) ?? AttributedString(text)
+    }
+}
+
 /// A file shared in Slack: pictures as a preview, anything else as a chip. Clicking opens it;
 /// when the workspace's key can't read files, it opens in Slack instead.
 private struct SlackFileView: View {
@@ -5045,9 +5123,11 @@ private struct SlackFileView: View {
         }
         .help(file.image ? "Enlarge" : "Open \(file.name)")
         .task(id: file.id) {
+            // The small preview that came with the message shows at once; the full picture follows.
+            if image == nil, let preview = file.preview { image = NSImage(data: preview) }
             guard file.image, let thumb = file.thumb ?? file.url else { return }
             SlackSource.shared.fetch(thumb, workspace: file.workspace) { data in
-                image = data.flatMap(NSImage.init(data:))
+                if let full = data.flatMap(NSImage.init(data:)) { image = full }
             }
         }
     }
@@ -5700,6 +5780,29 @@ private func freeDownloadsURL(_ name: String) -> URL {
         }
     }
     .padding(8).background(.white)
+    let renderer = ImageRenderer(content: view)
+    renderer.scale = 2
+    if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+}
+
+
+/// WhatsApp bubbles drawn off screen, for checking the look.
+@MainActor func renderWhatsAppPreview(to path: String) {
+    let now = Date()
+    let lines = [
+        SlackLine(id: "1", sender: "Ollie", mine: false, text: "yh i was just setting the same up but would be better to sort it out", time: now),
+        SlackLine(id: "2", sender: "You", mine: true, text: "Weird", time: now, ticks: 3),
+        SlackLine(id: "3", sender: "You", mine: true, text: "Ah ok looks like it was just that yh", time: now, ticks: 2),
+        SlackLine(id: "4", sender: "You", mine: true, text: "Sent *just* now", time: now, ticks: 1),
+    ]
+    let view = VStack(alignment: .leading, spacing: 6) {
+        ForEach(lines, id: \.id) { line in
+            HStack { if line.mine { Spacer() }; WhatsAppBubble(line: line); if !line.mine { Spacer() } }
+        }
+    }
+    .frame(width: 420).padding(14).background(.black)
     let renderer = ImageRenderer(content: view)
     renderer.scale = 2
     if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {

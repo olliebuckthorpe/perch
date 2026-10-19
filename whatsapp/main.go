@@ -145,6 +145,10 @@ func setup() {
 		kind TEXT NOT NULL DEFAULT 'text', mime TEXT NOT NULL DEFAULT '', filename TEXT NOT NULL DEFAULT '',
 		raw BLOB, read INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (chat, id))`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS messages_ts ON messages (chat, ts)`)
+	// Ticks for the user's own messages: 1 sent, 2 delivered, 3 read. And a small preview
+	// picture that WhatsApp sends inside photo and video messages.
+	db.Exec(`ALTER TABLE messages ADD COLUMN status INTEGER NOT NULL DEFAULT 0`)
+	db.Exec(`ALTER TABLE messages ADD COLUMN thumb BLOB`)
 }
 
 // MARK: Events
@@ -201,7 +205,7 @@ func handle(evt any) {
 	case *events.Disconnected:
 		emit("disconnected", nil)
 	case *events.Message:
-		m := record(e, true)
+		m := record(e, true, 1)
 		if m != nil {
 			emit("message", m)
 		}
@@ -221,7 +225,7 @@ func handle(evt any) {
 				if err != nil {
 					continue
 				}
-				if record(evt, false) != nil {
+				if record(evt, false, webStatus(int(hm.GetMessage().GetStatus()))) != nil {
 					n++
 				}
 			}
@@ -231,6 +235,23 @@ func handle(evt any) {
 		}
 		emit("synced", map[string]any{"messages": n})
 	case *events.Receipt:
+		// The other side got, or read, the user's messages: the ticks move on.
+		if !e.IsFromMe {
+			tick := 0
+			switch e.Type {
+			case types.ReceiptTypeDelivered:
+				tick = 2
+			case types.ReceiptTypeRead, types.ReceiptTypePlayed:
+				tick = 3
+			}
+			if tick > 0 && len(e.MessageIDs) > 0 {
+				chat := key(e.Chat)
+				for _, id := range e.MessageIDs {
+					db.Exec(`UPDATE messages SET status = MAX(status, ?) WHERE chat = ? AND id = ? AND from_me = 1`, tick, chat, id)
+				}
+				emit("status", map[string]any{"chat": chat, "ids": e.MessageIDs, "status": tick})
+			}
+		}
 		// Read on the phone or another device: it is read here too.
 		if e.IsFromMe && (e.Type == types.ReceiptTypeRead || e.Type == types.ReceiptTypeReadSelf) {
 			db.Exec(`UPDATE chats SET unread = 0 WHERE jid = ?`, key(e.Chat))
@@ -298,7 +319,19 @@ func boolInt(b bool) int {
 
 // record saves a message and returns it as Perch sees it, or nil for things that are not
 // messages to show (reactions, edits, protocol noise).
-func record(e *events.Message, live bool) map[string]any {
+// webStatus turns WhatsApp's own message status into ticks: 1 sent, 2 delivered, 3 read.
+func webStatus(s int) int {
+	switch {
+	case s >= 4:
+		return 3
+	case s == 3:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func record(e *events.Message, live bool, status int) map[string]any {
 	msg := e.Message
 	if msg == nil {
 		return nil
@@ -331,9 +364,16 @@ func record(e *events.Message, live bool) map[string]any {
 		raw, _ = proto.Marshal(msg)
 	}
 	ts := e.Info.Timestamp.Unix()
-	res, err := db.Exec(`INSERT OR IGNORE INTO messages (chat, id, sender, sender_name, from_me, ts, text, kind, mime, filename, raw, read)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, chat, e.Info.ID, sender, senderName, boolInt(e.Info.IsFromMe), ts, text,
-		kind, mimeType, filename, raw, boolInt(e.Info.IsFromMe || !live))
+	thumb := msg.GetImageMessage().GetJPEGThumbnail()
+	if thumb == nil {
+		thumb = msg.GetVideoMessage().GetJPEGThumbnail()
+	}
+	if !e.Info.IsFromMe {
+		status = 0
+	}
+	res, err := db.Exec(`INSERT OR IGNORE INTO messages (chat, id, sender, sender_name, from_me, ts, text, kind, mime, filename, raw, read, status, thumb)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, chat, e.Info.ID, sender, senderName, boolInt(e.Info.IsFromMe), ts, text,
+		kind, mimeType, filename, raw, boolInt(e.Info.IsFromMe || !live), status, thumb)
 	if err != nil {
 		note("store failed: %v", err)
 		return nil
@@ -360,7 +400,7 @@ func record(e *events.Message, live bool) map[string]any {
 		"mentionsMe": mentionsMe(msg), "groupSize": size, "community": community,
 		"chat": chat, "chatName": chatName(e.Info.Chat), "group": isGroup, "id": e.Info.ID, "sender": sender,
 		"senderName": senderName, "fromMe": e.Info.IsFromMe, "ts": ts, "text": text, "kind": kind,
-		"mime": mimeType, "filename": filename,
+		"mime": mimeType, "filename": filename, "status": status, "thumb": thumb,
 	}
 }
 
@@ -591,19 +631,20 @@ func chats(limit int) (any, error) {
 	}
 	rows, err := db.Query(`SELECT c.jid, c.name, c.is_group, c.last_ts, c.unread,
 		COALESCE((SELECT text FROM messages m WHERE m.chat = c.jid ORDER BY ts DESC LIMIT 1), ''),
-		COALESCE((SELECT kind FROM messages m WHERE m.chat = c.jid ORDER BY ts DESC LIMIT 1), '')
+		COALESCE((SELECT kind FROM messages m WHERE m.chat = c.jid ORDER BY ts DESC LIMIT 1), ''),
+		COALESCE((SELECT from_me * 10 + status FROM messages m WHERE m.chat = c.jid ORDER BY ts DESC LIMIT 1), 0)
 		FROM chats c WHERE c.last_ts > 0 ORDER BY c.last_ts DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
 	type row struct {
-		jid, name, last, kind string
-		group, ts, unread     int64
+		jid, name, last, kind     string
+		group, ts, unread, mine int64
 	}
 	var found []row
 	for rows.Next() {
 		var r row
-		rows.Scan(&r.jid, &r.name, &r.group, &r.ts, &r.unread, &r.last, &r.kind)
+		rows.Scan(&r.jid, &r.name, &r.group, &r.ts, &r.unread, &r.last, &r.kind, &r.mine)
 		found = append(found, r)
 	}
 	// Names are looked up only once the list has been read, never while it is still open:
@@ -627,7 +668,7 @@ func chats(limit int) (any, error) {
 			}
 		}
 		entry := map[string]any{"chat": r.jid, "name": name, "group": r.group == 1, "ts": r.ts,
-			"unread": r.unread, "last": r.last, "lastKind": r.kind}
+			"unread": r.unread, "last": r.last, "lastKind": r.kind, "lastMine": r.mine >= 10, "lastStatus": r.mine % 10}
 		// How big a group is, for deciding whether it may notify. Asked only for unread groups.
 		if r.group == 1 && r.unread > 0 && err == nil {
 			size, community := groupShape(j)
@@ -643,7 +684,7 @@ func history(chat string, limit int) (any, error) {
 	if limit <= 0 {
 		limit = 80
 	}
-	rows, err := db.Query(`SELECT id, sender, sender_name, from_me, ts, text, kind, mime, filename FROM
+	rows, err := db.Query(`SELECT id, sender, sender_name, from_me, ts, text, kind, mime, filename, status, thumb FROM
 		(SELECT * FROM messages WHERE chat = ? ORDER BY ts DESC LIMIT ?) ORDER BY ts ASC`, chat, limit)
 	if err != nil {
 		return nil, err
@@ -652,10 +693,11 @@ func history(chat string, limit int) (any, error) {
 	var list []map[string]any
 	for rows.Next() {
 		var id, sender, senderName, text, kind, mimeType, filename string
-		var fromMe, ts int64
-		rows.Scan(&id, &sender, &senderName, &fromMe, &ts, &text, &kind, &mimeType, &filename)
+		var fromMe, ts, status int64
+		var thumb []byte
+		rows.Scan(&id, &sender, &senderName, &fromMe, &ts, &text, &kind, &mimeType, &filename, &status, &thumb)
 		list = append(list, map[string]any{"id": id, "sender": sender, "senderName": senderName, "fromMe": fromMe == 1,
-			"ts": ts, "text": text, "kind": kind, "mime": mimeType, "filename": filename})
+			"ts": ts, "text": text, "kind": kind, "mime": mimeType, "filename": filename, "status": status, "thumb": thumb})
 	}
 	return list, nil
 }
@@ -735,6 +777,7 @@ func keep(chat, id string, at time.Time, text, kind, mimeType, filename string, 
 	}
 	db.Exec(`INSERT OR IGNORE INTO messages (chat, id, sender, sender_name, from_me, ts, text, kind, mime, filename, raw, read)
 		VALUES (?, ?, ?, 'You', 1, ?, ?, ?, ?, ?, ?, 1)`, chat, id, me, at.Unix(), text, kind, mimeType, filename, raw)
+	db.Exec(`UPDATE messages SET status = MAX(status, 1) WHERE chat = ? AND id = ?`, chat, id)
 	db.Exec(`UPDATE chats SET last_ts = MAX(last_ts, ?), unread = 0 WHERE jid = ?`, at.Unix(), chat)
 }
 

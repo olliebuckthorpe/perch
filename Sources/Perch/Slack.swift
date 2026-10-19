@@ -36,6 +36,10 @@ struct SlackLine: Identifiable, Equatable {
     let text: String
     var picture: URL?
     var files: [SlackFile] = []
+    /// WhatsApp only: when it was sent, and for the user's own messages the ticks (1 sent,
+    /// 2 delivered, 3 read).
+    var time: Date?
+    var ticks: Int?
 }
 
 /// A file shared in a Slack message. Its links need the workspace's key to open.
@@ -51,6 +55,8 @@ struct SlackFile: Identifiable, Equatable {
     /// Slack's short name for the kind of file, like "csv" or "pdf".
     var kind = ""
     var size = 0
+    /// A small preview picture that came with the message, shown while the full one loads.
+    var preview: Data?
 
     static func list(_ event: [String: Any], workspace: String) -> [SlackFile] {
         (event["files"] as? [[String: Any]] ?? []).compactMap { f in
