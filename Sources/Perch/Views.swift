@@ -1007,6 +1007,11 @@ private struct RailRow: View {
                         .font(.system(size: 8.5, weight: .bold))
                         .foregroundStyle(.white.opacity(0.6)).frame(width: 16, height: 16)
                         .background(.white.opacity(0.12), in: Circle()).contentShape(Rectangle())
+        .contextMenu {
+            if agent.source == .grok {
+                Button("Hide from Perch") { GrokSource.shared.hide(agent) }
+            }
+        }
                 }
                 .buttonStyle(Press()).help(ui.pinnedChats.contains(agent.id) ? "Unpin" : "Pin to the notch")
             } else if ui.pinnedChats.contains(agent.id) {

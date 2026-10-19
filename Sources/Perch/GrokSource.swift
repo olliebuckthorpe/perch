@@ -20,6 +20,20 @@ final class GrokSource {
     /// The newest transcript entry each bot's cached thread was loaded at.
     private var threadStamp: [String: String] = [:]
 
+    // MARK: Hidden from Perch
+
+    /// Bot ids left out of Perch entirely. Grok Bot itself is not touched.
+    static var hidden: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: "hiddenBots") ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "hiddenBots") }
+    }
+
+    func hide(_ agent: Agent) {
+        Self.hidden.insert(agent.sessionID)
+        store.remove(agent)
+        refresh()
+    }
+
     // MARK: What a working bot is doing
 
     /// The phrase Grok Bot shows under a working bot, from the tool it is using right now.
@@ -300,6 +314,8 @@ final class GrokSource {
     private func apply(_ list: [[String: Any]]) {
         let visible = list
             .filter { !($0["isHiddenFromSidebar"] as? Bool ?? false) }
+            // Bots the user has hidden from Perch (someone else's, say), though Grok Bot keeps them.
+            .filter { !Self.hidden.contains($0["id"] as? String ?? "") }
             .sorted { ($0["createdAt"] as? Double ?? 0) < ($1["createdAt"] as? Double ?? 0) }
         var live = Set<String>()
         for raw in visible {
