@@ -68,6 +68,8 @@ final class NotchUI {
     /// A Slack message came in: its conversation goes to the top of the sidebar, marked unread.
     func noteSlack(_ alert: SlackAlert) {
         slackLastAt["\(alert.target.workspace):\(alert.target.id)"] = Date().timeIntervalSince1970
+        // Something new: a cleared conversation may come back.
+        slackDismissed["\(alert.target.workspace):\(alert.target.id)"] = nil
         let t = alert.target
         let key = "\(t.workspace):\(t.id)"
         if slackTarget?.workspace == t.workspace, slackTarget?.id == t.id, expanded, !cardsOnly { return }
@@ -86,7 +88,14 @@ final class NotchUI {
         slackRecent.append(t)
     }
 
+    /// Conversations the user cleared from the sidebar, and when: they stay away until a new
+    /// message arrives in them.
+    var slackDismissed: [String: Double] = (UserDefaults.standard.dictionary(forKey: "slackDismissed") as? [String: Double]) ?? [:] {
+        didSet { UserDefaults.standard.set(slackDismissed, forKey: "slackDismissed") }
+    }
+
     func dropSlack(_ t: SlackTarget) {
+        slackDismissed["\(t.workspace):\(t.id)"] = Date().timeIntervalSince1970
         slackUnread["\(t.workspace):\(t.id)"] = nil
         slackRecent.removeAll { $0.id == t.id && $0.workspace == t.workspace }
         if slackTarget?.id == t.id { slackTarget = nil }

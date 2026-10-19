@@ -890,9 +890,8 @@ private struct Rail: View {
                 LeadTile(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks)
                     .padding(.bottom, 4)
             }
-            // Slack messages not read yet sit just under it, so one missed is never out of sight.
-            ForEach(ui.slackRecent.filter { (ui.slackUnread["\($0.workspace):\($0.id)"] ?? 0) > 0 }
-                .sorted { (ui.slackLastAt["\($0.workspace):\($0.id)"] ?? 0) > (ui.slackLastAt["\($1.workspace):\($1.id)"] ?? 0) }) { target in
+            // Slack and WhatsApp conversations sit just under it, newest first; unread ones in bold.
+            ForEach(ui.slackRecent.sorted { lastAt($0) > lastAt($1) }) { target in
                 SlackRailRow(target: target, selected: ui.slackTarget?.id == target.id)
                     .transition(.opacity.combined(with: .offset(x: -20)))
             }
@@ -910,10 +909,7 @@ private struct Rail: View {
                                         removal: .opacity.combined(with: .offset(x: -28)).combined(with: .scale(scale: 0.94, anchor: .leading))))
             }
             // Slack conversations you have opened, until cleared.
-            ForEach(ui.slackRecent.filter { (ui.slackUnread["\($0.workspace):\($0.id)"] ?? 0) == 0 }) { target in
-                SlackRailRow(target: target, selected: ui.slackTarget?.id == target.id)
-                    .transition(.opacity.combined(with: .offset(x: -20)))
-            }
+
             Spacer(minLength: 0)
         }
         .animation(.spring(response: 0.32, dampingFraction: 0.86), value: agents.map(\.id))
@@ -4772,9 +4768,9 @@ private struct SlackComposer: View {
                             ForEach(lines, id: \.viewKey) { line in
                                 HStack(alignment: .top, spacing: 8) {
                                     if line.mine { Spacer(minLength: 50) }
-                                    if !line.mine { SlackAvatar(url: line.picture, channel: false, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace) }
+                                    if !line.mine && !(target.workspace == WhatsAppSource.workspace && !target.id.hasSuffix("@g.us")) { SlackAvatar(url: line.picture, channel: false, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace) }
                                     VStack(alignment: line.mine ? .trailing : .leading, spacing: 2) {
-                                        if !line.mine {
+                                        if !line.mine && !(target.workspace == WhatsAppSource.workspace && !target.id.hasSuffix("@g.us")) {
                                             Text(line.sender).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
                                         }
                                         if target.workspace == WhatsAppSource.workspace {
@@ -4829,12 +4825,12 @@ private struct SlackComposer: View {
                     }
                 }
                 HStack(alignment: .bottom, spacing: 6) {
-                    GrowingText(text: $text, placeholder: "Message \(target.label)", focusAsk: ask,
+                    GrowingText(text: $text, placeholder: "Message \(liveName(target))", focusAsk: ask,
                                 onFocus: { _ in }, onSubmit: send, onTab: { false })
                         .fixedSize(horizontal: false, vertical: true)
                         .overlay(alignment: .topLeading) {
                             if text.isEmpty {
-                                Text("Message \(target.label)").font(.system(size: 13)).foregroundStyle(.white.opacity(0.35))
+                                Text("Message \(liveName(target))").font(.system(size: 13)).foregroundStyle(.white.opacity(0.35))
                                     .allowsHitTesting(false)
                             }
                         }
@@ -4936,6 +4932,14 @@ private struct FileBadge: View {
         }
         .frame(width: 34, height: 40)
     }
+}
+
+/// When a conversation last had a message: WhatsApp's own record, or when Slack last said something.
+private func lastAt(_ t: SlackTarget) -> Double {
+    if t.workspace == WhatsAppSource.workspace, let chat = WhatsAppSource.shared.chats.first(where: { $0.id == t.id }) {
+        return chat.ts.timeIntervalSince1970
+    }
+    return NotchUI.shared.slackLastAt["\(t.workspace):\(t.id)"] ?? 0
 }
 
 /// A conversation's name: for WhatsApp, as the chat list has it now (contact name, or the name

@@ -317,6 +317,8 @@ final class WhatsAppSource {
                 for chat in self.chats where chat.unread > 0 && !chat.crowd && chat.ts > Date().addingTimeInterval(-3 * 86400) {
                     let t = chat.target
                     let key = "\(Self.workspace):\(chat.id)"
+                    // Cleared by the user, with nothing new since: it stays cleared.
+                    if let gone = ui.slackDismissed[key], chat.ts.timeIntervalSince1970 <= gone { continue }
                     if !ui.slackRecent.contains(where: { $0.workspace == t.workspace && $0.id == t.id }) { ui.slackRecent.insert(t, at: 0) }
                     ui.slackUnread[key] = chat.unread
                     ui.slackLastAt[key] = chat.ts.timeIntervalSince1970
@@ -382,12 +384,21 @@ final class WhatsAppSource {
     func history(_ target: SlackTarget) {
         let store = SlackConversations.shared
         let key = store.key(Self.workspace, target.id)
-        request("history", ["chat": target.id, "limit": 80]) { data in
+        request("history", ["chat": target.id, "limit": 80]) { [weak self] data in
+            guard let self else { return }
             guard let rows = data as? [[String: Any]] else {
                 if store.lines[key] == nil { store.lines[key] = [] }
                 return
             }
             store.replace(key, with: rows.map { Self.line($0, chat: target.id) })
+            // The sidebar's preview follows the newest message, including the user's own.
+            if let newest = rows.last, let i = self.chats.firstIndex(where: { $0.id == target.id }) {
+                let text = (newest["text"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? Self.label(newest["kind"] as? String)
+                self.chats[i].last = text
+                self.chats[i].lastMine = newest["fromMe"] as? Bool ?? false
+                self.chats[i].lastTicks = max(1, newest["status"] as? Int ?? 1)
+                if let ts = newest["ts"] as? Double { self.chats[i].ts = max(self.chats[i].ts, Date(timeIntervalSince1970: ts)) }
+            }
         }
     }
 
