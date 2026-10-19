@@ -48,7 +48,10 @@ final class WhatsAppSource {
     private static let folder = "\(Shell.home)/.perch/whatsapp"
 
     /// Linked before, so it starts with Perch.
-    var linked: Bool { FileManager.default.fileExists(atPath: "\(Self.folder)/session.db") }
+    var linked: Bool {
+        get { UserDefaults.standard.bool(forKey: "whatsappLinked") }
+        set { UserDefaults.standard.set(newValue, forKey: "whatsappLinked") }
+    }
 
     func start() {
         guard linked || wanted else { return }
@@ -64,6 +67,7 @@ final class WhatsAppSource {
     func disconnect() {
         request("logout") { [weak self] _ in
             self?.wanted = false
+            self?.linked = false
             self?.helper?.terminate()
             self?.state = .off
             self?.chats = []
@@ -149,9 +153,11 @@ final class WhatsAppSource {
             state = .starting
         case "ready":
             state = .ready
+            linked = true
             loadChats(seed: true)
         case "loggedOut":
             state = .loggedOut
+            linked = false
             chats = []
         case "synced":
             loadChats(seed: false)
