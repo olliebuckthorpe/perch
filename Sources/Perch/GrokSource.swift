@@ -344,7 +344,10 @@ final class GrokSource {
             let latest = raw["lastMessageId"] as? String ?? ""
             let known = announced[id]
             if known == nil { announced[id] = latest }
-            let freshMessage = known != nil && !latest.isEmpty && latest != known && unread > 0
+            // Just started: anything unread from the last few minutes still counts as new, so a
+            // reply that landed while Perch was restarting is not lost.
+            let recent = (raw["lastActivityAt"] as? Double).map { Date().timeIntervalSince1970 - $0 / 1000 < 180 } ?? false
+            let freshMessage = !latest.isEmpty && unread > 0 && (known.map { latest != $0 } ?? recent)
             if freshMessage { announced[id] = latest }
             let awaitingKey = awaiting ? "\(latest)|asking" : ""
             let freshAsk = awaiting && asked[id] != awaitingKey
