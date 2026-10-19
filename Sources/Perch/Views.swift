@@ -2356,19 +2356,35 @@ struct ChatView: View {
             if isImage { picture } else { file }
         }
 
-        /// A file that is not a picture: its icon and name. Click to show it in Finder.
+        /// A file that is not a picture: its icon and name. Click to open it; on hover, save a
+        /// copy to Downloads or show where it is.
         private var file: some View {
             HStack(spacing: 7) {
                 Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 22, height: 22)
                 Text(URL(fileURLWithPath: path).lastPathComponent).font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.9)).lineLimit(1).truncationMode(.middle)
+                if hovered {
+                    Button { saveToDownloads(path: path) } label: {
+                        Image(systemName: "arrow.down.to.line").font(.system(size: 10.5, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.75)).frame(width: 20, height: 20)
+                            .background(.white.opacity(0.1), in: Circle())
+                    }
+                    .buttonStyle(Press()).help("Save a copy to Downloads")
+                    Button { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) } label: {
+                        Image(systemName: "folder").font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.75)).frame(width: 20, height: 20)
+                            .background(.white.opacity(0.1), in: Circle())
+                    }
+                    .buttonStyle(Press()).help("Show in Finder")
+                }
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .frame(maxWidth: 260, alignment: .trailing)
+            .background(.white.opacity(hovered ? 0.14 : 0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .frame(maxWidth: 300, alignment: .trailing)
             .contentShape(Rectangle())
-            .onTapGesture { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
-            .help("Show in Finder")
+            .onHover { hovered = $0 }
+            .onTapGesture { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+            .help("Open \(URL(fileURLWithPath: path).lastPathComponent)")
         }
 
         private var picture: some View {
