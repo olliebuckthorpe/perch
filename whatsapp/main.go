@@ -456,10 +456,16 @@ func describe(m *waE2E.Message) (text, kind, mimeType, filename string) {
 // nameOf finds the best name for a person: theirs in the contact list, or what they call themselves.
 func nameOf(j types.JID) string {
 	j = j.ToNonAD()
+	// The same person can be on file under their number and their anonymous id, with the name
+	// they gave WhatsApp kept under either: look under both.
 	look := []types.JID{j}
 	if j.Server == types.HiddenUserServer {
 		if pn, err := client.Store.LIDs.GetPNForLID(ctx, j); err == nil && !pn.IsEmpty() {
 			look = append(look, pn)
+		}
+	} else if j.Server == types.DefaultUserServer {
+		if lid, err := client.Store.LIDs.GetLIDForPN(ctx, j); err == nil && !lid.IsEmpty() {
+			look = append(look, lid)
 		}
 	}
 	for _, id := range look {
