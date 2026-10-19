@@ -101,6 +101,9 @@ final class GrokSource {
 
     /// Each bot's own phone notification setting, as Grok Bot last reported it.
     private var notifying: [String: Bool] = [:]
+    /// The latest message from each bot that has been announced, and any request for the user.
+    private var announced: [String: String] = [:]
+    private var asked: [String: String] = [:]
     /// Bots whose phone notifications Perch has paused because their chat is open in front of
     /// the user, by bot id, with when the chat was last seen open. Saved, so a crash or quit
     /// never leaves a bot silenced.
@@ -321,7 +324,18 @@ final class GrokSource {
             if let ms = raw["lastActivityAt"] as? Double { agent.lastActivity = Date(timeIntervalSince1970: ms / 1000) }
 
             let status: AgentStatus = awaiting ? .needsYou : running ? .working : unread > 0 ? .unread : .idle
-            let newlyLoud = (status == .needsYou && agent.status != .needsYou) || unread > agent.unread
+            // Only something genuinely new is worth a notification: a message Perch has not
+            // announced before, or a fresh request for the user. An unread count bouncing back while
+            // Grok Bot catches up with "read" is not new, and used to set the banner off again and again.
+            let latest = raw["lastMessageId"] as? String ?? ""
+            let known = announced[id]
+            if known == nil { announced[id] = latest }
+            let freshMessage = known != nil && !latest.isEmpty && latest != known && unread > 0
+            if freshMessage { announced[id] = latest }
+            let awaitingKey = awaiting ? "\(latest)|asking" : ""
+            let freshAsk = awaiting && asked[id] != awaitingKey
+            asked[id] = awaitingKey
+            let newlyLoud = (freshAsk && agent.status != .needsYou) || freshMessage
             agent.unread = unread
             agent.status = status
             agent.lastMessage = preview
