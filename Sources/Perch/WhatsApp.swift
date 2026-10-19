@@ -9,6 +9,11 @@ struct WhatsAppChat: Identifiable, Equatable {
     var ts: Date
     var unread: Int
     var last: String
+    var size = 0
+    var community = false
+
+    /// A big group or part of a Community: only worth hearing about when it is talking to the user.
+    var crowd: Bool { group && (community || size > WhatsAppSource.smallGroup) }
 
     /// As a conversation the Slack screens can show: WhatsApp reuses them.
     var target: SlackTarget {
@@ -222,10 +227,13 @@ final class WhatsAppSource {
         // Communities only when someone @s the user or replies to them; the rest wait, unread.
         let size = o["groupSize"] as? Int ?? 0
         let crowd = o["community"] as? Bool == true || size > Self.smallGroup
+        if let i = chats.firstIndex(where: { $0.id == chat }) {
+            chats[i].size = size
+            chats[i].community = o["community"] as? Bool ?? false
+        }
+        // Big groups and Communities stay out entirely unless they are talking to the user.
         if !group || !crowd || o["mentionsMe"] as? Bool == true {
             NotchUI.shared.slack(alert)
-        } else {
-            NotchUI.shared.noteSlack(alert)
         }
     }
 
@@ -270,16 +278,25 @@ final class WhatsAppSource {
                 let last = (r["last"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? Self.label(r["lastKind"] as? String)
                 return WhatsAppChat(id: id, name: r["name"] as? String ?? "", group: r["group"] as? Bool ?? false,
                                     ts: Date(timeIntervalSince1970: r["ts"] as? Double ?? 0),
-                                    unread: r["unread"] as? Int ?? 0, last: last)
+                                    unread: r["unread"] as? Int ?? 0, last: last,
+                                    size: r["groupSize"] as? Int ?? 0, community: r["community"] as? Bool ?? false)
             }
             // Unread chats from the last few days wait in the sidebar, as if they had just arrived.
+            // Only people and small groups: big groups and Communities stay out of the sidebar.
             if seed {
                 let ui = NotchUI.shared
-                for chat in self.chats where chat.unread > 0 && chat.ts > Date().addingTimeInterval(-3 * 86400) {
+                let byID = Dictionary(self.chats.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+                // Tidy what is already there: crowds, and chats filed under an old anonymous id.
+                for t in ui.slackRecent where t.workspace == Self.workspace {
+                    let chat = byID[t.id]
+                    if chat?.crowd == true || (chat == nil && t.id.hasSuffix("@lid")) { ui.dropSlack(t) }
+                }
+                for chat in self.chats where chat.unread > 0 && !chat.crowd && chat.ts > Date().addingTimeInterval(-3 * 86400) {
                     let t = chat.target
                     let key = "\(Self.workspace):\(chat.id)"
                     if !ui.slackRecent.contains(where: { $0.workspace == t.workspace && $0.id == t.id }) { ui.slackRecent.insert(t, at: 0) }
                     ui.slackUnread[key] = chat.unread
+                    ui.slackLastAt[key] = chat.ts.timeIntervalSince1970
                 }
             }
             // The recent ones are read in for search.

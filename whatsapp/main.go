@@ -479,6 +479,27 @@ func nameOf(j types.JID) string {
 	return j.User
 }
 
+// personName is someone's name for their chat: as saved in the contacts, or what they call
+// themselves on WhatsApp (shown there as "~Name"), and only then their number.
+func personName(j types.JID, chat string) string {
+	name := nameOf(j)
+	if !strings.HasPrefix(name, "+") && name != j.User {
+		return name
+	}
+	var pushed string
+	db.QueryRow(`SELECT sender_name FROM messages WHERE chat = ? AND from_me = 0 AND sender_name != '' AND sender_name NOT LIKE '+%'
+		ORDER BY ts DESC LIMIT 1`, chat).Scan(&pushed)
+	if pushed != "" {
+		return pushed
+	}
+	var stored string
+	db.QueryRow(`SELECT name FROM chats WHERE jid = ?`, chat).Scan(&stored)
+	if stored != "" {
+		return stored
+	}
+	return name
+}
+
 // chatName is a person's name for a direct chat, or the group's subject.
 func chatName(j types.JID) string {
 	k := key(j)
@@ -494,7 +515,7 @@ func chatName(j types.JID) string {
 		}
 		return "Group"
 	}
-	return nameOf(j)
+	return personName(j, k)
 }
 
 // MARK: Commands
@@ -589,11 +610,25 @@ func chats(limit int) (any, error) {
 			continue
 		}
 		name := r.name
-		if name == "" && err == nil {
-			name = chatName(j)
+		if err == nil {
+			if r.group == 1 {
+				if name == "" {
+					name = chatName(j)
+				}
+			} else {
+				// A person: their name in the contacts, or else the name they gave WhatsApp.
+				name = personName(j, r.jid)
+			}
 		}
-		list = append(list, map[string]any{"chat": r.jid, "name": name, "group": r.group == 1, "ts": r.ts,
-			"unread": r.unread, "last": r.last, "lastKind": r.kind})
+		entry := map[string]any{"chat": r.jid, "name": name, "group": r.group == 1, "ts": r.ts,
+			"unread": r.unread, "last": r.last, "lastKind": r.kind}
+		// How big a group is, for deciding whether it may notify. Asked only for unread groups.
+		if r.group == 1 && r.unread > 0 && err == nil {
+			size, community := groupShape(j)
+			entry["groupSize"] = size
+			entry["community"] = community
+		}
+		list = append(list, entry)
 	}
 	return list, nil
 }

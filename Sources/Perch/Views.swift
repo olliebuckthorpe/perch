@@ -887,7 +887,8 @@ private struct Rail: View {
                     .padding(.bottom, 4)
             }
             // Slack messages not read yet sit just under it, so one missed is never out of sight.
-            ForEach(ui.slackRecent.filter { (ui.slackUnread["\($0.workspace):\($0.id)"] ?? 0) > 0 }) { target in
+            ForEach(ui.slackRecent.filter { (ui.slackUnread["\($0.workspace):\($0.id)"] ?? 0) > 0 }
+                .sorted { (ui.slackLastAt["\($0.workspace):\($0.id)"] ?? 0) > (ui.slackLastAt["\($1.workspace):\($1.id)"] ?? 0) }) { target in
                 SlackRailRow(target: target, selected: ui.slackTarget?.id == target.id)
                     .transition(.opacity.combined(with: .offset(x: -20)))
             }
@@ -4618,7 +4619,7 @@ private struct SlackRailRow: View {
         HStack(spacing: 6) {
             SlackAvatar(url: livePicture(target), channel: target.channel, size: 16, whatsapp: target.workspace == WhatsAppSource.workspace).frame(width: 20, height: 20)
             let waiting = ui.slackUnread["\(target.workspace):\(target.id)"] ?? 0
-            Text(target.label).font(.system(size: 11.5, weight: selected || waiting > 0 ? .semibold : .regular))
+            Text(liveName(target)).font(.system(size: 11.5, weight: selected || waiting > 0 ? .semibold : .regular))
                 .foregroundStyle(.white.opacity(selected || waiting > 0 ? 0.95 : 0.7)).lineLimit(1)
             Spacer(minLength: 0)
             if waiting > 0 && !hovered {
@@ -4732,7 +4733,7 @@ private struct SlackComposer: View {
                 }
                 .buttonStyle(Press())
                 SlackAvatar(url: livePicture(target), channel: target.channel, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace)
-                Text(target.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                Text(liveName(target)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                 Text(target.workspace == WhatsAppSource.workspace ? "WhatsApp" : "Slack · \(target.workspace.capitalized)")
                     .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
                 Spacer()
@@ -4905,6 +4906,14 @@ private struct FileBadge: View {
         }
         .frame(width: 34, height: 40)
     }
+}
+
+/// A conversation's name: for WhatsApp, as the chat list has it now (contact name, or the name
+/// they gave WhatsApp).
+private func liveName(_ t: SlackTarget) -> String {
+    guard t.workspace == WhatsAppSource.workspace,
+          let chat = WhatsAppSource.shared.chats.first(where: { $0.id == t.id }), !chat.name.isEmpty else { return t.label }
+    return chat.name
 }
 
 /// A conversation's picture: for WhatsApp, the profile picture as WhatsApp has it now.

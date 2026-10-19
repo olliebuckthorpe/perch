@@ -60,8 +60,14 @@ final class NotchUI {
         didSet { UserDefaults.standard.set(slackUnread, forKey: "slackUnread") }
     }
 
+    /// When each conversation last had a message, for putting the newest first.
+    var slackLastAt: [String: Double] = (UserDefaults.standard.dictionary(forKey: "slackLastAt") as? [String: Double]) ?? [:] {
+        didSet { UserDefaults.standard.set(slackLastAt, forKey: "slackLastAt") }
+    }
+
     /// A Slack message came in: its conversation goes to the top of the sidebar, marked unread.
     func noteSlack(_ alert: SlackAlert) {
+        slackLastAt["\(alert.target.workspace):\(alert.target.id)"] = Date().timeIntervalSince1970
         let t = alert.target
         let key = "\(t.workspace):\(t.id)"
         if slackTarget?.workspace == t.workspace, slackTarget?.id == t.id, expanded, !cardsOnly { return }
