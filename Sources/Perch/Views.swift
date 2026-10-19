@@ -5076,6 +5076,9 @@ private struct WhatsAppBubble: View {
                     HStack { Spacer(minLength: 0); stamp }.padding(.horizontal, 6).padding(.bottom, 3)
                 }
             }
+            // As wide as the picture, with the caption wrapping under it.
+            .frame(maxWidth: 260, alignment: .leading)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(3)
         }
     }
