@@ -2396,6 +2396,8 @@ struct ChatView: View {
             } else if let handoff = message.handoff {
                 HandoffCard(instruction: handoff.instruction, resolution: handoff.resolution, agent: agent,
                             picture: messages.prefix { $0.id != message.id }.last { !$0.boxImages.isEmpty }?.boxImages.first)
+            } else if let form = message.form {
+                FormCard(form: form, entry: message.id, agent: agent)
             } else if let listener = message.listener {
                 ListenerCard(platform: listener.platform, reason: listener.reason)
             } else if let secret = message.secret {
@@ -3148,6 +3150,142 @@ private struct HandoffCard: View {
 /// A bot asking for a key or password. It is typed into a hidden field and handed straight
 /// to the host with the same call Grok Bot's own field uses; the bot never sees it and Perch
 /// keeps no copy. Grok Bot is still there as a fallback.
+/// A secure form from a bot: what it is for, which website it goes into, and the fields.
+/// Sending hands the answers to Grok Bot, which types them into the page itself; they never
+/// pass through the chat, and Perch keeps nothing once they are sent.
+private struct FormCard: View {
+    let form: GrokForm
+    let entry: String
+    let agent: Agent
+    @Environment(NotchUI.self) private var ui
+    @Environment(\.sideWindow) private var sideWindow
+    @State private var values: [String: String] = [:]
+    @State private var state: String?
+    @FocusState private var focus: String?
+
+    private var finished: String? {
+        if let r = form.resolution {
+            switch r {
+            case "dismissed", "escalated": return "Not sent"
+            case "fill_failed":
+                return form.missed.isEmpty ? "Sent, but some of it did not go in" : "Sent. Did not go in: " + form.missed.joined(separator: ", ")
+            default: return "Sent securely"
+            }
+        }
+        switch state {
+        case "sent": return "Sent securely"
+        case "dismissed": return "Not sent"
+        default: return nil
+        }
+    }
+
+    private var ready: Bool {
+        form.fields.allSatisfy { f in !f.required || f.type == "checkbox" || !(value(f).trimmingCharacters(in: .whitespaces).isEmpty) }
+    }
+
+    private func value(_ f: GrokForm.Field) -> String { values[f.id] ?? f.defaultValue }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 7) {
+                    Image(systemName: finished == nil ? "lock.fill" : "checkmark.seal.fill").font(.system(size: 11))
+                        .foregroundStyle(finished == nil ? .white.opacity(0.65) : Palette.green)
+                    Text(form.title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let finished {
+                    Text(finished).font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(form.resolution == "fill_failed" ? .white.opacity(0.7) : Palette.green)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    if !form.instruction.isEmpty {
+                        Text(form.instruction).font(.system(size: 12)).foregroundStyle(.white.opacity(0.7))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    ForEach(form.fields, id: \.id) { field in fieldView(field) }
+                    HStack(spacing: 8) {
+                        Button(state == "sending" ? "Sending…" : "Send securely", action: send)
+                            .buttonStyle(ChipButton(fill: ready ? .white : nil)).disabled(!ready || state == "sending")
+                        Button("Not now", action: dismiss).buttonStyle(LinkButton())
+                        Spacer(minLength: 0)
+                    }
+                    HStack(spacing: 5) {
+                        Image(systemName: "lock.shield").font(.system(size: 10))
+                        Text(state == "failed" ? "Grok Bot did not take it from here." :
+                                (form.domain.isEmpty ? "Goes straight into the page, not the chat" : "Goes straight into \(form.domain), not the chat"))
+                        if state == "failed" {
+                            Button("Use Grok Bot") { GrokSource.shared.open(agent); ui.collapse() }.buttonStyle(LinkButton())
+                        }
+                    }
+                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
+                }
+            }
+            .padding(11)
+            .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .opacity(finished != nil ? 0.75 : 1)
+            Spacer(minLength: 28)
+        }
+        .animation(.easeOut(duration: 0.2), value: finished)
+    }
+
+    @ViewBuilder private func fieldView(_ f: GrokForm.Field) -> some View {
+        let binding = Binding(get: { value(f) }, set: { values[f.id] = $0 })
+        VStack(alignment: .leading, spacing: 3) {
+            if f.type != "checkbox" {
+                Text(f.label + (f.required ? "" : " (optional)")).font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+            switch f.type {
+            case "checkbox":
+                Toggle(f.label, isOn: Binding(get: { value(f) == "true" }, set: { values[f.id] = $0 ? "true" : "false" }))
+                    .toggleStyle(.checkbox).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.85))
+            case "select":
+                Picker("", selection: binding) {
+                    ForEach(f.options, id: \.value) { o in Text(o.label).tag(o.value) }
+                }
+                .labelsHidden().pickerStyle(.menu).fixedSize()
+            default:
+                Group {
+                    if f.secret {
+                        SecureField("", text: binding)
+                    } else {
+                        TextField("", text: binding)
+                    }
+                }
+                .textFieldStyle(.plain).font(.system(size: 12.5)).focused($focus, equals: f.id)
+                .padding(.horizontal, 9).padding(.vertical, 6)
+                .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(.white.opacity(focus == f.id ? 0.35 : 0.15), lineWidth: 1))
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    (sideWindow ?? ui.controller?.panel)?.makeKey()
+                    focus = f.id
+                }
+                .onSubmit { if ready { send() } }
+            }
+        }
+    }
+
+    private func send() {
+        guard ready, state != "sending" else { return }
+        var answers: [String: String] = [:]
+        for f in form.fields { answers[f.id] = value(f) }
+        state = "sending"
+        GrokSource.shared.submitForm(answers, entry: entry, in: agent) { ok in
+            withAnimation { state = ok ? "sent" : "failed" }
+            // Nothing typed is kept once it has gone.
+            if ok { values = [:] }
+        }
+    }
+
+    private func dismiss() {
+        GrokSource.shared.dismissForm(entry: entry, in: agent) { ok in
+            withAnimation { state = ok ? "dismissed" : "failed" }
+        }
+    }
+}
+
 /// A bot asking for an app (Slack, say) to be linked so its trigger can fire. Connecting opens
 /// that app's own approval page in the browser; the card turns green once it is linked.
 private struct ListenerCard: View {

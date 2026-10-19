@@ -393,6 +393,29 @@ final class GrokSource {
                         let name = message["file_name"] as? String ?? URL(fileURLWithPath: path).lastPathComponent
                         return ChatMessage(id: id, fromUser: false, text: name, reactions: reactions, fileName: name, filePath: path)
                     }
+                    if message["type"] as? String == "user-form", let r = message["formRequest"] as? [String: Any] {
+                        let fields: [GrokForm.Field] = (r["fields"] as? [[String: Any]] ?? []).compactMap { f in
+                            guard let fid = f["id"] as? String else { return nil }
+                            let options = (f["options"] as? [[String: Any]] ?? []).compactMap { o -> (label: String, value: String)? in
+                                guard let v = o["value"] as? String else { return nil }
+                                return (o["label"] as? String ?? v, v)
+                            }
+                            let type = f["type"] as? String ?? "text"
+                            return GrokForm.Field(id: fid, label: f["label"] as? String ?? fid, type: type,
+                                                  required: f["required"] as? Bool ?? false,
+                                                  secret: f["secret"] as? Bool == true || type == "password",
+                                                  defaultValue: f["defaultValue"] as? String ?? "", options: options)
+                        }
+                        let outcomes = e["formFieldOutcomes"] as? [[String: Any]] ?? []
+                        let missed = outcomes.filter { $0["fillFailed"] as? Bool == true }.compactMap { o in
+                            fields.first { $0.id == o["id"] as? String }?.label
+                        }
+                        let title = r["title"] as? String ?? "A secure form"
+                        let form = GrokForm(title: title, instruction: r["instruction"] as? String ?? "",
+                                            domain: r["liveHost"] as? String ?? r["domain"] as? String ?? "",
+                                            fields: fields, resolution: e["formResolution"] as? String, missed: missed)
+                        return ChatMessage(id: id, fromUser: false, text: title, reactions: reactions, form: form)
+                    }
                     if message["type"] as? String == "secret-request", let r = message["secretRequest"] as? [String: Any] {
                         let label = r["label"] as? String ?? "A secret"
                         return ChatMessage(id: id, fromUser: false, text: label, reactions: reactions,
@@ -586,6 +609,25 @@ final class GrokSource {
             DispatchQueue.main.async {
                 if let url { NSWorkspace.shared.open(url) }
                 done(url != nil)
+            }
+        }
+    }
+
+    /// Sends a secure form's answers to Grok Bot, which types them into the page itself.
+    func submitForm(_ values: [String: String], entry: String, in agent: Agent, done: @escaping (Bool) -> Void) {
+        request("submitUserForm", ["entryId": entry, "values": values, "agentId": agent.sessionID]) { [weak self, weak agent] reply in
+            DispatchQueue.main.async {
+                done(reply != nil)
+                if let agent { self?.loadThread(agent) }
+            }
+        }
+    }
+
+    func dismissForm(entry: String, in agent: Agent, done: @escaping (Bool) -> Void) {
+        request("dismissUserForm", ["entryId": entry, "mode": "dismissed", "agentId": agent.sessionID]) { [weak self, weak agent] reply in
+            DispatchQueue.main.async {
+                done(reply != nil)
+                if let agent { self?.loadThread(agent) }
             }
         }
     }

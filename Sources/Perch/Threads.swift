@@ -27,6 +27,29 @@ struct ChoiceWidget: Equatable {
 }
 
 /// A Grok bot asking permission before it does something (delete a calendar event, say).
+/// A secure form a Grok bot sends, whose answers go straight into a website through Grok Bot
+/// (a check-in page, a sign-in) and never through the chat.
+struct GrokForm: Equatable {
+    struct Field: Equatable {
+        let id: String
+        let label: String
+        let type: String
+        let required: Bool
+        let secret: Bool
+        let defaultValue: String
+        let options: [(label: String, value: String)]
+        static func == (a: Field, b: Field) -> Bool { a.id == b.id && a.label == b.label && a.type == b.type }
+    }
+    let title: String
+    let instruction: String
+    let domain: String
+    let fields: [Field]
+    /// How it ended: "fill_failed" and so on; nil while it waits for the user.
+    let resolution: String?
+    /// Fields that did not make it into the page.
+    let missed: [String]
+}
+
 struct GrokApproval: Equatable {
     var requestId: String
     var tool: String
@@ -52,6 +75,7 @@ struct ChatMessage: Identifiable, Equatable {
     /// The bot handing its computer over for a step it needs the user for (scanning a QR code,
     /// signing in): what to do, and how it ended ("handed_back" and so on), nil while waiting.
     var handoff: (instruction: String, resolution: String?)?
+    var form: GrokForm?
     /// A bot asking for an app to be linked so one of its triggers can fire (Slack, say), and why.
     var listener: (platform: String, reason: String)?
 
@@ -60,7 +84,7 @@ struct ChatMessage: Identifiable, Equatable {
             && a.choice == b.choice && a.approval == b.approval && a.fileName == b.fileName && a.filePath == b.filePath
             && a.peerName == b.peerName && a.peerOutbound == b.peerOutbound && a.secret?.label == b.secret?.label && a.secret?.provided == b.secret?.provided
             && a.boxImages == b.boxImages && a.handoff?.instruction == b.handoff?.instruction && a.handoff?.resolution == b.handoff?.resolution
-            && a.listener?.platform == b.listener?.platform
+            && a.listener?.platform == b.listener?.platform && a.form == b.form
     }
     /// Set when this is one agent talking to another, not part of the conversation with the user.
     /// A file the agent attached: its name, and where it lives on the agent's own computer.
