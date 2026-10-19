@@ -95,8 +95,21 @@ struct SlackAlert: Identifiable, Equatable {
     /// The thread it belongs to, if any. A reply goes into the same thread.
     var thread: String?
     var direct = false
+    /// Who sent it, by Slack id, for finding the conversation with them.
+    var senderID = ""
     /// The sender's profile picture (or the posting app's icon).
     var picture: URL?
+
+    /// The conversation it came from, as somewhere to reply: the channel, or the person for a DM.
+    var target: SlackTarget {
+        if direct {
+            let person = SlackDirectory.shared.targets.first { $0.workspace == workspace && $0.id == senderID && !$0.channel }
+            return person ?? SlackTarget(workspace: workspace, id: senderID, name: sender, channel: false, picture: picture)
+        }
+        let known = SlackDirectory.shared.targets.first { $0.workspace == workspace && $0.id == channel && $0.channel }
+        let name = place.hasPrefix("#") ? String(place.dropFirst()) : place
+        return known ?? SlackTarget(workspace: workspace, id: channel, name: name, channel: true, picture: nil)
+    }
 
     /// Opens the conversation in the Slack app.
     var link: URL? {
@@ -589,7 +602,9 @@ private final class Workspace {
         // Slack resends messages that could not be delivered while the connection was down. A
         // banner for something minutes old, or already replied to, is just noise.
         let sent = Double(ts) ?? 0
-        if Date().timeIntervalSince1970 - sent > 90 || (lastMine[channel] ?? 0) > sent { return }
+        if (lastMine[channel] ?? 0) > sent { return }
+        // Old ones still go in the sidebar, just without a banner.
+        let stale = Date().timeIntervalSince1970 - sent > 90
         resolve(sender: sender, botName: (event["bot_profile"] as? [String: Any])?["name"] as? String ?? event["username"] as? String,
                 channel: channel, direct: direct) { [weak self] who, place in
             guard let self else { return }
@@ -597,10 +612,11 @@ private final class Workspace {
                                    channel: channel, place: place, sender: who, text: self.tidy(body, event: event), ts: ts)
             alert.thread = event["thread_ts"] as? String
             alert.direct = direct
+            alert.senderID = sender
             let botIcons = (event["bot_profile"] as? [String: Any])?["icons"] as? [String: Any]
             alert.picture = (botIcons?["image_72"] as? String ?? botIcons?["image_48"] as? String).flatMap(URL.init(string:))
                 ?? self.pictures[sender]
-            NotchUI.shared.slack(alert)
+            if stale { NotchUI.shared.noteSlack(alert) } else { NotchUI.shared.slack(alert) }
         }
     }
 

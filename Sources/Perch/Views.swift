@@ -864,6 +864,11 @@ private struct Rail: View {
             .contentShape(Rectangle())
             .onTapGesture { ui.browse() }
             .padding(.bottom, 5)
+            // Slack messages not read yet sit at the very top, so one missed is never out of sight.
+            ForEach(ui.slackRecent.filter { (ui.slackUnread["\($0.workspace):\($0.id)"] ?? 0) > 0 }) { target in
+                SlackRailRow(target: target, selected: ui.slackTarget?.id == target.id)
+                    .transition(.opacity.combined(with: .offset(x: -20)))
+            }
             ForEach(agents) { agent in
                 let star = agent.source == .grok && ui.pinned.contains(agent.name)
                 RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks, star: star) { dragged in
@@ -878,7 +883,7 @@ private struct Rail: View {
                                         removal: .opacity.combined(with: .offset(x: -28)).combined(with: .scale(scale: 0.94, anchor: .leading))))
             }
             // Slack conversations you have opened, until cleared.
-            ForEach(ui.slackRecent) { target in
+            ForEach(ui.slackRecent.filter { (ui.slackUnread["\($0.workspace):\($0.id)"] ?? 0) == 0 }) { target in
                 SlackRailRow(target: target, selected: ui.slackTarget?.id == target.id)
                     .transition(.opacity.combined(with: .offset(x: -20)))
             }
@@ -4530,9 +4535,15 @@ private struct SlackRailRow: View {
     var body: some View {
         HStack(spacing: 6) {
             SlackAvatar(url: target.picture, channel: target.channel, size: 16).frame(width: 20, height: 20)
-            Text(target.label).font(.system(size: 11.5, weight: selected ? .semibold : .regular))
-                .foregroundStyle(.white.opacity(selected ? 0.95 : 0.7)).lineLimit(1)
+            let waiting = ui.slackUnread["\(target.workspace):\(target.id)"] ?? 0
+            Text(target.label).font(.system(size: 11.5, weight: selected || waiting > 0 ? .semibold : .regular))
+                .foregroundStyle(.white.opacity(selected || waiting > 0 ? 0.95 : 0.7)).lineLimit(1)
             Spacer(minLength: 0)
+            if waiting > 0 && !hovered {
+                Text("\(waiting)").font(.system(size: 9.5, weight: .bold)).foregroundStyle(.black)
+                    .padding(.horizontal, 5).frame(minWidth: 16, minHeight: 16)
+                    .background(.white, in: Capsule())
+            }
             if hovered {
                 Button { withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { ui.dropSlack(target) } } label: {
                     Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
@@ -5048,6 +5059,8 @@ private struct SlackBanner: View {
             state = ok ? "sent" : "failed"
             if ok {
                 reply = ""
+                // Answered, so it no longer waits in the sidebar.
+                ui.slackUnread["\(alert.target.workspace):\(alert.target.id)"] = nil
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { ui.collapse() }
             }
         }

@@ -54,12 +54,30 @@ final class NotchUI {
         }
     }
 
+    /// Slack messages waiting to be read, by conversation ("workspace:id"). They keep their
+    /// conversation in the sidebar until it is opened, so a banner missed is not a message lost.
+    var slackUnread: [String: Int] = (UserDefaults.standard.dictionary(forKey: "slackUnread") as? [String: Int]) ?? [:] {
+        didSet { UserDefaults.standard.set(slackUnread, forKey: "slackUnread") }
+    }
+
+    /// A Slack message came in: its conversation goes to the top of the sidebar, marked unread.
+    func noteSlack(_ alert: SlackAlert) {
+        let t = alert.target
+        let key = "\(t.workspace):\(t.id)"
+        if slackTarget?.workspace == t.workspace, slackTarget?.id == t.id, expanded, !cardsOnly { return }
+        slackRecent.removeAll { $0.id == t.id && $0.workspace == t.workspace }
+        slackRecent.insert(t, at: 0)
+        slackUnread[key, default: 0] += 1
+    }
+
     private func keepSlack(_ t: SlackTarget) {
+        slackUnread["\(t.workspace):\(t.id)"] = nil
         guard !slackRecent.contains(where: { $0.id == t.id && $0.workspace == t.workspace }) else { return }
         slackRecent.append(t)
     }
 
     func dropSlack(_ t: SlackTarget) {
+        slackUnread["\(t.workspace):\(t.id)"] = nil
         slackRecent.removeAll { $0.id == t.id && $0.workspace == t.workspace }
         if slackTarget?.id == t.id { slackTarget = nil }
     }
@@ -652,6 +670,7 @@ final class NotchUI {
     }
 
     func slack(_ alert: SlackAlert) {
+        noteSlack(alert)
         guard pendingLinks.isEmpty else { return }
         if expanded && !autoOpened {
             // Already reading that very conversation: it shows up there by itself.
