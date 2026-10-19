@@ -240,16 +240,72 @@ enum Threads {
               o["isSidechain"] as? Bool != true, o["isMeta"] as? Bool != true,
               let message = o["message"] as? [String: Any] else { return nil }
         var text = ""
+        var files: [String] = []
         if let s = message["content"] as? String {
             text = s
         } else if let blocks = message["content"] as? [[String: Any]] {
             text = blocks.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }
                 .joined(separator: "\n\n")
+            for block in blocks {
+                // Pictures pasted into the chat.
+                if type == "user", block["type"] as? String == "image",
+                   let source = block["source"] as? [String: Any], let data = source["data"] as? String,
+                   let saved = savedPicture(data, kind: source["media_type"] as? String) {
+                    files.append(saved)
+                }
+                // Files Claude handed over, and ones it wrote somewhere the user keeps things.
+                if type == "assistant", block["type"] as? String == "tool_use", let input = block["input"] as? [String: Any] {
+                    switch block["name"] as? String {
+                    case "SendUserFile":
+                        let list = input["files"] as? [String] ?? (input["files"] as? String).map { [$0] } ?? []
+                        files += list.filter { FileManager.default.fileExists(atPath: $0) }
+                    case "Write":
+                        if let path = input["file_path"] as? String, isKept(path), FileManager.default.fileExists(atPath: path) {
+                            files.append(path)
+                        }
+                    default: break
+                    }
+                }
+            }
+        }
+        // Files attached in the Claude app arrive as @"path" in the message.
+        if type == "user" {
+            for match in text.matches(of: #/@"([^"]+)"|@(/[^\s]+)/#).reversed() {
+                let path = String(match.1 ?? match.2 ?? "")
+                guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path) else { continue }
+                files.insert(path, at: 0)
+                text.replaceSubrange(match.range, with: "")
+            }
         }
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // Skip the machinery: tool results, injected reminders, slash-command wrappers.
-        guard !text.isEmpty, !text.hasPrefix("<"), !text.hasPrefix("[Request interrupted") else { return nil }
-        return (type == "user", text)
+        if text.hasPrefix("<") || text.hasPrefix("[Request interrupted") { text = "" }
+        let notes = Array(NSOrderedSet(array: files)).compactMap { $0 as? String }.map { path in
+            let image = ["png", "jpg", "jpeg", "gif", "heic", "webp"].contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+            return "[\(image ? "Image" : "File") attached, saved at \(path)]"
+        }
+        let full = ([text] + notes).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        guard !full.isEmpty else { return nil }
+        return (type == "user", full)
+    }
+
+    /// Somewhere the user keeps their own files, as opposed to a project's code or a scratch folder.
+    private static func isKept(_ path: String) -> Bool {
+        let home = Shell.home
+        return ["\(home)/Downloads/", "\(home)/Desktop/", "\(home)/Documents/", "\(home)/Dev/reports/"].contains { path.hasPrefix($0) }
+    }
+
+    /// A picture pasted into a Claude chat, kept as a file so it can be shown and saved.
+    private static func savedPicture(_ base64: String, kind: String?) -> String? {
+        let dir = "\(Shell.home)/.perch/cache/pictures"
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        for byte in base64.utf8.prefix(4096) { hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211 }
+        let ext = kind == "image/jpeg" ? "jpg" : kind == "image/gif" ? "gif" : kind == "image/webp" ? "webp" : "png"
+        let path = "\(dir)/pasted-\(String(hash, radix: 16))-\(base64.count).\(ext)"
+        if FileManager.default.fileExists(atPath: path) { return path }
+        guard let data = Data(base64Encoded: base64) else { return nil }
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        return FileManager.default.createFile(atPath: path, contents: data, attributes: [.posixPermissions: 0o600]) ? path : nil
     }
 
     private static func codexMessage(_ o: [String: Any]) -> (user: Bool, text: String)? {

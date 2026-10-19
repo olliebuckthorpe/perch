@@ -864,12 +864,18 @@ private struct Rail: View {
             .contentShape(Rectangle())
             .onTapGesture { ui.browse() }
             .padding(.bottom, 5)
-            // Slack messages not read yet sit at the very top, so one missed is never out of sight.
+            // The pinned bot leads in a tile of its own, as in Grok Bot.
+            let leads = agents.filter { $0.source == .grok && ui.pinned.contains($0.name) }
+            ForEach(leads) { agent in
+                LeadTile(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks)
+                    .padding(.bottom, 4)
+            }
+            // Slack messages not read yet sit just under it, so one missed is never out of sight.
             ForEach(ui.slackRecent.filter { (ui.slackUnread["\($0.workspace):\($0.id)"] ?? 0) > 0 }) { target in
                 SlackRailRow(target: target, selected: ui.slackTarget?.id == target.id)
                     .transition(.opacity.combined(with: .offset(x: -20)))
             }
-            ForEach(agents) { agent in
+            ForEach(agents.filter { a in !leads.contains { $0.id == a.id } }) { agent in
                 let star = agent.source == .grok && ui.pinned.contains(agent.name)
                 RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks, star: star) { dragged in
                     // Pinned bots stay at the top; everything else can be dragged into any order.
@@ -947,6 +953,35 @@ private struct NavRow: View {
 }
 
 /// One chat in the sidebar: its face, its name, and a mark if it wants something.
+/// The pinned bot at the head of the sidebar: its face large, its name under it.
+private struct LeadTile: View {
+    let agent: Agent
+    let selected: Bool
+    @Environment(NotchUI.self) private var ui
+    @State private var hovered = false
+
+    var body: some View {
+        VStack(spacing: 4) {
+            FaceView(agent: agent, size: 34)
+            Text(agent.name).font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(.white.opacity(selected ? 0.95 : 0.8)).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(.white.opacity(selected ? 0.14 : hovered ? 0.09 : 0.06), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(alignment: .topTrailing) {
+            if agent.unread > 0 && !selected {
+                Text("\(agent.unread)").font(.system(size: 9.5, weight: .bold)).foregroundStyle(.black)
+                    .padding(.horizontal, 5).frame(minWidth: 16, minHeight: 16)
+                    .background(.white, in: Capsule()).padding(6)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { ui.select(agent.id) }
+        .onHover { hovered = $0 }
+    }
+}
+
 private struct RailRow: View {
     let agent: Agent
     let selected: Bool
