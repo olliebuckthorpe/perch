@@ -27,6 +27,13 @@ fi
 rm -rf "$APP/Contents/Resources/bge-small.mlmodelc"
 cp -R .build/bge-small.mlmodelc "$APP/Contents/Resources/bge-small.mlmodelc"
 cp models/bge-vocab.txt "$APP/Contents/Resources/bge-vocab.txt"
+# The WhatsApp helper (whatsmeow), rebuilt when its source changes.
+if command -v go >/dev/null; then
+  if [ ! -f whatsapp/perch-whatsapp ] || [ whatsapp/main.go -nt whatsapp/perch-whatsapp ]; then
+    (cd whatsapp && GOTOOLCHAIN=local go build -o perch-whatsapp .)
+  fi
+fi
+[ -f whatsapp/perch-whatsapp ] && cp whatsapp/perch-whatsapp "$APP/Contents/Resources/perch-whatsapp"
 cp .build/release/Perch "$APP/Contents/MacOS/Perch"
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>

@@ -71,6 +71,10 @@ final class NotchUI {
     }
 
     private func keepSlack(_ t: SlackTarget) {
+        // Opening a WhatsApp chat is reading it: the phone shows it read too.
+        if t.workspace == WhatsAppSource.workspace, (slackUnread["\(t.workspace):\(t.id)"] ?? 0) > 0 || WhatsAppSource.shared.chats.contains(where: { $0.id == t.id && $0.unread > 0 }) {
+            WhatsAppSource.shared.markRead(t.id)
+        }
         slackUnread["\(t.workspace):\(t.id)"] = nil
         guard !slackRecent.contains(where: { $0.id == t.id && $0.workspace == t.workspace }) else { return }
         slackRecent.append(t)
@@ -198,6 +202,9 @@ final class NotchUI {
         }
         show(bot.id)
     }
+    /// Linking WhatsApp: the QR code to scan is showing.
+    var showingWhatsAppLink = false
+
     /// Which search result the arrow keys are on.
     var searchIndex = 0
     /// The results for what has been typed, worked out once typing pauses.

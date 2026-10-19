@@ -102,6 +102,10 @@ struct SlackAlert: Identifiable, Equatable {
 
     /// The conversation it came from, as somewhere to reply: the channel, or the person for a DM.
     var target: SlackTarget {
+        if workspace == WhatsAppSource.workspace {
+            let chat = WhatsAppSource.shared.chats.first { $0.id == channel }
+            return chat?.target ?? SlackTarget(workspace: workspace, id: channel, name: direct ? sender : place, channel: false, picture: picture)
+        }
         if direct {
             let person = SlackDirectory.shared.targets.first { $0.workspace == workspace && $0.id == senderID && !$0.channel }
             return person ?? SlackTarget(workspace: workspace, id: senderID, name: sender, channel: false, picture: picture)
@@ -113,6 +117,7 @@ struct SlackAlert: Identifiable, Equatable {
 
     /// Opens the conversation in the Slack app.
     var link: URL? {
+        if workspace == WhatsAppSource.workspace { return URL(string: "whatsapp://") }
         var parts = URLComponents(string: "slack://channel")
         parts?.queryItems = [URLQueryItem(name: "team", value: team), URLQueryItem(name: "id", value: channel)]
         return parts?.url
@@ -136,29 +141,34 @@ final class SlackSource {
     /// Sends a reply as the user: in a thread, into that thread; to a mention in a channel, as a
     /// reply in a thread under it; to a direct message, straight into the conversation.
     func reply(to alert: SlackAlert, text: String, done: @escaping (Bool) -> Void) {
+        if alert.workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.send(to: alert.target, text: text, files: [], done: done) }
         guard let link = links.values.first(where: { $0.name == alert.workspace }) else { return done(false) }
         link.post(channel: alert.channel, text: text, thread: alert.thread ?? (alert.direct ? nil : alert.ts), done: done)
     }
 
     /// A fresh message to a person or channel, as the user, with any files attached.
     func send(to target: SlackTarget, text: String, files: [URL] = [], done: @escaping (Bool) -> Void) {
+        if target.workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.send(to: target, text: text, files: files, done: done) }
         guard let link = links.values.first(where: { $0.name == target.workspace }) else { return done(false) }
         link.send(to: target, text: text, files: files, done: done)
     }
 
     /// Opens a conversation in the Slack app.
     func open(_ target: SlackTarget) {
+        if target.workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.openApp() }
         links.values.first(where: { $0.name == target.workspace })?.open(target)
     }
 
     /// Fetches a shared file's contents with the workspace's key. Nil when the key can't read files.
     func fetch(_ url: URL, workspace: String, done: @escaping (Data?) -> Void) {
+        if workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.fetch(url, done: done) }
         guard let link = links.values.first(where: { $0.name == workspace }) else { return done(nil) }
         link.fetch(url, done: done)
     }
 
     /// Loads a conversation's recent messages into `SlackConversations`.
     func history(for target: SlackTarget) {
+        if target.workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.history(target) }
         links.values.first(where: { $0.name == target.workspace })?.history(for: target)
     }
 

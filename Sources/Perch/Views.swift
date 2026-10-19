@@ -127,6 +127,8 @@ private struct ExpandedBody: View {
                 LinkPicker(link: link, waiting: ui.pendingLinks.count - 1).id(link.id)
             } else if let opened = ui.justOpened {
                 LinkOpenedNote(site: opened.site, profile: opened.profile)
+            } else if ui.showingWhatsAppLink {
+                WhatsAppLinkView()
             } else if ui.cardsOnly, let alert = ui.slackAlert {
                 SlackBanner(alert: alert)
             } else if ui.cardsOnly, let id = ui.noticeID, let agent = store.find(id) {
@@ -353,6 +355,10 @@ enum SearchItem: Identifiable {
             let parts = key.split(separator: ":", maxSplits: 1).map(String.init)
             guard parts.count == 2 else { continue }
             let (workspace, channel) = (parts[0], parts[1])
+            if workspace == WhatsAppSource.workspace {
+                if let chat = WhatsAppSource.shared.chats.first(where: { $0.id == channel }) { slackChats.append((chat.target, lines)) }
+                continue
+            }
             let person = conversations.dmChannel.first { $0.value == channel && $0.key.hasPrefix("\(workspace):") }
                 .map { String($0.key.dropFirst(workspace.count + 1)) }
             if let target = directory.first(where: { $0.workspace == workspace && $0.id == (person ?? channel) }) {
@@ -387,7 +393,12 @@ enum SearchItem: Identifiable {
             items.append(item)
         }
         // People and channels on Slack, to message directly.
-        let found = SlackDirectory.shared.matching(q).prefix(4).map { SearchItem.slack($0) }.filter { !seen.contains($0.id) }
+        // WhatsApp chats called what was typed, to open or message.
+        let whatsapp = WhatsAppSource.shared.chats.filter { chat in
+            let words = ThreadSearch.terms(chat.name)
+            return !ThreadSearch.terms(q).isEmpty && ThreadSearch.terms(q).allSatisfy { t in words.contains { $0.hasPrefix(t) } }
+        }.prefix(4).map { SearchItem.slack($0.target) }
+        let found = (whatsapp + SlackDirectory.shared.matching(q).prefix(4).map { SearchItem.slack($0) }).filter { !seen.contains($0.id) }
         // Typing a name means that person, bot or chat: those come first, ahead of chats that
         // only mention it.
         let terms = ThreadSearch.terms(q)
@@ -402,7 +413,9 @@ enum SearchItem: Identifiable {
             let words = ThreadSearch.terms(title)
             return !terms.isEmpty && terms.allSatisfy { t in words.contains { $0.hasPrefix(t) } }
         }
-        for case .slack(let t) in items + found { places["slack:\(t.workspace):\(t.id)"] = "Slack · \(t.workspace.capitalized)" }
+        for case .slack(let t) in items + found {
+            places["slack:\(t.workspace):\(t.id)"] = t.workspace == WhatsAppSource.workspace ? "WhatsApp" : "Slack · \(t.workspace.capitalized)"
+        }
         let byName = (items.filter(named) + found)
         people = Set(byName.map(\.id))
         let rest = items.filter { !people.contains($0.id) }
@@ -495,7 +508,7 @@ private struct SearchResults: View {
             PlainRow(icon: "square.and.pencil", title: "New Claude Code chat: \(prompt)", trailing: nil) { item.open(ui) }
         case .slack(let target):
             result(item, title: target.label) {
-                SlackAvatar(url: target.picture, channel: target.channel, size: 18)
+                SlackAvatar(url: target.picture, channel: target.channel, size: 18, whatsapp: target.workspace == WhatsAppSource.workspace)
             }
         }
     }
@@ -4023,6 +4036,16 @@ private struct Footer: View {
                 }
                 Toggle("Launch at login", isOn: $loginItem)
                 Divider()
+                switch WhatsAppSource.shared.state {
+                case .ready:
+                    Button("Disconnect WhatsApp") { WhatsAppSource.shared.disconnect() }
+                default:
+                    Button("Connect WhatsApp…") {
+                        WhatsAppSource.shared.connect()
+                        ui.showingWhatsAppLink = true
+                    }
+                }
+                Divider()
                 Button(LinkRouter.isDefault ? "Perch is choosing where links open" : "Let Perch choose where links open…") {
                     LinkRouter.makeDefault()
                 }
@@ -4596,7 +4619,7 @@ private struct SlackRailRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            SlackAvatar(url: target.picture, channel: target.channel, size: 16).frame(width: 20, height: 20)
+            SlackAvatar(url: target.picture, channel: target.channel, size: 16, whatsapp: target.workspace == WhatsAppSource.workspace).frame(width: 20, height: 20)
             let waiting = ui.slackUnread["\(target.workspace):\(target.id)"] ?? 0
             Text(target.label).font(.system(size: 11.5, weight: selected || waiting > 0 ? .semibold : .regular))
                 .foregroundStyle(.white.opacity(selected || waiting > 0 ? 0.95 : 0.7)).lineLimit(1)
@@ -4629,10 +4652,19 @@ private struct SlackAvatar: View {
     let url: URL?
     let channel: Bool
     let size: CGFloat
+    /// A WhatsApp chat: WhatsApp's logo in the corner instead of Slack's.
+    var whatsapp = false
     @State private var image: NSImage?
 
     private static let cache = NSCache<NSURL, NSImage>()
-    static let logo = NSWorkspace.shared.icon(forFile: "/Applications/Slack.app")
+    static let slackLogo = NSWorkspace.shared.icon(forFile: "/Applications/Slack.app")
+    static let whatsappLogo: NSImage = {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "net.whatsapp.WhatsApp") {
+            return NSWorkspace.shared.icon(forFile: url.path)
+        }
+        return NSImage(systemSymbolName: "message.fill", accessibilityDescription: nil) ?? NSImage()
+    }()
+    private var logo: NSImage { whatsapp ? Self.whatsappLogo : Self.slackLogo }
 
     @ViewBuilder private var picture: some View {
         if let image {
@@ -4649,7 +4681,7 @@ private struct SlackAvatar: View {
     var body: some View {
         Group {
             if channel {
-                Image(nsImage: Self.logo).resizable().frame(width: size, height: size)
+                Image(nsImage: logo).resizable().frame(width: size, height: size)
             } else {
                 picture.frame(width: size, height: size)
                     .clipShape(RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
@@ -4662,7 +4694,7 @@ private struct SlackAvatar: View {
                         .clipShape(RoundedRectangle(cornerRadius: size * 0.12, style: .continuous))
                         .padding(1)
                 } else {
-                    Image(nsImage: Self.logo).resizable().frame(width: size * 0.5, height: size * 0.5)
+                    Image(nsImage: logo).resizable().frame(width: size * 0.5, height: size * 0.5)
                 }
             }
             .background(Color.black, in: RoundedRectangle(cornerRadius: size * 0.14, style: .continuous))
@@ -4690,7 +4722,7 @@ private struct SlackComposer: View {
 
     private var lines: [SlackLine]? {
         let store = SlackConversations.shared
-        let channel = target.channel ? target.id : store.dmChannel["\(target.workspace):\(target.id)"]
+        let channel = target.channel || target.workspace == WhatsAppSource.workspace ? target.id : store.dmChannel["\(target.workspace):\(target.id)"]
         return channel.flatMap { store.lines[store.key(target.workspace, $0)] }
     }
 
@@ -4702,9 +4734,10 @@ private struct SlackComposer: View {
                         .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
                 }
                 .buttonStyle(Press())
-                SlackAvatar(url: target.picture, channel: target.channel, size: 22)
+                SlackAvatar(url: target.picture, channel: target.channel, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace)
                 Text(target.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
-                Text("Slack · \(target.workspace.capitalized)").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+                Text(target.workspace == WhatsAppSource.workspace ? "WhatsApp" : "Slack · \(target.workspace.capitalized)")
+                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
                 Spacer()
             }
             .background(DoubleClick {
@@ -4877,6 +4910,68 @@ private struct FileBadge: View {
     }
 }
 
+/// Linking WhatsApp: a QR code to scan from the phone, as for WhatsApp Web.
+private struct WhatsAppLinkView: View {
+    @Environment(NotchUI.self) private var ui
+    private var source: WhatsAppSource { WhatsAppSource.shared }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Connect WhatsApp").font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                Group {
+                    switch source.state {
+                    case .scan:
+                        Text("On your phone, open WhatsApp, go to Settings, then Linked devices, tap Link a device, and scan this code.")
+                    case .ready:
+                        Text("Connected. Your chats are in the sidebar, and new messages come through here.")
+                    case .failed(let why):
+                        Text("That did not work: \(why)")
+                    case .loggedOut:
+                        Text("WhatsApp was unlinked. Connect again to carry on.")
+                    default:
+                        Text("Starting up…")
+                    }
+                }
+                .font(.system(size: 12)).foregroundStyle(.white.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
+                Text("Perch joins as a linked device, like WhatsApp Web. Messages stay on this Mac.")
+                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4)).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    if case .loggedOut = source.state {
+                        Button("Connect again") { source.connect() }.buttonStyle(ChipButton(fill: .white))
+                    }
+                    Button(source.state == .ready ? "Done" : "Close") { ui.showingWhatsAppLink = false }.buttonStyle(ChipButton())
+                }
+            }
+            Spacer(minLength: 0)
+            if case .scan(let code) = source.state, let image = Self.qr(code) {
+                Image(nsImage: image).interpolation(.none).resizable().frame(width: 190, height: 190)
+                    .padding(10).background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else if source.state == .ready {
+                Image(systemName: "checkmark.circle.fill").font(.system(size: 40)).foregroundStyle(Palette.green).frame(width: 210, height: 120)
+            } else {
+                ProgressView().controlSize(.small).frame(width: 210, height: 120)
+            }
+        }
+        .padding(16)
+        .frame(width: 560)
+        .onChange(of: source.state) { _, state in
+            if state == .ready { DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { ui.showingWhatsAppLink = false } }
+        }
+    }
+
+    private static func qr(_ text: String) -> NSImage? {
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(Data(text.utf8), forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let output = filter.outputImage else { return nil }
+        let rep = NSCIImageRep(ciImage: output.transformed(by: CGAffineTransform(scaleX: 8, y: 8)))
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+        return image
+    }
+}
+
 /// A file shared in Slack: pictures as a preview, anything else as a chip. Clicking opens it;
 /// when the workspace's key can't read files, it opens in Slack instead.
 private struct SlackFileView: View {
@@ -5001,7 +5096,7 @@ private struct ToastBanner: View {
                         lines(agent.name, agent.lastMessage.isEmpty ? agent.detail : agent.lastMessage)
                     }
                 case .slack(let alert):
-                    SlackAvatar(url: alert.picture, channel: false, size: 26)
+                    SlackAvatar(url: alert.picture, channel: false, size: 26, whatsapp: alert.workspace == WhatsAppSource.workspace)
                     lines(alert.direct ? alert.sender : "\(alert.sender) in \(alert.place)", alert.text)
                 }
                 Spacer(minLength: 4)
@@ -5038,6 +5133,8 @@ private struct ToastBanner: View {
         switch toast {
         case .agent(let id):
             ui.select(id)
+        case .slack(let alert) where alert.workspace == WhatsAppSource.workspace:
+            ui.openSlack(alert.target)
         case .slack(let alert):
             // Into that conversation in the notch, if Perch knows it; otherwise Slack itself.
             let store = SlackConversations.shared
@@ -5065,20 +5162,25 @@ private struct SlackBanner: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top, spacing: 10) {
-                SlackAvatar(url: alert.picture, channel: false, size: 30)
+                SlackAvatar(url: alert.picture, channel: false, size: 30, whatsapp: alert.workspace == WhatsAppSource.workspace)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(alert.sender).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-                        Text("\(alert.place) · \(alert.workspace.capitalized)").font(.system(size: 11))
+                        Text(alert.workspace == WhatsAppSource.workspace ? alert.place : "\(alert.place) · \(alert.workspace.capitalized)").font(.system(size: 11))
                             .foregroundStyle(.white.opacity(0.45)).lineLimit(1)
                         Spacer(minLength: 0)
                         Button {
-                            if let link = alert.link { NSWorkspace.shared.open(link) }
-                            ui.collapse()
+                            if alert.workspace == WhatsAppSource.workspace {
+                                ui.openSlack(alert.target)
+                                ui.expand()
+                            } else {
+                                if let link = alert.link { NSWorkspace.shared.open(link) }
+                                ui.collapse()
+                            }
                         } label: {
                             Image(systemName: "arrow.up.forward.app").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
                         }
-                        .buttonStyle(Press()).help("Open in Slack")
+                        .buttonStyle(Press()).help(alert.workspace == WhatsAppSource.workspace ? "Open the chat" : "Open in Slack")
                     }
                     Text(alert.text).font(.system(size: 12)).foregroundStyle(.white.opacity(0.8))
                         .lineLimit(4).fixedSize(horizontal: false, vertical: true)
