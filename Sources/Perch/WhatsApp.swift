@@ -183,6 +183,9 @@ final class WhatsAppSource {
             }
         case "message":
             arrived(o)
+        case "reaction":
+            guard let chat = o["chat"] as? String, let id = o["id"] as? String else { break }
+            setReactions(chat, id, o["reactions"] as? [String: String] ?? [:])
         case "status":
             // Delivered or read on the other side: the ticks move on.
             guard let chat = o["chat"] as? String, let ids = o["ids"] as? [String], let tick = o["status"] as? Int else { break }
@@ -283,7 +286,8 @@ final class WhatsAppSource {
         let time = (m["ts"] as? Double).map { Date(timeIntervalSince1970: $0) }
         return SlackLine(id: id, sender: mine ? "You" : (m["senderName"] as? String ?? ""), mine: mine,
                          text: m["text"] as? String ?? "", picture: mine ? nil : shared.picture(for: who), files: files,
-                         time: time, ticks: mine ? max(1, m["status"] as? Int ?? 1) : nil)
+                         time: time, ticks: mine ? max(1, m["status"] as? Int ?? 1) : nil,
+                         reactions: m["reactions"] as? [String: String] ?? [:])
     }
 
     // MARK: Chats
@@ -407,6 +411,27 @@ final class WhatsAppSource {
             }
         }
         next(message)
+    }
+
+    /// Reacts to a message with an emoji; the same emoji again takes it away.
+    func react(chat: String, id: String, emoji: String) {
+        let store = SlackConversations.shared
+        let current = store.lines[store.key(Self.workspace, chat)]?.first { $0.id == id }?.reactions["me"]
+        let choice = current == emoji ? "" : emoji
+        var all = store.lines[store.key(Self.workspace, chat)]?.first { $0.id == id }?.reactions ?? [:]
+        all["me"] = choice.isEmpty ? nil : choice
+        setReactions(chat, id, all)
+        request("react", ["chat": chat, "message": id, "text": choice]) { [weak self] reply in
+            if reply == nil { self?.history(SlackTarget(workspace: Self.workspace, id: chat, name: "", channel: false)) }
+        }
+    }
+
+    private func setReactions(_ chat: String, _ id: String, _ all: [String: String]) {
+        let store = SlackConversations.shared
+        let key = store.key(Self.workspace, chat)
+        guard var lines = store.lines[key], let i = lines.firstIndex(where: { $0.id == id }) else { return }
+        lines[i].reactions = all
+        store.lines[key] = lines
     }
 
     func markRead(_ chat: String) {

@@ -57,6 +57,10 @@ struct NotchContent: View {
                 .frame(width: rightWidth, alignment: .leading)
             }
             .frame(height: ui.notch.height)
+            // Above a banner, the strip is the way into everything else.
+            .contentShape(Rectangle())
+            .onHover { ui.overStrip($0) }
+            .onTapGesture { ui.showEverything() }
 
             if ui.expanded {
                 ExpandedBody()
@@ -4769,7 +4773,7 @@ private struct SlackComposer: View {
                                             Text(line.sender).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
                                         }
                                         if target.workspace == WhatsAppSource.workspace {
-                                            if !line.text.isEmpty || line.files.isEmpty { WhatsAppBubble(line: line) }
+                                            WhatsAppBubble(line: line, chat: target.id)
                                         } else if !line.text.isEmpty {
                                             Text(line.text).font(.system(size: 12.5)).textSelection(.enabled)
                                                 .foregroundStyle(line.mine ? Color.black.opacity(0.88) : .white.opacity(0.9))
@@ -4778,7 +4782,7 @@ private struct SlackComposer: View {
                                                 .background(line.mine ? Color(red: 0.92, green: 0.87, blue: 0.95) : Color(white: 0.17),
                                                             in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                                         }
-                                        ForEach(line.files) { SlackFileView(file: $0) }
+                                        if target.workspace != WhatsAppSource.workspace { ForEach(line.files) { SlackFileView(file: $0) } }
                                     }
                                     if !line.mine { Spacer(minLength: 40) }
                                 }
@@ -4999,18 +5003,75 @@ private struct WhatsAppLinkView: View {
 /// everyone else's, with the time and (on the user's own) the ticks tucked into the corner.
 private struct WhatsAppBubble: View {
     let line: SlackLine
+    var chat: String = ""
+    @State private var hovered = false
 
     static let mine = Color(red: 0.0, green: 0.36, blue: 0.29)
     static let theirs = Color(red: 0.13, green: 0.17, blue: 0.2)
 
-    var body: some View {
-        // The time sits after the last line, with room left for it so it never covers the text.
+    /// The words, with the time (and ticks) tucked after the last line.
+    private var words: some View {
         Text(WhatsAppText.styled(line.text) + spacer)
             .font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.95)).textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.leading, 9).padding(.trailing, 9).padding(.top, 6).padding(.bottom, 7)
             .overlay(alignment: .bottomTrailing) { stamp.padding(.trailing, 7).padding(.bottom, 4) }
+    }
+
+    /// A photo or file sits inside the bubble, as in WhatsApp: the caption under it, and with
+    /// no caption the time over the picture's corner.
+    @ViewBuilder private var content: some View {
+        if line.files.isEmpty {
+            words
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(line.files) { file in
+                    SlackFileView(file: file, bare: true)
+                        .overlay(alignment: .bottomTrailing) {
+                            if line.text.isEmpty && file.image {
+                                stamp.padding(.horizontal, 6).padding(.vertical, 3)
+                                    .background(.black.opacity(0.45), in: Capsule()).padding(6)
+                            }
+                        }
+                }
+                if !line.text.isEmpty {
+                    words
+                } else if !(line.files.last?.image ?? false) {
+                    HStack { Spacer(minLength: 0); stamp }.padding(.horizontal, 6).padding(.bottom, 3)
+                }
+            }
+            .padding(3)
+        }
+    }
+
+    var body: some View {
+        content
             .background(line.mine ? Self.mine : Self.theirs, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // Reactions sit on the bottom edge, as in WhatsApp.
+            .overlay(alignment: line.mine ? .bottomTrailing : .bottomLeading) {
+                if !line.reactions.isEmpty {
+                    let counts = Dictionary(grouping: line.reactions.values, by: { $0 }).mapValues(\.count)
+                    HStack(spacing: 2) {
+                        ForEach(counts.keys.sorted(), id: \.self) { e in
+                            Text(counts[e]! > 1 ? "\(e) \(counts[e]!)" : e).font(.system(size: 11))
+                        }
+                    }
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(Color(white: 0.2), in: Capsule())
+                    .overlay(Capsule().stroke(.black, lineWidth: 1.5))
+                    .offset(x: line.mine ? -8 : 8, y: 14)
+                }
+            }
+            .padding(.bottom, line.reactions.isEmpty ? 0 : 14)
+            // Hover for a quick reaction.
+            .overlay(alignment: line.mine ? .topLeading : .topTrailing) {
+                if hovered && !chat.isEmpty {
+                    WhatsAppReactions(chat: chat, id: line.id, mine: line.reactions["me"])
+                        .offset(x: line.mine ? -8 : 8, y: -26)
+                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                }
+            }
+            .onHover { over in withAnimation(.easeOut(duration: 0.12)) { hovered = over } }
     }
 
     /// Invisible text as wide as the time and ticks, so the last line always leaves room for them.
@@ -5028,6 +5089,31 @@ private struct WhatsAppBubble: View {
             }
             if line.mine, let ticks = line.ticks { Ticks(level: ticks) }
         }
+    }
+}
+
+/// A row of quick reactions for a WhatsApp message; the one already chosen is ringed, and
+/// choosing it again takes it away.
+struct WhatsAppReactions: View {
+    let chat: String
+    let id: String
+    let mine: String?
+    static let quick = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
+
+    var body: some View {
+        HStack(spacing: 1) {
+            ForEach(Self.quick, id: \.self) { e in
+                Button { WhatsAppSource.shared.react(chat: chat, id: id, emoji: e) } label: {
+                    Text(e).font(.system(size: 14)).frame(width: 26, height: 24)
+                        .background(mine == e ? Color.white.opacity(0.22) : .clear, in: Circle())
+                }
+                .buttonStyle(Press(reach: 1))
+            }
+        }
+        .padding(.horizontal, 4).padding(.vertical, 2)
+        .background(Color(white: 0.16), in: Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
     }
 }
 
@@ -5065,6 +5151,8 @@ enum WhatsAppText {
 /// when the workspace's key can't read files, it opens in Slack instead.
 private struct SlackFileView: View {
     let file: SlackFile
+    /// Inside a WhatsApp bubble: tighter corners and no card of its own.
+    var bare = false
     @Environment(NotchUI.self) private var ui
     @State private var image: NSImage?
     @State private var hovered = false
@@ -5074,8 +5162,8 @@ private struct SlackFileView: View {
         Group {
             if file.image, let image {
                 Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 260, maxHeight: 220, alignment: .leading)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .frame(maxWidth: 260, maxHeight: bare ? 300 : 220, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: bare ? 6 : 10, style: .continuous))
                     .overlay(alignment: .topTrailing) {
                         if hovered { SaveButton { save() } }
                     }
@@ -5275,8 +5363,13 @@ private struct SlackBanner: View {
                         }
                         .buttonStyle(Press()).help(alert.workspace == WhatsAppSource.workspace ? "Open the chat" : "Open in Slack")
                     }
-                    Text(alert.text).font(.system(size: 12)).foregroundStyle(.white.opacity(0.8))
-                        .lineLimit(4).fixedSize(horizontal: false, vertical: true)
+                    // Hovering shows the whole message, without opening the chat or marking it read.
+                    Text(alert.workspace == WhatsAppSource.workspace ? WhatsAppText.styled(alert.text) : AttributedString(alert.text))
+                        .font(.system(size: 12)).foregroundStyle(.white.opacity(0.8))
+                        .lineLimit(hovered ? 40 : 4).fixedSize(horizontal: false, vertical: true)
+                    if alert.workspace == WhatsAppSource.workspace && hovered {
+                        WhatsAppReactions(chat: alert.channel, id: alert.ts, mine: nil).padding(.top, 2)
+                    }
                 }
             }
             // Reply straight from here; it posts as you, in the same conversation or thread.

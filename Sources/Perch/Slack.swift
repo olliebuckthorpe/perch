@@ -40,6 +40,8 @@ struct SlackLine: Identifiable, Equatable {
     /// 2 delivered, 3 read).
     var time: Date?
     var ticks: Int?
+    /// Reactions on it, by who reacted ("me" for the user).
+    var reactions: [String: String] = [:]
 }
 
 /// A file shared in a Slack message. Its links need the workspace's key to open.

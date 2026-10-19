@@ -415,6 +415,31 @@ final class NotchUI {
         return true
     }
 
+    @ObservationIgnored private var stripWork: DispatchWorkItem?
+
+    /// From a banner to everything: the banner gives way to the whole island.
+    func showEverything() {
+        guard expanded, cardsOnly else { return }
+        stripWork?.cancel()
+        collapseWork?.cancel()
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+            cardsOnly = false
+            slackAlert = nil
+            noticeID = nil
+            autoOpened = false
+        }
+    }
+
+    /// The pointer resting on the notch strip above a banner means the user wants the rest of
+    /// the notch, not that message: after a moment, open it all.
+    func overStrip(_ over: Bool) {
+        stripWork?.cancel()
+        guard over, expanded, cardsOnly else { return }
+        let work = DispatchWorkItem { [weak self] in self?.showEverything() }
+        stripWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
     func hover(_ inside: Bool) {
         guard inside != hovering else { return }
         hovering = inside

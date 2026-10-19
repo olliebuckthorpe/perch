@@ -149,6 +149,8 @@ func setup() {
 	// picture that WhatsApp sends inside photo and video messages.
 	db.Exec(`ALTER TABLE messages ADD COLUMN status INTEGER NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE messages ADD COLUMN thumb BLOB`)
+	// Reactions to a message, as JSON: who reacted to what.
+	db.Exec(`ALTER TABLE messages ADD COLUMN reactions TEXT NOT NULL DEFAULT '{}'`)
 }
 
 // MARK: Events
@@ -319,6 +321,27 @@ func boolInt(b bool) int {
 
 // record saves a message and returns it as Perch sees it, or nil for things that are not
 // messages to show (reactions, edits, protocol noise).
+// react records a reaction on a message (an empty one takes it away) and tells Perch.
+func react(chat, id, who, emoji string, mine, live bool) {
+	var stored string
+	db.QueryRow(`SELECT reactions FROM messages WHERE chat = ? AND id = ?`, chat, id).Scan(&stored)
+	all := map[string]string{}
+	json.Unmarshal([]byte(stored), &all)
+	if mine {
+		who = "me"
+	}
+	if emoji == "" {
+		delete(all, who)
+	} else {
+		all[who] = emoji
+	}
+	b, _ := json.Marshal(all)
+	db.Exec(`UPDATE messages SET reactions = ? WHERE chat = ? AND id = ?`, string(b), chat, id)
+	if live {
+		emit("reaction", map[string]any{"chat": chat, "id": id, "reactions": all})
+	}
+}
+
 // webStatus turns WhatsApp's own message status into ticks: 1 sent, 2 delivered, 3 read.
 func webStatus(s int) int {
 	switch {
@@ -341,6 +364,10 @@ func record(e *events.Message, live bool, status int) map[string]any {
 	}
 	if inner := msg.GetViewOnceMessage().GetMessage(); inner != nil {
 		msg = inner
+	}
+	if r := msg.GetReactionMessage(); r != nil {
+		react(key(e.Info.Chat), r.GetKey().GetID(), key(e.Info.Sender), r.GetText(), e.Info.IsFromMe, live)
+		return nil
 	}
 	text, kind, mimeType, filename := describe(msg)
 	if kind == "" {
@@ -618,6 +645,8 @@ func run(c command) (any, error) {
 		return avatar(c.Chat)
 	case "contacts":
 		return contacts()
+	case "react":
+		return sendReaction(c.Chat, c.Message, c.Text)
 	case "logout":
 		err := client.Logout(ctx)
 		return nil, err
@@ -684,7 +713,7 @@ func history(chat string, limit int) (any, error) {
 	if limit <= 0 {
 		limit = 80
 	}
-	rows, err := db.Query(`SELECT id, sender, sender_name, from_me, ts, text, kind, mime, filename, status, thumb FROM
+	rows, err := db.Query(`SELECT id, sender, sender_name, from_me, ts, text, kind, mime, filename, status, thumb, reactions FROM
 		(SELECT * FROM messages WHERE chat = ? ORDER BY ts DESC LIMIT ?) ORDER BY ts ASC`, chat, limit)
 	if err != nil {
 		return nil, err
@@ -695,9 +724,13 @@ func history(chat string, limit int) (any, error) {
 		var id, sender, senderName, text, kind, mimeType, filename string
 		var fromMe, ts, status int64
 		var thumb []byte
-		rows.Scan(&id, &sender, &senderName, &fromMe, &ts, &text, &kind, &mimeType, &filename, &status, &thumb)
+		var reactions string
+		rows.Scan(&id, &sender, &senderName, &fromMe, &ts, &text, &kind, &mimeType, &filename, &status, &thumb, &reactions)
+		all := map[string]string{}
+		json.Unmarshal([]byte(reactions), &all)
 		list = append(list, map[string]any{"id": id, "sender": sender, "senderName": senderName, "fromMe": fromMe == 1,
-			"ts": ts, "text": text, "kind": kind, "mime": mimeType, "filename": filename, "status": status, "thumb": thumb})
+			"ts": ts, "text": text, "kind": kind, "mime": mimeType, "filename": filename, "status": status, "thumb": thumb,
+			"reactions": all})
 	}
 	return list, nil
 }
@@ -871,6 +904,28 @@ func contacts() (any, error) {
 		list = append(list, map[string]any{"jid": jid.String(), "lid": lid, "name": name, "pushName": c.PushName})
 	}
 	return list, nil
+}
+
+// sendReaction reacts to a message with an emoji (or takes the reaction away, given none).
+func sendReaction(chat, id, emoji string) (any, error) {
+	to, err := types.ParseJID(chat)
+	if err != nil {
+		return nil, err
+	}
+	var sender string
+	var fromMe int
+	if err := db.QueryRow(`SELECT sender, from_me FROM messages WHERE chat = ? AND id = ?`, chat, id).Scan(&sender, &fromMe); err != nil {
+		return nil, err
+	}
+	who, _ := types.ParseJID(sender)
+	if fromMe == 1 && client.Store.ID != nil {
+		who = client.Store.ID.ToNonAD()
+	}
+	if _, err := client.SendMessage(ctx, to, client.BuildReaction(to, who, id, emoji)); err != nil {
+		return nil, err
+	}
+	react(chat, id, "me", emoji, true, false)
+	return nil, nil
 }
 
 func avatar(chat string) (any, error) {
