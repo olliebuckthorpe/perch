@@ -22,7 +22,8 @@ final class GrokSource {
 
     // MARK: Hidden from Perch
 
-    /// Bot ids left out of Perch entirely. Grok Bot itself is not touched.
+    /// Bots kept out of the notch, the sidebar and notifications (someone else's, say). They can
+    /// still be found by search and opened from there. Grok Bot itself is not touched.
     static var hidden: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: "hiddenBots") ?? []) }
         set { UserDefaults.standard.set(Array(newValue), forKey: "hiddenBots") }
@@ -30,8 +31,7 @@ final class GrokSource {
 
     func hide(_ agent: Agent) {
         Self.hidden.insert(agent.sessionID)
-        store.remove(agent)
-        refresh()
+        agent.unread = 0
     }
 
     // MARK: What a working bot is doing
@@ -314,8 +314,6 @@ final class GrokSource {
     private func apply(_ list: [[String: Any]]) {
         let visible = list
             .filter { !($0["isHiddenFromSidebar"] as? Bool ?? false) }
-            // Bots the user has hidden from Perch (someone else's, say), though Grok Bot keeps them.
-            .filter { !Self.hidden.contains($0["id"] as? String ?? "") }
             .sorted { ($0["createdAt"] as? Double ?? 0) < ($1["createdAt"] as? Double ?? 0) }
         var live = Set<String>()
         for raw in visible {
@@ -356,7 +354,8 @@ final class GrokSource {
             agent.status = status
             agent.lastMessage = preview
             agent.detail = running && preview.isEmpty ? "Working" : oneLine(preview)
-            if newlyLoud && NSWorkspace.shared.frontmostApplication?.bundleIdentifier != Self.bundleID {
+            // A hidden bot is only there to be searched for: never a notification.
+            if newlyLoud && !Self.hidden.contains(id) && NSWorkspace.shared.frontmostApplication?.bundleIdentifier != Self.bundleID {
                 store.ping(agent)
             }
 

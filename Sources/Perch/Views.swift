@@ -225,7 +225,7 @@ private struct ExpandedBody: View {
                 Text(error).font(.system(size: 12)).foregroundStyle(.white.opacity(0.4)).padding(.horizontal, 8)
             } else {
                 // Quiet bots stay out of the way until asked for.
-                let bots = store.grokBots.filter { showQuiet || ui.inPill($0) }
+                let bots = store.grokBots.filter { (showQuiet && !GrokSource.hidden.contains($0.sessionID)) || ui.inPill($0) }
                 let quiet = store.grokBots.count - store.grokBots.filter(ui.inPill).count
                 VStack(spacing: 0) {
                     ForEach(bots) { AgentRow(agent: $0) }
@@ -334,7 +334,9 @@ enum SearchItem: Identifiable {
     /// message, then the option to start fresh. With nothing typed, every live one.
     static func all(_ store: AgentStore, _ ui: NotchUI) -> [SearchItem] {
         let q = ui.query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return (store.sessions + store.grokBots).prefix(14).map { .agent($0) } }
+        guard !q.isEmpty else {
+            return (store.sessions + store.grokBots.filter { !GrokSource.hidden.contains($0.sessionID) }).prefix(14).map { .agent($0) }
+        }
         return ui.searchResults
     }
 
@@ -838,7 +840,11 @@ private struct Rail: View {
             let (l, r) = (rank[$0.element.id] ?? Int.max, rank[$1.element.id] ?? Int.max)
             return l != r ? l < r : $0.offset < $1.offset
         }.map(\.element)
-        return (pinned + arranged).filter { seen.insert($0.id).inserted && !ui.isDismissed($0) }
+        // Bots hidden from Perch only appear while opened from search.
+        return (pinned + arranged).filter {
+            seen.insert($0.id).inserted && !ui.isDismissed($0)
+                && !($0.source == .grok && GrokSource.hidden.contains($0.sessionID) && ui.selectedID != $0.id)
+        }
     }
 
     var body: some View {

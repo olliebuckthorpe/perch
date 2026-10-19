@@ -348,7 +348,8 @@ final class NotchUI {
     }
 
     func inPill(_ agent: Agent) -> Bool {
-        agent.status != .idle || agent.pending != nil || (agent.source == .grok && pinned.contains(agent.name))
+        if agent.source == .grok, GrokSource.hidden.contains(agent.sessionID) { return selectedID == agent.id }
+        return agent.status != .idle || agent.pending != nil || (agent.source == .grok && pinned.contains(agent.name))
     }
 
     @ObservationIgnored weak var controller: NotchController?
