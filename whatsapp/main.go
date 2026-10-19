@@ -70,15 +70,17 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(4)
 	setup()
 	os.Chmod(filepath.Join(dir, "messages.db"), 0o600)
 
-	sessionDB, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "session.db")+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
+	// More than one connection: whatsmeow reads its keys while in the middle of saving them, and
+	// a single connection made decrypting and sending wait on themselves forever.
+	sessionDB, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "session.db")+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		fail(err)
 	}
-	sessionDB.SetMaxOpenConns(1)
+	sessionDB.SetMaxOpenConns(4)
 	container := sqlstore.NewWithDB(sessionDB, "sqlite3", waLog.Noop)
 	if err := container.Upgrade(ctx); err != nil {
 		fail(err)
@@ -177,12 +179,18 @@ func work() {
 }
 
 func handle(evt any) {
-	switch evt.(type) {
-	case *events.Message, *events.Connected, *events.Disconnected, *events.LoggedOut, *events.HistorySync, *events.StreamReplaced:
+	switch e := evt.(type) {
+	case *events.Receipt, *events.Presence, *events.ChatPresence, *events.PushName:
+	case *events.OfflineSyncPreview:
+		note("offline preview: %d messages, %d receipts, %d notifications", e.Messages, e.Receipts, e.Notifications)
+	case *events.Message:
+		note("message: chat %s, from me %v, nil %v", e.Info.Chat.Server, e.Info.IsFromMe, e.Message == nil)
+	default:
 		note("event %T", evt)
 	}
 	switch e := evt.(type) {
 	case *events.Connected:
+		merge()
 		me := ""
 		if client.Store.ID != nil {
 			me = client.Store.ID.ToNonAD().String()
@@ -237,7 +245,49 @@ func handle(evt any) {
 	}
 }
 
-func key(j types.JID) string { return j.ToNonAD().String() }
+// key is how a chat or person is filed: by phone number where WhatsApp has told us it, so the
+// same person is not split between their number and their anonymous id.
+func key(j types.JID) string {
+	j = j.ToNonAD()
+	if j.Server == types.HiddenUserServer && client != nil {
+		if pn, err := client.Store.LIDs.GetPNForLID(ctx, j); err == nil && !pn.IsEmpty() {
+			return pn.ToNonAD().String()
+		}
+	}
+	return j.String()
+}
+
+// merge files chats kept under an anonymous id under the phone number instead, once it is known.
+func merge() {
+	rows, err := db.Query(`SELECT jid FROM chats WHERE jid LIKE '%@lid'`)
+	if err != nil {
+		return
+	}
+	var lids []string
+	for rows.Next() {
+		var j string
+		rows.Scan(&j)
+		lids = append(lids, j)
+	}
+	rows.Close()
+	for _, l := range lids {
+		lid, err := types.ParseJID(l)
+		if err != nil {
+			continue
+		}
+		pn := key(lid)
+		if pn == l {
+			continue
+		}
+		db.Exec(`UPDATE OR IGNORE messages SET chat = ? WHERE chat = ?`, pn, l)
+		db.Exec(`UPDATE messages SET sender = ? WHERE sender = ?`, pn, l)
+		db.Exec(`INSERT INTO chats (jid, name, is_group, last_ts, unread) SELECT ?, name, is_group, last_ts, unread FROM chats WHERE jid = ?
+			ON CONFLICT(jid) DO UPDATE SET last_ts = MAX(chats.last_ts, excluded.last_ts), unread = chats.unread + excluded.unread`, pn, l)
+		db.Exec(`DELETE FROM messages WHERE chat = ?`, l)
+		db.Exec(`DELETE FROM chats WHERE jid = ?`, l)
+	}
+	note("merged %d anonymous-id chats", len(lids))
+}
 
 func boolInt(b bool) int {
 	if b {
@@ -289,8 +339,10 @@ func record(e *events.Message, live bool) map[string]any {
 		return nil
 	}
 	if added, _ := res.RowsAffected(); added == 0 {
+		note("already had it")
 		return nil
 	}
+	note("saved %s", kind)
 	isGroup := e.Info.Chat.Server == types.GroupServer
 	db.Exec(`INSERT INTO chats (jid, is_group, last_ts) VALUES (?, ?, ?)
 		ON CONFLICT(jid) DO UPDATE SET last_ts = MAX(last_ts, excluded.last_ts)`, chat, boolInt(isGroup), ts)
@@ -468,6 +520,7 @@ func commands() {
 		go func(c command) {
 			data, err := run(c)
 			if err != nil {
+				note("command %s failed: %v", c.Cmd, err)
 				out(map[string]any{"id": c.ID, "ok": false, "error": err.Error()})
 			} else {
 				out(map[string]any{"id": c.ID, "ok": true, "data": data})
@@ -516,22 +569,31 @@ func chats(limit int) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var list []map[string]any
+	type row struct {
+		jid, name, last, kind string
+		group, ts, unread     int64
+	}
+	var found []row
 	for rows.Next() {
-		var jid, name, last, kind string
-		var group, ts, unread int64
-		rows.Scan(&jid, &name, &group, &ts, &unread, &last, &kind)
-		if name == "" {
-			if j, err := types.ParseJID(jid); err == nil {
-				name = chatName(j)
-			}
-		}
-		if j, err := types.ParseJID(jid); err == nil && j.Server == types.BroadcastServer {
+		var r row
+		rows.Scan(&r.jid, &r.name, &r.group, &r.ts, &r.unread, &r.last, &r.kind)
+		found = append(found, r)
+	}
+	// Names are looked up only once the list has been read, never while it is still open:
+	// looking up inside the read waited on itself.
+	rows.Close()
+	var list []map[string]any
+	for _, r := range found {
+		j, err := types.ParseJID(r.jid)
+		if err == nil && j.Server == types.BroadcastServer {
 			continue
 		}
-		list = append(list, map[string]any{"chat": jid, "name": name, "group": group == 1, "ts": ts,
-			"unread": unread, "last": last, "lastKind": kind})
+		name := r.name
+		if name == "" && err == nil {
+			name = chatName(j)
+		}
+		list = append(list, map[string]any{"chat": r.jid, "name": name, "group": r.group == 1, "ts": r.ts,
+			"unread": r.unread, "last": r.last, "lastKind": r.kind})
 	}
 	return list, nil
 }

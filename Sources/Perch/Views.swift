@@ -4752,7 +4752,7 @@ private struct SlackComposer: View {
                             ForEach(lines) { line in
                                 HStack(alignment: .top, spacing: 8) {
                                     if line.mine { Spacer(minLength: 50) }
-                                    if !line.mine { SlackAvatar(url: line.picture, channel: false, size: 22) }
+                                    if !line.mine { SlackAvatar(url: line.picture, channel: false, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace) }
                                     VStack(alignment: line.mine ? .trailing : .leading, spacing: 2) {
                                         if !line.mine {
                                             Text(line.sender).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
