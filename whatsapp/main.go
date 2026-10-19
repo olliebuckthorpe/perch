@@ -452,6 +452,8 @@ func run(c command) (any, error) {
 		return download(c.Chat, c.Message)
 	case "avatar":
 		return avatar(c.Chat)
+	case "contacts":
+		return contacts()
 	case "logout":
 		err := client.Logout(ctx)
 		return nil, err
@@ -651,6 +653,34 @@ func download(chat, id string) (any, error) {
 		return nil, err
 	}
 	return map[string]any{"path": path}, nil
+}
+
+// contacts is everyone in the user's WhatsApp contacts, by the name they are saved under, with
+// their newer anonymous id too, so a chat already filed under that id is found.
+func contacts() (any, error) {
+	all, err := client.Store.Contacts.GetAllContacts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var list []map[string]any
+	for jid, c := range all {
+		name := c.FullName
+		if name == "" {
+			name = c.FirstName
+		}
+		if name == "" {
+			name = c.BusinessName
+		}
+		if name == "" || jid.Server != types.DefaultUserServer {
+			continue
+		}
+		lid := ""
+		if l, err := client.Store.LIDs.GetLIDForPN(ctx, jid); err == nil && !l.IsEmpty() {
+			lid = l.String()
+		}
+		list = append(list, map[string]any{"jid": jid.String(), "lid": lid, "name": name, "pushName": c.PushName})
+	}
+	return list, nil
 }
 
 func avatar(chat string) (any, error) {

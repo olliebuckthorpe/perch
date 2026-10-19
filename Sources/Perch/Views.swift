@@ -394,10 +394,7 @@ enum SearchItem: Identifiable {
         }
         // People and channels on Slack, to message directly.
         // WhatsApp chats called what was typed, to open or message.
-        let whatsapp = WhatsAppSource.shared.chats.filter { chat in
-            let words = ThreadSearch.terms(chat.name)
-            return !ThreadSearch.terms(q).isEmpty && ThreadSearch.terms(q).allSatisfy { t in words.contains { $0.hasPrefix(t) } }
-        }.prefix(4).map { SearchItem.slack($0.target) }
+        let whatsapp = WhatsAppSource.shared.matching(q).prefix(6).map { SearchItem.slack($0) }
         let found = (whatsapp + SlackDirectory.shared.matching(q).prefix(4).map { SearchItem.slack($0) }).filter { !seen.contains($0.id) }
         // Typing a name means that person, bot or chat: those come first, ahead of chats that
         // only mention it.

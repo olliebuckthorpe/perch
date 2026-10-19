@@ -37,6 +37,9 @@ final class WhatsAppSource {
     private(set) var state: State = .off
     private(set) var chats: [WhatsAppChat] = []
     private(set) var avatars: [String: URL] = [:]
+    /// Everyone in the user's WhatsApp contacts, for search.
+    private(set) var contacts: [(id: String, lid: String, name: String)] = []
+    @ObservationIgnored private var contactsTimer: Timer?
 
     @ObservationIgnored private var helper: Process?
     @ObservationIgnored private var input: FileHandle?
@@ -155,12 +158,16 @@ final class WhatsAppSource {
             state = .ready
             linked = true
             loadChats(seed: true)
+            loadContacts()
+            contactsTimer?.invalidate()
+            contactsTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.loadContacts() }
         case "loggedOut":
             state = .loggedOut
             linked = false
             chats = []
         case "synced":
             loadChats(seed: false)
+            loadContacts()
         case "read":
             if let chat = o["chat"] as? String {
                 NotchUI.shared.slackUnread["\(Self.workspace):\(chat)"] = nil
@@ -279,6 +286,38 @@ final class WhatsAppSource {
             }
             for chat in self.chats.prefix(30) { self.avatar(chat.id) }
         }
+    }
+
+    private func loadContacts() {
+        request("contacts") { [weak self] data in
+            guard let rows = data as? [[String: Any]] else { return }
+            self?.contacts = rows.compactMap { r in
+                guard let id = r["jid"] as? String, let name = r["name"] as? String else { return nil }
+                return (id, r["lid"] as? String ?? "", name)
+            }.sorted { $0.name < $1.name }
+        }
+    }
+
+    /// People and chats whose names match a search: a chat already going with them if there is
+    /// one, otherwise a fresh conversation to start.
+    func matching(_ query: String) -> [SlackTarget] {
+        let terms = ThreadSearch.terms(query)
+        guard !terms.isEmpty else { return [] }
+        func matches(_ name: String) -> Bool {
+            let words = ThreadSearch.terms(name)
+            return terms.allSatisfy { t in words.contains { $0.hasPrefix(t) } }
+        }
+        var out: [SlackTarget] = []
+        var seen = Set<String>()
+        for chat in chats where matches(chat.name) && seen.insert(chat.id).inserted { out.append(chat.target) }
+        for c in contacts where matches(c.name) {
+            if let chat = chats.first(where: { $0.id == c.id || (!c.lid.isEmpty && $0.id == c.lid) }) {
+                if seen.insert(chat.id).inserted { out.append(chat.target) }
+            } else if seen.insert(c.id).inserted {
+                out.append(SlackTarget(workspace: Self.workspace, id: c.id, name: c.name, channel: false, picture: avatars[c.id]))
+            }
+        }
+        return out
     }
 
     private func avatar(_ chat: String) {
