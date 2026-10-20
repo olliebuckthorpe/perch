@@ -2558,7 +2558,7 @@ struct ChatView: View {
                 CodexQueueCard(agent: agent).frame(height: queueHeight)
             }
             if !agent.queued.isEmpty {
-                Text("Sent. It will read this at its next step.").font(.system(size: 10.5))
+                Text("Waiting for this turn to finish, then it goes in.").font(.system(size: 10.5))
                     .foregroundStyle(.white.opacity(0.4)).padding(.horizontal, 6)
             }
             if let pending = agent.pending {

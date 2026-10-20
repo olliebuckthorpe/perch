@@ -159,6 +159,8 @@ final class CodingSessions {
         let input = j["tool_input"] as? [String: Any] ?? [:]
         // Keep the conversation loaded at turn boundaries, so the chat is ready before it is opened.
         if mode == "info", ["Stop", "UserPromptSubmit", "SessionStart"].contains(event) { Threads.load(agent) }
+        // The turn is over: anything typed in the notch while it ran goes in now, as a real prompt.
+        if mode == "info", event == "Stop", !headless { flushQueued(agent) }
 
         if mode == "wait" {
             guard !headless else { req.respond(); return }
@@ -471,7 +473,9 @@ final class CodingSessions {
         }
         agent.waiter?.respond()
         agent.waiter = nil
-        resume(agent, text: text)
+        let earlier = agent.queued
+        agent.queued = []
+        resume(agent, text: (earlier + [text]).joined(separator: Threads.queueSeparator))
     }
 
     /// Wakes the real session, so the reply and the answer both show up in its own chat.
@@ -719,6 +723,9 @@ final class CodingSessions {
         let next = agent.queued.joined(separator: Threads.queueSeparator)
         agent.queued = []
         store.save()
+        // A hook Perch is holding is let go first, so the session is not woken twice.
+        agent.waiter?.respond()
+        agent.waiter = nil
         resume(agent, text: next)
     }
 
