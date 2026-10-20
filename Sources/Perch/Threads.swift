@@ -302,6 +302,9 @@ enum Threads {
         }
         guard let type = o["type"] as? String, type == "user" || type == "assistant",
               o["isSidechain"] as? Bool != true, o["isMeta"] as? Bool != true,
+              // The summary Claude Code writes when it compacts a long chat is kept as if the user
+              // said it; the Claude app hides it, and so does Perch.
+              o["isCompactSummary"] as? Bool != true, o["isVisibleInTranscriptOnly"] as? Bool != true,
               let message = o["message"] as? [String: Any] else { return nil }
         var text = ""
         var files: [String] = []
