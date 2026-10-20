@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 /// Codex writes every session to a rollout file. Watching those shows Codex sessions
 /// (desktop app included) even when its hooks have not been trusted yet.
@@ -169,12 +170,45 @@ final class CodexWatcher {
 
     private func refreshNames() {
         let stamp = (try? FileManager.default.attributesOfItem(atPath: indexPath))?[.modificationDate] as? Date
-        guard stamp != indexStamp, let text = try? String(contentsOfFile: indexPath, encoding: .utf8) else { return }
-        indexStamp = stamp
-        for line in text.split(separator: "\n").suffix(200) {
-            guard let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-                  let id = o["id"] as? String, let name = o["thread_name"] as? String else { continue }
-            names[id] = name
+        if stamp != indexStamp, let text = try? String(contentsOfFile: indexPath, encoding: .utf8) {
+            indexStamp = stamp
+            for line in text.split(separator: "\n").suffix(200) {
+                guard let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                      let id = o["id"] as? String, let name = o["thread_name"] as? String else { continue }
+                names[id] = name
+            }
+        }
+        refreshStateNames()
+    }
+
+    /// Codex keeps chat names in its state database too (the Codex app's own list reads them
+    /// there), so a chat named or renamed there is named the same here. Read only.
+    private var stateStamp: Date?
+    private func refreshStateNames() {
+        let base = "\(Shell.home)/.codex/state_5.sqlite"
+        let stamp = [base, base + "-wal"].compactMap {
+            (try? FileManager.default.attributesOfItem(atPath: $0))?[.modificationDate] as? Date
+        }.max()
+        guard let stamp, stamp != stateStamp else { return }
+        stateStamp = stamp
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(base, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { sqlite3_close(db); return }
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 200)
+        var statement: OpaquePointer?
+        let query = "SELECT id, name FROM threads WHERE name IS NOT NULL AND name != '' ORDER BY updated_at DESC LIMIT 300"
+        guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(statement) }
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let id = sqlite3_column_text(statement, 0), let name = sqlite3_column_text(statement, 1) else { continue }
+            names[String(cString: id)] = String(cString: name)
+        }
+        // Chats already showing take their name now, not only when they next change.
+        let known = names
+        DispatchQueue.main.async {
+            for agent in AgentStore.shared.agents where agent.source == .codex {
+                if let name = known[agent.sessionID], agent.name != name { agent.name = name }
+            }
         }
     }
 }

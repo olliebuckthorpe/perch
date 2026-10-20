@@ -546,7 +546,15 @@ final class CodingSessions {
     /// taken off ("can you look at the login page" is "Look at the login page"). The model's
     /// title replaces it a few seconds later.
     static func quickTitle(_ prompt: String) -> String {
-        var t = oneLine(prompt, max: 200)
+        // A link reads as its site and page ("https://www.bland.ai/product/imessage?…" is
+        // "bland.ai imessage"), not the raw address.
+        let linked = prompt.split(separator: " ", omittingEmptySubsequences: false).map { word -> String in
+            guard let url = URL(string: String(word)), let host = url.host, url.scheme?.hasPrefix("http") == true else { return String(word) }
+            let site = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            let page = url.pathComponents.last { $0 != "/" }?.replacingOccurrences(of: "-", with: " ") ?? ""
+            return page.isEmpty ? site : "\(site) \(page)"
+        }.joined(separator: " ")
+        var t = oneLine(linked, max: 200)
         if let end = t.firstIndex(where: { ".?!\n".contains($0) }), t.distance(from: t.startIndex, to: end) > 12 {
             t = String(t[..<end])
         }
