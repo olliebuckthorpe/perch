@@ -197,6 +197,7 @@ func handle(evt any) {
 	switch e := evt.(type) {
 	case *events.Connected:
 		merge()
+		learnGroups()
 		me := ""
 		if client.Store.ID != nil {
 			me = client.Store.ID.ToNonAD().String()
@@ -451,6 +452,25 @@ var (
 
 // groupShape is how many people are in a group, and whether it belongs to a Community (or is
 // an announcement channel), which decides how loudly it gets to notify. Asked once per group.
+// learnGroups reads every group the user is in with one request, so whether each one is a
+// big group or part of a Community is known up front instead of guessed when a lookup fails.
+func learnGroups() {
+	groups, err := client.GetJoinedGroups(ctx)
+	if err != nil {
+		note("joined groups failed: %v", err)
+		return
+	}
+	communities := 0
+	shapesMu.Lock()
+	for _, info := range groups {
+		community := info.IsParent || !info.LinkedParentJID.IsEmpty() || info.IsDefaultSubGroup || info.IsAnnounce
+		communities += boolInt(community)
+		shapes[key(info.JID)] = [2]int{len(info.Participants), boolInt(community)}
+	}
+	shapesMu.Unlock()
+	note("learned %d groups, %d in communities", len(groups), communities)
+}
+
 func groupShape(j types.JID) (int, bool) {
 	k := key(j)
 	shapesMu.Lock()
@@ -461,6 +481,7 @@ func groupShape(j types.JID) (int, bool) {
 	}
 	info, err := client.GetGroupInfo(ctx, j)
 	if err != nil || info == nil {
+		note("group info failed: %v", err)
 		return 0, false
 	}
 	community := info.IsParent || !info.LinkedParentJID.IsEmpty() || info.IsDefaultSubGroup || info.IsAnnounce
