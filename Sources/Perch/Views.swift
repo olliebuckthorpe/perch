@@ -2160,18 +2160,34 @@ private struct NewChatView: View {
     @State private var engine = UserDefaults.standard.string(forKey: "newChatEngine") ?? "claude"
     @FocusState private var focused: Bool
 
-    private func engineChip(_ id: String, _ title: String) -> some View {
-        Button {
-            withAnimation(.easeOut(duration: 0.15)) { engine = id }
+    @Namespace private var engineSpace
+
+    /// The chosen app's own colour, for the accents on this screen.
+    private var tint: Color {
+        engine == "codex" ? Color(red: 0.40, green: 0.36, blue: 0.93) : Color(red: 0.80, green: 0.42, blue: 0.29)
+    }
+
+    /// One app to start the chat in, shown by its logo. The highlight slides between them.
+    private func engineChip(_ id: String, _ source: AgentSource, _ title: String) -> some View {
+        let on = engine == id
+        return Button {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { engine = id }
             UserDefaults.standard.set(id, forKey: "newChatEngine")
         } label: {
-            Text(title).font(.system(size: 11.5, weight: engine == id ? .semibold : .regular))
-                .foregroundStyle(engine == id ? Color.black : .white.opacity(0.7))
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(engine == id ? Color.white.opacity(0.92) : .clear, in: Capsule())
+            AppMark(source: source)
+                .saturation(on ? 1 : 0).opacity(on ? 1 : 0.55)
+                .scaleEffect(on ? 1 : 0.9)
+                .padding(.horizontal, 9).padding(.vertical, 4)
+                .background {
+                    if on {
+                        Capsule().fill(tint.opacity(0.35))
+                            .overlay(Capsule().strokeBorder(tint.opacity(0.7), lineWidth: 1))
+                            .matchedGeometryEffect(id: "engine", in: engineSpace)
+                    }
+                }
                 .contentShape(Capsule())
         }
-        .buttonStyle(Press())
+        .buttonStyle(Press()).help(title)
     }
 
     /// Folders to offer: the one used last time, ones picked by hand, then wherever recent
@@ -2253,8 +2269,8 @@ private struct NewChatView: View {
                 Text("New chat").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                 Spacer()
                 HStack(spacing: 2) {
-                    engineChip("claude", "Claude Code")
-                    engineChip("codex", "Codex")
+                    engineChip("claude", .claude, "Claude Code")
+                    engineChip("codex", .codex, "Codex")
                 }
                 .padding(2)
                 .background(.white.opacity(0.08), in: Capsule())
@@ -2286,8 +2302,10 @@ private struct NewChatView: View {
             // in every other chat, so starting one does not make the island shrink.
             Spacer(minLength: 0)
             Text(engine == "codex"
-                 ? "Starts in the background, able to edit files in this folder, and shows up in the Codex app."
-                 : "Starts in the background in auto mode and shows up in the Claude app once it has replied.")
+                 ? "Starts in Codex in the background, able to edit files in this folder, and shows up in the Codex app."
+                 : "Starts in Claude Code in the background, in auto mode, and shows up in the Claude app once it has replied.")
+                .contentTransition(.opacity)
+                .animation(.easeInOut(duration: 0.25), value: engine)
                 .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.3))
                 .fixedSize(horizontal: false, vertical: true)
             // Pictures and files pasted (Cmd+V) or dropped in go with the first message.
@@ -2321,12 +2339,15 @@ private struct NewChatView: View {
                 .buttonStyle(Press())
                 Button { start(chosen) } label: {
                     Image(systemName: "arrow.up.circle.fill").font(.system(size: 16))
-                        .foregroundStyle(draft.wrappedValue.isEmpty && (ui.attachments["new"] ?? []).isEmpty ? .white.opacity(0.2) : Palette.blue)
+                        .foregroundStyle(draft.wrappedValue.isEmpty && (ui.attachments["new"] ?? []).isEmpty ? .white.opacity(0.2) : tint)
                 }
                 .buttonStyle(Press()).disabled(draft.wrappedValue.isEmpty && (ui.attachments["new"] ?? []).isEmpty)
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // Edged in the chosen app's colour, fading across when it changes.
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tint.opacity(0.45), lineWidth: 1))
+            .animation(.easeInOut(duration: 0.3), value: engine)
         // A click anywhere in the box starts typing, not only on the line of text.
         .contentShape(Rectangle())
         .simultaneousGesture(TapGesture().onEnded {
