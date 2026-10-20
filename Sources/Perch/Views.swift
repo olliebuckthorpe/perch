@@ -4341,6 +4341,7 @@ private struct EmailCard: View {
     let agent: Agent
     @Environment(NotchUI.self) private var ui
     @State private var copied = false
+    @State private var sending: String?
     @State private var expanded = false
 
     private var sent: Bool { draft.sendState == "sent" }
@@ -4423,6 +4424,26 @@ private struct EmailCard: View {
                                 .background(.white, in: Capsule())
                         }
                         .buttonStyle(Press())
+                    } else if !settled && !draft.grokPayload.isEmpty {
+                        // Sends it from here, as Grok Bot's own Send button does.
+                        Button {
+                            guard sending == nil else { return }
+                            sending = "sending"
+                            Settings.sentFeel()
+                            GrokSource.shared.sendDraft(draft, in: agent) { ok in sending = ok ? "sent" : "failed" }
+                        } label: {
+                            Label(sending == "sent" ? "Sent" : sending == "sending" ? "Sending…" : sending == "failed" ? "Try again" : "Send",
+                                  systemImage: sending == "sent" ? "checkmark" : "paperplane.fill")
+                                .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.black)
+                                .padding(.horizontal, 11).padding(.vertical, 6)
+                                .background(sending == "failed" ? Palette.red : .white, in: Capsule())
+                        }
+                        .buttonStyle(Press()).disabled(sending == "sending" || sending == "sent")
+                        Button("Open in Grok Bot") {
+                            GrokSource.shared.open(agent)
+                            ui.collapse()
+                        }
+                        .buttonStyle(ChipButton())
                     } else if !settled {
                         Button("Send in Grok Bot") {
                             GrokSource.shared.open(agent)

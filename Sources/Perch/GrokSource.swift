@@ -416,9 +416,11 @@ final class GrokSource {
                         return m
                     }
                     if message["type"] as? String == "email-draft", let d = message["draft"] as? [String: Any] {
-                        let draft = EmailDraft(from: d["from"] as? String ?? "", to: d["to"] as? [String] ?? [],
+                        var draft = EmailDraft(from: d["from"] as? String ?? "", to: d["to"] as? [String] ?? [],
                                                cc: d["cc"] as? [String] ?? [], subject: d["subject"] as? String ?? "",
                                                body: d["body"] as? String ?? "", sendState: e["draftSendState"] as? String)
+                        draft.grokEntry = id
+                        draft.grokPayload = (try? JSONSerialization.data(withJSONObject: message)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
                         return ChatMessage(id: id, fromUser: false, text: draft.body, reactions: reactions, email: draft)
                     }
                     if message["type"] as? String == "attachment", let url = message["url"] as? String {
@@ -486,8 +488,10 @@ final class GrokSource {
                         let to = first(["channelName", "channel", "conversationName", "recipientName", "recipient", "to", "meetingTitle", "title"])
                         if !body.isEmpty {
                             let noun = type == "slack-draft" ? "Slack message" : type.dropLast(6).replacingOccurrences(of: "-", with: " ") + " message"
-                            let draft = EmailDraft(noun: noun, to: to.isEmpty ? [] : [to], subject: "", body: body,
+                            var draft = EmailDraft(noun: noun, to: to.isEmpty ? [] : [to], subject: "", body: body,
                                                    sendState: e["draftSendState"] as? String)
+                            draft.grokEntry = id
+                            draft.grokPayload = (try? JSONSerialization.data(withJSONObject: message)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
                             return ChatMessage(id: id, fromUser: false, text: body, reactions: reactions, email: draft)
                         }
                     }
@@ -649,6 +653,18 @@ final class GrokSource {
     /// Sends a secure form's answers to Grok Bot, which types them into the page itself.
     func submitForm(_ values: [String: String], entry: String, in agent: Agent, done: @escaping (Bool) -> Void) {
         request("submitUserForm", ["entryId": entry, "values": values, "agentId": agent.sessionID]) { [weak self, weak agent] reply in
+            DispatchQueue.main.async {
+                done(reply != nil)
+                if let agent { self?.loadThread(agent) }
+            }
+        }
+    }
+
+    /// Sends a bot's draft (an email, a Slack message) the way Grok Bot's own Send button does.
+    func sendDraft(_ draft: EmailDraft, in agent: Agent, done: @escaping (Bool) -> Void) {
+        guard !draft.grokEntry.isEmpty, let data = draft.grokPayload.data(using: .utf8),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return done(false) }
+        request("sendDraft", ["entryId": draft.grokEntry, "draft": payload, "agentId": agent.sessionID]) { [weak self, weak agent] reply in
             DispatchQueue.main.async {
                 done(reply != nil)
                 if let agent { self?.loadThread(agent) }

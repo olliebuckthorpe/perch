@@ -19,6 +19,10 @@ struct EmailDraft: Equatable {
     var attachments: [String] = []
     var link: URL?
     var linkTitle = ""
+    /// A Grok bot's draft as Grok Bot sent it (its entry and the draft, as JSON), so Perch can
+    /// send it the way Grok Bot's own Send button does.
+    var grokEntry = ""
+    var grokPayload = ""
 
     /// A draft a bot wrote out in its message ("To: …", "Subject: …", then the email), so it can
     /// be shown as an email rather than a wall of text. Nil when the message is not one.
