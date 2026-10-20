@@ -94,11 +94,80 @@ final class NotchUI {
         didSet { UserDefaults.standard.set(slackDismissed, forKey: "slackDismissed") }
     }
 
+    var pinnedConversations: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "pinnedConversations") ?? []) {
+        didSet { UserDefaults.standard.set(Array(pinnedConversations), forKey: "pinnedConversations") }
+    }
+    var sidebarRemovals: [String: String] = (UserDefaults.standard.dictionary(forKey: "sidebarRemovals") as? [String: String]) ?? [:] {
+        didSet { UserDefaults.standard.set(sidebarRemovals, forKey: "sidebarRemovals") }
+    }
+    var sidebarUndoName: String?
+    @ObservationIgnored var sidebarUndoAction: (() -> Void)?
+    @ObservationIgnored var hoveredSidebarChat: SidebarChat?
+    @ObservationIgnored private var sidebarGesture = SidebarSwipe()
+    @ObservationIgnored private var sidebarGestureTarget: SidebarChat?
+    var sidebarSwipe: (id: String, x: CGFloat, ready: Bool)?
+    var sidebarExitingID: String?
+    var sidebarCollapsingID: String?
+
+    func finishSidebarSwipe(_ target: SidebarChat) {
+        guard sidebarExitingID == nil else { return }
+        sidebarExitingID = target.id
+        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+        let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        withAnimation(.timingCurve(0.3, 0, 0.6, 1, duration: reduced ? 0.1 : 0.2)) {
+            sidebarSwipe = (target.id, reduced ? 0 : -310, true)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (reduced ? 0.1 : 0.2)) { [weak self] in
+            guard let self, self.sidebarExitingID == target.id else { return }
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.87)) { self.sidebarCollapsingID = target.id }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.23) { [weak self] in
+                guard let self, self.sidebarExitingID == target.id else { return }
+                var transaction = Transaction(); transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    self.removeSidebarChat(target)
+                    self.sidebarSwipe = nil
+                    self.sidebarCollapsingID = nil
+                    self.sidebarExitingID = nil
+                }
+            }
+        }
+    }
+
+    private func sidebarScrolled(_ event: NSEvent) -> Bool {
+        guard event.window === controller?.panel else { return false }
+        if sidebarExitingID != nil { return true }
+        if !event.momentumPhase.isEmpty { return sidebarGesture.consumesMomentum }
+        if event.phase == .began {
+            sidebarGestureTarget = hoveredSidebarChat
+            sidebarGesture.begin(over: hoveredSidebarChat?.id)
+        }
+        if event.phase == .began || event.phase == .changed {
+            let dx = SidebarSwipe.fingerDelta(event.scrollingDeltaX, inverted: event.isDirectionInvertedFromDevice)
+            let consumed = sidebarGesture.update(dx: dx, dy: event.scrollingDeltaY)
+            if consumed, let target = sidebarGestureTarget {
+                if sidebarGesture.ready && sidebarSwipe?.ready != true {
+                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                }
+                sidebarSwipe = (target.id, sidebarGesture.offset, sidebarGesture.ready)
+            }
+            return consumed
+        }
+        if event.phase == .ended || event.phase == .cancelled {
+            let result = sidebarGesture.end(cancelled: event.phase == .cancelled)
+            let target = sidebarGestureTarget
+            sidebarGestureTarget = nil
+            if result.remove, let target, target.id == result.id { finishSidebarSwipe(target) }
+            else { withAnimation(.spring(response: 0.32, dampingFraction: 0.72)) { sidebarSwipe = nil } }
+            return result.consumed
+        }
+        return false
+    }
+
     func dropSlack(_ t: SlackTarget) {
         slackDismissed["\(t.workspace):\(t.id)"] = Date().timeIntervalSince1970
         slackUnread["\(t.workspace):\(t.id)"] = nil
         slackRecent.removeAll { $0.id == t.id && $0.workspace == t.workspace }
-        if slackTarget?.id == t.id { slackTarget = nil }
+        if slackTarget?.id == t.id && slackTarget?.workspace == t.workspace { slackTarget = nil }
     }
 
     func openSlack(_ t: SlackTarget) {
@@ -256,6 +325,10 @@ final class NotchUI {
     var swipe: (id: String, x: CGFloat)?
     /// The message under the pointer, for the swipe to act on.
     @ObservationIgnored var hoveredMessage: (agent: String, message: ChatMessage)?
+    /// The same for a WhatsApp message, by conversation key.
+    @ObservationIgnored var hoveredLine: (key: String, line: SlackLine)?
+    /// The WhatsApp message a reply is aimed at, by conversation key.
+    var lineReply: [String: SlackLine] = [:]
     @ObservationIgnored private var swipeSum = CGSize.zero
     @ObservationIgnored private var swipeAxis: Bool?
 
@@ -264,11 +337,12 @@ final class NotchUI {
     /// scroll at the same time.
     func scrolled(_ event: NSEvent) -> Bool {
         guard event.hasPreciseScrollingDeltas, expanded else { return false }
+        if sidebarScrolled(event) { return true }
         if event.phase == .began {
             swipeSum = .zero
             swipeAxis = nil
         }
-        guard let target = hoveredMessage else { return false }
+        guard let swipeID = hoveredMessage?.message.id ?? hoveredLine?.line.viewKey else { return false }
         if event.phase == .changed {
             swipeSum.width += event.scrollingDeltaX
             swipeSum.height += event.scrollingDeltaY
@@ -276,14 +350,19 @@ final class NotchUI {
                 swipeAxis = abs(swipeSum.width) > abs(swipeSum.height) * 1.6
             }
             guard swipeAxis == true else { return false }
-            swipe = (target.message.id, max(-64, min(64, swipeSum.width * 0.7)))
+            swipe = (swipeID, max(-64, min(64, swipeSum.width * 0.7)))
             return true
         }
         if event.phase == .ended || event.phase == .cancelled {
             guard swipeAxis == true else { return false }
             if event.phase == .ended, abs(swipeSum.width) * 0.7 > 40 {
-                replyTo[target.agent] = target.message
-                focusReply = true
+                if let target = hoveredMessage {
+                    replyTo[target.agent] = target.message
+                    focusReply = true
+                } else if let target = hoveredLine {
+                    lineReply[target.key] = target.line
+                }
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
                 controller?.panel.makeKey()
             }
             swipeAxis = nil
@@ -301,7 +380,17 @@ final class NotchUI {
     var drafts: [String: String] = UserDefaults.standard.dictionary(forKey: "drafts") as? [String: String] ?? [:] {
         didSet { UserDefaults.standard.set(drafts.filter { !$0.value.isEmpty }, forKey: "drafts") }
     }
-    var attachments: [String: [Attachment]] = [:]
+    var attachmentSaveError: String?
+    var attachments: [String: [Attachment]] = DraftAttachments.load() {
+        didSet {
+            do {
+                try DraftAttachments.save(attachments)
+                attachmentSaveError = nil
+            } catch {
+                attachmentSaveError = "Could not save attached files for reopening. Keep Perch open and try again."
+            }
+        }
+    }
     /// The agent whose reply field has the cursor, so a pasted image knows where to go.
     @ObservationIgnored var focusedAgentID: String?
     var notch = CGSize(width: 185, height: 33)
@@ -317,6 +406,7 @@ final class NotchUI {
     }
 
     func isDismissed(_ agent: Agent) -> Bool {
+        if sidebarRemovals[agent.id] == Self.sidebarActivity(agent) { return true }
         guard !pinnedChats.contains(agent.id), let at = dismissed[agent.id] else { return false }
         // It stays cleared through restarts and background housekeeping. Only something the user
         // would care about brings it back: it is working, it needs them, it has a new message,
@@ -363,6 +453,7 @@ final class NotchUI {
             pinnedChats.remove(agent.id)
         } else {
             pinnedChats.insert(agent.id)
+            sidebarRemovals[agent.id] = nil
             agent.kept = true
             dismissed[agent.id] = nil
         }
@@ -514,6 +605,7 @@ final class NotchUI {
 
     func expand() {
         expanded = true
+        if selectedID == nil, !browsing, isDrafting("new") { composing = true }
         if selectedID == nil, !browsing, !composing {
             // Open straight onto a conversation: whoever needs you, else the one you last had open.
             let store = AgentStore.shared
@@ -553,6 +645,7 @@ final class NotchUI {
         expanded = false
         cardsOnly = false
         slackAlert = nil
+        slackQueue = []
         pendingLinks = []
         justOpened = nil
         query = ""
@@ -573,6 +666,8 @@ final class NotchUI {
     }
 
     func select(_ id: String) {
+        sidebarRemovals[id] = nil
+        dismissed[id] = nil
         enlarged = nil
         composing = false
         browsing = false
@@ -681,6 +776,38 @@ final class NotchUI {
 
     /// A Slack message being shown as a banner.
     private(set) var slackAlert: SlackAlert?
+    /// Messages that came in while the user was busy with the banner on screen (reading or
+    /// replying). Listed under it instead of replacing it; one per conversation, newest first.
+    private(set) var slackQueue: [SlackAlert] = []
+
+    /// A conversation from a banner: the whole island, on that chat.
+    func openConversation(_ t: SlackTarget) {
+        openSlack(t)
+        if cardsOnly { showEverything() }
+        expanded = true
+    }
+
+    /// Swap the banner for one waiting under it.
+    func showQueued(_ alert: SlackAlert) {
+        slackQueue.removeAll { $0.id == alert.id }
+        if let current = slackAlert, !Self.same(current.target, alert.target) { queue(current) }
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { slackAlert = alert }
+        collapseWork?.cancel()
+    }
+
+    /// Done with this banner (replied, say): the next waiting one, or close.
+    func nextBanner() {
+        guard let next = slackQueue.first else { return collapse() }
+        slackQueue.removeFirst()
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { slackAlert = next }
+    }
+
+    private static func same(_ a: SlackTarget, _ b: SlackTarget) -> Bool { a.workspace == b.workspace && a.id == b.id }
+
+    private func queue(_ alert: SlackAlert) {
+        slackQueue.removeAll { Self.same($0.target, alert.target) }
+        slackQueue.insert(alert, at: 0)
+    }
 
     /// A Slack message: drop the banner down, like an agent's. A less important workspace does
     /// not push aside a banner from a more important one that is still showing.
@@ -722,7 +849,7 @@ final class NotchUI {
         guard pendingLinks.isEmpty else { return }
         if expanded && !autoOpened {
             // Already reading that very conversation: it shows up there by itself.
-            let reading = slackTarget.map { t in t.workspace == alert.workspace && (t.id == alert.channel || alert.direct) } ?? false
+            let reading = slackTarget.map { t in t.workspace == alert.workspace && (t.id == alert.channel || (alert.direct && t.id == alert.senderID)) } ?? false
             if !reading {
                 if Settings.sounds { Settings.playSound() }
                 showToast(.slack(alert))
@@ -731,6 +858,16 @@ final class NotchUI {
         }
         if let showing = slackAlert, expanded, cardsOnly, showing.priority < alert.priority { return }
         if Settings.sounds { Settings.playSound() }
+        // Busy with the banner on screen: the new one waits underneath it instead of taking over.
+        if let showing = slackAlert, expanded, cardsOnly, hovering || typing {
+            if Self.same(showing.target, alert.target) {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { slackAlert = alert }
+            } else {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { queue(alert) }
+            }
+            return
+        }
+        slackQueue = []
         autoOpened = true
         cardsOnly = true
         noticeID = nil
@@ -863,6 +1000,7 @@ final class NotchController {
         // file or picture on the drag clipboard; dragging things around elsewhere leaves it alone.
         if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] _ in
             let start = NSEvent.mouseLocation
+            let drag = ShelfDrag()
             self?.dragWatch?.invalidate()
             self?.dragWatch = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] timer in
                 guard let self else { return timer.invalidate() }
@@ -876,7 +1014,7 @@ final class NotchController {
                 let nearNotch = now.y > frame.maxY - 110 && abs(now.x - frame.midX) < 330
                 let moved = hypot(now.x - start.x, now.y - start.y) > 40
                 if nearNotch, moved, !self.ui.fileInHand,
-                   NSPasteboard(name: .drag).types?.contains(where: { [.fileURL, .tiff, .png].contains($0) || $0.rawValue.contains("promise") }) == true {
+                   drag.hasNewFilePayload {
                     self.ui.fileDrag(true)
                 }
                 self.trackMouse()

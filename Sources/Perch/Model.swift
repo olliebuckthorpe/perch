@@ -84,6 +84,12 @@ final class Agent: Identifiable {
     var avatarColor: String?
     /// Grok Bot's avatar shape ("hex", "cloud"...), saved or worked out the way Grok Bot does.
     var avatarShape: String?
+    var codexQuestion: CodexQuestionBatch?
+    var codexQuestionError: String?
+    var handledCodexQuestions = Set<String>()
+    var codexWorking = false
+    var codexQueue: [CodexQueuedMessage] = []
+    var codexQueueError: String?
     var pending: PendingRequest?
     /// A background hook parked in an idle Claude Code session. Answering it wakes the session.
     var waiter: HookRequest?
@@ -120,6 +126,8 @@ final class Agent: Identifiable {
 
     /// Notch messages that did not get through, by their local id, with what to resend.
     var unsent: [String: () -> Void] = [:]
+    /// Failed Codex deliveries survive restart and require an explicit retry.
+    var failedReplies: [String: String] = [:]
     var ended = false
     var sending = false
 
@@ -174,6 +182,7 @@ final class AgentStore {
             row["transcript"] = a.transcriptPath
             row["host"] = a.hostBundleID
             if !a.queued.isEmpty { row["queued"] = a.queued }
+            if !a.failedReplies.isEmpty { row["failedReplies"] = a.failedReplies }
             return row
         }
         guard let data = try? JSONSerialization.data(withJSONObject: rows, options: [.sortedKeys]),
@@ -192,7 +201,7 @@ final class AgentStore {
                   let id = row["id"] as? String, let name = row["name"] as? String else { continue }
             let at = Date(timeIntervalSince1970: row["at"] as? Double ?? 0)
             let kept = row["kept"] as? Bool ?? false
-            guard kept || now.timeIntervalSince(at) < Self.keepFor else { continue }
+            guard kept || NotchUI.shared.isDrafting("\(source.rawValue):\(id)") || !(row["failedReplies"] as? [String: String] ?? [:]).isEmpty || now.timeIntervalSince(at) < Self.keepFor else { continue }
             let a = upsert(source: source, sessionID: id, name: name)
             a.name = name
             a.kept = kept
@@ -202,6 +211,10 @@ final class AgentStore {
             a.transcriptPath = row["transcript"] as? String
             a.hostBundleID = row["host"] as? String
             a.queued = row["queued"] as? [String] ?? []
+            a.failedReplies = row["failedReplies"] as? [String: String] ?? [:]
+            for (id, text) in a.failedReplies {
+                a.thread.append(ChatMessage(id: id, fromUser: true, text: text))
+            }
             a.lastActivity = at
         }
     }
@@ -237,7 +250,7 @@ final class AgentStore {
 
     func prune() {
         let now = Date()
-        for a in agents where a.source != .grok && a.pending == nil && !a.kept && !NotchUI.shared.pinnedChats.contains(a.id) {
+        for a in agents where a.source != .grok && a.pending == nil && !a.kept && !NotchUI.shared.isDrafting(a.id) && !NotchUI.shared.pinnedChats.contains(a.id) {
             let age = now.timeIntervalSince(a.lastActivity)
             // A session that died mid-turn never says so.
             if a.status == .working, age > 30 * 60 { a.status = .idle }

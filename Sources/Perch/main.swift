@@ -41,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let server = HookServer(path: "\(dir)/perch.sock")
         server.handler = { [weak self] req in
             if let command = req.headers["x-perch-debug"] {
-                self?.debug(command)
+                self?.debug(command, json: req.json)
                 req.respond()
             } else {
                 CodingSessions.shared.handle(req)
@@ -95,11 +95,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Drives the island from a script, for checking the UI without a mouse:
     /// `expand`, `collapse`, `select:<agent id>`, `allow:<agent id>`, `reply:<agent id>|<text>`,
     /// `snapshot:<png path>`.
-    private func debug(_ command: String) {
+    private func debug(_ command: String, json: [String: Any] = [:]) {
         let ui = NotchUI.shared
         let parts = command.split(separator: ":", maxSplits: 1).map(String.init)
         switch parts[0] {
+        case "sidebarcheck" where parts.count > 1:
+            let store = AgentStore.shared
+            let oldAgents = store.agents, oldRecent = ui.slackRecent, oldPins = ui.pinnedConversations
+            let oldUnread = ui.slackUnread, oldGone = ui.slackDismissed, oldTarget = ui.slackTarget
+            let oldCodingPins = ui.pinnedChats, oldDismissed = ui.dismissed, oldRemovals = ui.sidebarRemovals
+            let oldSelection = ui.selectedID, oldUndo = ui.sidebarUndoAction, oldUndoName = ui.sidebarUndoName
+            defer {
+                store.agents = oldAgents
+                ui.slackTarget = oldTarget
+                ui.slackRecent = oldRecent; ui.pinnedConversations = oldPins
+                ui.slackUnread = oldUnread; ui.slackDismissed = oldGone
+                ui.pinnedChats = oldCodingPins; ui.dismissed = oldDismissed; ui.sidebarRemovals = oldRemovals
+                ui.selectedID = oldSelection; ui.sidebarUndoAction = oldUndo; ui.sidebarUndoName = oldUndoName
+                store.save()
+            }
+            var results: [String: Bool] = [:]
+            let wa = SlackTarget(workspace: WhatsAppSource.workspace, id: "perch-sidebar-regression", name: "Test", channel: false)
+            let slack = SlackTarget(workspace: "perch-regression", id: wa.id, name: "Test Slack", channel: true)
+            let key = "\(wa.workspace):\(wa.id)"
+            ui.slackRecent.append(wa); ui.slackRecent.append(slack); ui.slackUnread[key] = 3
+            ui.toggleSidebarPin(.conversation(wa))
+            results["WhatsApp pin persists"] = ui.sidebarPinned(.conversation(wa)) && (UserDefaults.standard.stringArray(forKey: "pinnedConversations") ?? []).contains(key)
+            ui.slackTarget = slack
+            ui.removeSidebarChat(.conversation(wa))
+            results["WhatsApp removes and unpins"] = !ui.slackRecent.contains(where: { $0.id == wa.id && $0.workspace == wa.workspace }) && !ui.sidebarPinned(.conversation(wa))
+            results["Other workspace selection survives"] = ui.slackTarget?.workspace == slack.workspace
+            ui.undoSidebarRemoval()
+            results["Undo restores WhatsApp, pin and unread"] = ui.slackRecent.contains(where: { $0.id == wa.id && $0.workspace == wa.workspace }) && ui.sidebarPinned(.conversation(wa)) && ui.slackUnread[key] == 3
+            ui.toggleSidebarPin(.conversation(slack))
+            results["Slack pin works"] = ui.sidebarPinned(.conversation(slack))
+            let agent = store.upsert(source: .codex, sessionID: "perch-sidebar-regression", name: "Sidebar test")
+            agent.status = .working; agent.kept = true
+            ui.toggleSidebarPin(.agent(agent)); ui.removeSidebarChat(.agent(agent))
+            results["Active coding chat stays removed"] = ui.isDismissed(agent)
+            ui.undoSidebarRemoval()
+            results["Undo restores coding chat and pin"] = !ui.isDismissed(agent) && ui.sidebarPinned(.agent(agent)) && agent.kept
+            try? JSONSerialization.data(withJSONObject: results, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: parts[1]))
         case "expand": ui.expand()
+        case "boardcheck" where parts.count > 1:
+            checkBoardDrag(to: parts[1])
         case "tasks":
             ui.expand()
             ui.showingTasks = true
@@ -139,6 +178,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? ([String(format: "took %.0f ms: ", took * 1000) + ThreadSearch.lastTimings] + lines).joined(separator: "\n").write(toFile: bits[1], atomically: true, encoding: .utf8)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { run(0) }
+        case "attach" where parts.count > 1:
+            let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
+            if bits.count == 2, let file = Attachment.from(file: URL(fileURLWithPath: bits[1])) {
+                ui.attachments[bits[0], default: []].append(file)
+            }
         case "unattach" where parts.count > 1:
             ui.attachments[parts[1]] = nil
         case "slack" where parts.count > 1:
@@ -149,6 +193,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ui.composing = true
         case "collapse": ui.collapse()
         case "select" where parts.count > 1: ui.show(parts[1])
+        case "answer" where parts.count > 1:
+            if let agent = AgentStore.shared.find(parts[1]), let answers = json["answers"] as? [String: String] {
+                CodingSessions.shared.answer(agent, answers: answers)
+            }
         case "allow" where parts.count > 1:
             if let agent = AgentStore.shared.find(parts[1]) { CodingSessions.shared.allow(agent) }
         case "reply" where parts.count > 1:
@@ -159,6 +207,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { MainActor.assumeIsolated { renderMessagePreview(text, to: parts[1]) } }
         case "shapesview" where parts.count > 1:
             DispatchQueue.main.async { MainActor.assumeIsolated { renderShapesPreview(to: parts[1]) } }
+        case "notificationview" where parts.count > 1:
+            DispatchQueue.main.async { MainActor.assumeIsolated { renderNotificationMediaPreview(to: parts[1]) } }
         case "waview" where parts.count > 1:
             DispatchQueue.main.async { MainActor.assumeIsolated { renderWhatsAppPreview(to: parts[1]) } }
         case "ballview" where parts.count > 1:

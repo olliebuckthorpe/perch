@@ -39,6 +39,11 @@ final class NotionTasks {
     private(set) var loadedOnce = false
     @ObservationIgnored private var timer: Timer?
 
+    @ObservationIgnored private var arranging = false
+    @ObservationIgnored private var revision = 0
+    func beginArrangement() { arranging = true; revision += 1 }
+    func endArrangement() { arranging = false }
+
     var connected: Bool { token != nil }
 
     private var token: String? {
@@ -80,6 +85,7 @@ final class NotionTasks {
     func refresh() {
         guard connected, !loading else { return }
         loading = true
+        let requestedRevision = revision
         // The same filter as the "Jonny's board" view.
         let filter: [String: Any] = ["and": [
             ["property": "Column", "select": ["does_not_equal": "Done"]],
@@ -96,6 +102,7 @@ final class NotionTasks {
             guard let self else { return }
             self.loading = false
             self.loadedOnce = true
+            guard !self.arranging, self.revision == requestedRevision else { return }
             guard let rows = json?["results"] as? [[String: Any]] else {
                 self.problem = error ?? "Could not read the list"
                 return
@@ -135,6 +142,7 @@ final class NotionTasks {
 
     /// Ticks a card off: moves it to Done on the board, exactly as dragging it there would.
     func complete(_ task: TaskItem) {
+        revision += 1
         tasks.removeAll { $0.id == task.id }
         let props: [String: Any] = ["Column": ["select": ["name": "Done"]], "Status": ["select": ["name": "Done"]]]
         call("PATCH", "pages/\(task.id)", ["properties": props]) { [weak self] _, error in
@@ -152,19 +160,13 @@ final class NotionTasks {
         didSet { UserDefaults.standard.set(order, forKey: "taskOrder") }
     }
 
-    /// A column's cards. Anything due today or overdue always comes first, so the order you
-    /// dragged cards into last week cannot bury today's work as the dates move on. Within that
-    /// and within the rest, your dragged order holds, then the board's own (soonest due first).
+    /// Explicit drop order wins. Unplaced cards retain urgency and the board's default order.
     func cards(in column: String) -> [TaskItem] {
-        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
-        let endOfToday = Calendar.current.startOfDay(for: Date()).addingTimeInterval(86400)
-        func urgent(_ t: TaskItem) -> Bool { t.due.map { $0 < endOfToday } ?? false }
-        return tasks.filter { $0.column == column }.enumerated().sorted {
-            let (x, y) = (urgent($0.element), urgent($1.element))
-            if x != y { return x }
-            let (a, b) = (rank[$0.element.id] ?? Int.max, rank[$1.element.id] ?? Int.max)
-            return a != b ? a < b : $0.offset < $1.offset
-        }.map(\.element)
+        let cards = tasks.filter { $0.column == column }
+        let endOfToday = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: Date())) ?? Date()
+        let urgent = Set(cards.filter { $0.due.map { $0 < endOfToday } ?? false }.map(\.id))
+        let lookup = Dictionary(cards.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return TaskOrdering.arrange(cards.map(\.id), manual: order, urgent: urgent).compactMap { lookup[$0] }
     }
 
     /// Puts card `id` just above `target`, moving it to that card's column if it came from another.
@@ -181,6 +183,7 @@ final class NotionTasks {
 
     /// Puts card `id` at position `index` of `column`, as dropped on the board.
     func place(_ id: String, in column: String, at index: Int) {
+        revision += 1
         move(id, to: column)
         var ids = cards(in: column).map(\.id).filter { $0 != id }
         ids.insert(id, at: max(0, min(index, ids.count)))
@@ -199,6 +202,7 @@ final class NotionTasks {
     /// Moves a card to another column on the board, as dragging it in Notion would.
     func move(_ id: String, to column: String) {
         guard let i = tasks.firstIndex(where: { $0.id == id }), tasks[i].column != column else { return }
+        revision += 1
         tasks[i].column = column
         let props: [String: Any] = [
             "Column": ["select": ["name": column]],
@@ -223,6 +227,7 @@ final class NotionTasks {
             "Source": ["select": ["name": "Manual"]],
         ]
         // On the board straight away, at the top of its list; Notion's copy replaces it when it arrives.
+        revision += 1
         let temp = TaskItem(id: "new-\(UUID().uuidString)", name: name, column: column)
         tasks.append(temp)
         order.insert(temp.id, at: 0)

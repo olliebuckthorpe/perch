@@ -151,6 +151,8 @@ func setup() {
 	db.Exec(`ALTER TABLE messages ADD COLUMN thumb BLOB`)
 	// Reactions to a message, as JSON: who reacted to what.
 	db.Exec(`ALTER TABLE messages ADD COLUMN reactions TEXT NOT NULL DEFAULT '{}'`)
+	// The message this one replies to, as JSON: its id, who sent it and a line of it.
+	db.Exec(`ALTER TABLE messages ADD COLUMN quote TEXT NOT NULL DEFAULT ''`)
 }
 
 // MARK: Events
@@ -412,9 +414,10 @@ func record(e *events.Message, live bool, status int) map[string]any {
 	if !e.Info.IsFromMe {
 		status = 0
 	}
-	res, err := db.Exec(`INSERT OR IGNORE INTO messages (chat, id, sender, sender_name, from_me, ts, text, kind, mime, filename, raw, read, status, thumb)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, chat, e.Info.ID, sender, senderName, boolInt(e.Info.IsFromMe), ts, text,
-		kind, mimeType, filename, raw, boolInt(e.Info.IsFromMe || !live), status, thumb)
+	quote := quoteOf(msg)
+	res, err := db.Exec(`INSERT OR IGNORE INTO messages (chat, id, sender, sender_name, from_me, ts, text, kind, mime, filename, raw, read, status, thumb, quote)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, chat, e.Info.ID, sender, senderName, boolInt(e.Info.IsFromMe), ts, text,
+		kind, mimeType, filename, raw, boolInt(e.Info.IsFromMe || !live), status, thumb, quote)
 	if err != nil {
 		note("store failed: %v", err)
 		return nil
@@ -441,8 +444,17 @@ func record(e *events.Message, live bool, status int) map[string]any {
 		"mentionsMe": mentionsMe(msg), "groupSize": size, "community": community,
 		"chat": chat, "chatName": chatName(e.Info.Chat), "group": isGroup, "id": e.Info.ID, "sender": sender,
 		"senderName": senderName, "fromMe": e.Info.IsFromMe, "ts": ts, "text": text, "kind": kind,
-		"mime": mimeType, "filename": filename, "status": status, "thumb": thumb,
+		"mime": mimeType, "filename": filename, "status": status, "thumb": thumb, "quote": quoteMap(quote),
 	}
+}
+
+func quoteMap(stored string) map[string]string {
+	if stored == "" {
+		return nil
+	}
+	q := map[string]string{}
+	json.Unmarshal([]byte(stored), &q)
+	return q
 }
 
 var (
@@ -495,21 +507,51 @@ func groupShape(j types.JID) (int, bool) {
 }
 
 // mentionsMe is true when a group message @-mentions the user or replies to one of theirs.
+func contextOf(m *waE2E.Message) *waE2E.ContextInfo {
+	switch {
+	case m.GetExtendedTextMessage() != nil:
+		return m.GetExtendedTextMessage().GetContextInfo()
+	case m.GetImageMessage() != nil:
+		return m.GetImageMessage().GetContextInfo()
+	case m.GetVideoMessage() != nil:
+		return m.GetVideoMessage().GetContextInfo()
+	case m.GetDocumentMessage() != nil:
+		return m.GetDocumentMessage().GetContextInfo()
+	case m.GetAudioMessage() != nil:
+		return m.GetAudioMessage().GetContextInfo()
+	case m.GetStickerMessage() != nil:
+		return m.GetStickerMessage().GetContextInfo()
+	}
+	return nil
+}
+
+// quoteOf is the message this one replies to, as stored JSON ("" when it is not a reply).
+func quoteOf(m *waE2E.Message) string {
+	info := contextOf(m)
+	if info == nil || info.GetStanzaID() == "" {
+		return ""
+	}
+	text, kind := "", ""
+	if q := info.GetQuotedMessage(); q != nil {
+		text, kind, _, _ = describe(q)
+	}
+	who := ""
+	if p, err := types.ParseJID(info.GetParticipant()); err == nil && !p.IsEmpty() {
+		if client.Store.ID != nil && (p.User == client.Store.ID.User || p.User == client.Store.LID.User) {
+			who = "You"
+		} else {
+			who = nameOf(p)
+		}
+	}
+	out, _ := json.Marshal(map[string]string{"id": info.GetStanzaID(), "sender": who, "text": text, "kind": kind})
+	return string(out)
+}
+
 func mentionsMe(m *waE2E.Message) bool {
 	if client.Store.ID == nil {
 		return false
 	}
-	var info *waE2E.ContextInfo
-	switch {
-	case m.GetExtendedTextMessage() != nil:
-		info = m.GetExtendedTextMessage().GetContextInfo()
-	case m.GetImageMessage() != nil:
-		info = m.GetImageMessage().GetContextInfo()
-	case m.GetVideoMessage() != nil:
-		info = m.GetVideoMessage().GetContextInfo()
-	case m.GetDocumentMessage() != nil:
-		info = m.GetDocumentMessage().GetContextInfo()
-	}
+	info := contextOf(m)
 	if info == nil {
 		return false
 	}
@@ -668,7 +710,7 @@ func run(c command) (any, error) {
 	case "history":
 		return history(c.Chat, c.Limit)
 	case "send":
-		return send(c.Chat, c.Text)
+		return send(c.Chat, c.Text, c.Message)
 	case "sendFile":
 		return sendFile(c.Chat, c.Path, c.Text)
 	case "markRead":
@@ -749,7 +791,7 @@ func history(chat string, limit int) (any, error) {
 	if limit <= 0 {
 		limit = 80
 	}
-	rows, err := db.Query(`SELECT id, sender, sender_name, from_me, ts, text, kind, mime, filename, status, thumb, reactions FROM
+	rows, err := db.Query(`SELECT id, sender, sender_name, from_me, ts, text, kind, mime, filename, status, thumb, reactions, quote FROM
 		(SELECT * FROM messages WHERE chat = ? ORDER BY ts DESC LIMIT ?) ORDER BY ts ASC`, chat, limit)
 	if err != nil {
 		return nil, err
@@ -760,27 +802,61 @@ func history(chat string, limit int) (any, error) {
 		var id, sender, senderName, text, kind, mimeType, filename string
 		var fromMe, ts, status int64
 		var thumb []byte
-		var reactions string
-		rows.Scan(&id, &sender, &senderName, &fromMe, &ts, &text, &kind, &mimeType, &filename, &status, &thumb, &reactions)
+		var reactions, quote string
+		rows.Scan(&id, &sender, &senderName, &fromMe, &ts, &text, &kind, &mimeType, &filename, &status, &thumb, &reactions, &quote)
 		all := map[string]string{}
 		json.Unmarshal([]byte(reactions), &all)
 		list = append(list, map[string]any{"id": id, "sender": sender, "senderName": senderName, "fromMe": fromMe == 1,
 			"ts": ts, "text": text, "kind": kind, "mime": mimeType, "filename": filename, "status": status, "thumb": thumb,
-			"reactions": all})
+			"reactions": all, "quote": quoteMap(quote)})
 	}
 	return list, nil
 }
 
-func send(chat, text string) (any, error) {
+// send posts a text message. With replyTo, it goes as a reply quoting that message, the way
+// swiping on a message in WhatsApp does.
+func send(chat, text, replyTo string) (any, error) {
 	to, err := types.ParseJID(chat)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := client.SendMessage(ctx, to, &waE2E.Message{Conversation: proto.String(text)})
+	msg := &waE2E.Message{Conversation: proto.String(text)}
+	quote := ""
+	if replyTo != "" {
+		var sender, quotedText, kind string
+		var fromMe int
+		var raw []byte
+		if db.QueryRow(`SELECT sender, from_me, text, kind, raw FROM messages WHERE chat = ? AND id = ?`, chat, replyTo).
+			Scan(&sender, &fromMe, &quotedText, &kind, &raw) == nil {
+			quoted := &waE2E.Message{}
+			if len(raw) == 0 || proto.Unmarshal(raw, quoted) != nil {
+				quoted = &waE2E.Message{Conversation: proto.String(quotedText)}
+			}
+			participant := sender
+			if fromMe == 1 && client.Store.ID != nil {
+				participant = client.Store.ID.ToNonAD().String()
+			}
+			msg = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String(text),
+				ContextInfo: &waE2E.ContextInfo{StanzaID: proto.String(replyTo), Participant: proto.String(participant),
+					QuotedMessage: quoted}}}
+			who := "You"
+			if fromMe == 0 {
+				if j, err := types.ParseJID(sender); err == nil {
+					who = nameOf(j)
+				}
+			}
+			out, _ := json.Marshal(map[string]string{"id": replyTo, "sender": who, "text": quotedText, "kind": kind})
+			quote = string(out)
+		}
+	}
+	resp, err := client.SendMessage(ctx, to, msg)
 	if err != nil {
 		return nil, err
 	}
 	keep(chat, resp.ID, resp.Timestamp, text, "text", "", "", nil)
+	if quote != "" {
+		db.Exec(`UPDATE messages SET quote = ? WHERE chat = ? AND id = ?`, quote, chat, resp.ID)
+	}
 	return map[string]any{"id": resp.ID, "ts": resp.Timestamp.Unix()}, nil
 }
 

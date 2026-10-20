@@ -309,13 +309,16 @@ enum Threads {
     }
 
     private static func codexMessage(_ o: [String: Any]) -> (user: Bool, text: String)? {
-        guard o["type"] as? String == "response_item", let p = o["payload"] as? [String: Any],
-              p["type"] as? String == "message", let role = p["role"] as? String,
+        guard o["type"] as? String == "response_item", let p = o["payload"] as? [String: Any] else { return nil }
+        if let batch = CodexQuestionBatch.from(p) { return (false, batch.summary) }
+        guard p["type"] as? String == "message", let role = p["role"] as? String,
               role == "user" || role == "assistant", let blocks = p["content"] as? [[String: Any]] else { return nil }
         // Pictures the user attached arrive as `<image ... path="...">` markers among the text.
         var words: [String] = [], pictures: [String] = []
         for case let t as String in blocks.map({ $0["text"] }) {
-            if t.hasPrefix("<image"), let r = t.range(of: #"path="([^"]+)""#, options: .regularExpression) {
+            if let answer = CodexQuestionTracker.readableAnswer(t) {
+                words.append(answer)
+            } else if t.hasPrefix("<image"), let r = t.range(of: #"path="([^"]+)""#, options: .regularExpression) {
                 pictures.append("[Image attached, saved at \(t[r].dropFirst(6).dropLast())]")
             } else if !t.hasPrefix("<"), !t.hasPrefix("\n# Files mentioned") {
                 words.append(t)

@@ -17,6 +17,11 @@ enum Shell {
     }()
 
     static func find(_ tool: String) -> String? {
+        // Match the desktop app's model and session support before trying an older CLI.
+        if tool == "codex" {
+            let bundled = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+            if FileManager.default.isExecutableFile(atPath: bundled) { return bundled }
+        }
         for dir in path.split(separator: ":") {
             let p = "\(dir)/\(tool)"
             if FileManager.default.isExecutableFile(atPath: p) { return p }
@@ -29,7 +34,7 @@ enum Shell {
     @discardableResult
     static func run(
         _ exe: String, _ args: [String], cwd: String? = nil, env extra: [String: String] = [:],
-        onOutput: ((String) -> Void)? = nil, completion: ((Int32, String) -> Void)? = nil
+        captureErrors: Bool = false, onOutput: ((String) -> Void)? = nil, completion: ((Int32, String) -> Void)? = nil
     ) -> Process? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe)
@@ -44,10 +49,13 @@ enum Shell {
 
         let out = Pipe()
         p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
+        let errors = Pipe()
+        p.standardError = captureErrors ? errors : nil
+        if !captureErrors { p.standardError = FileHandle.nullDevice }
         p.standardInput = FileHandle.nullDevice
 
         var collected = Data()
+        var diagnostics = Data()
         let lock = NSLock()
         out.fileHandleForReading.readabilityHandler = { h in
             let chunk = h.availableData
@@ -59,17 +67,27 @@ enum Shell {
                 DispatchQueue.main.async { onOutput(s) }
             }
         }
+        if captureErrors {
+            errors.fileHandleForReading.readabilityHandler = { h in
+                let chunk = h.availableData
+                lock.lock(); diagnostics.append(chunk); lock.unlock()
+            }
+        }
         p.terminationHandler = { proc in
+            errors.fileHandleForReading.readabilityHandler = nil
+            let remainingErrors = captureErrors ? ((try? errors.fileHandleForReading.readToEnd()) ?? nil) : nil
             out.fileHandleForReading.readabilityHandler = nil
             let rest = (try? out.fileHandleForReading.readToEnd()) ?? nil
             lock.lock()
             if let rest { collected.append(rest) }
-            let text = String(data: collected, encoding: .utf8) ?? ""
+            if let remainingErrors { diagnostics.append(remainingErrors) }
+            let result = proc.terminationStatus != 0 && !diagnostics.isEmpty ? diagnostics : collected
+            let text = String(data: result, encoding: .utf8) ?? ""
             lock.unlock()
             DispatchQueue.main.async { completion?(proc.terminationStatus, text) }
         }
         do { try p.run() } catch {
-            DispatchQueue.main.async { completion?(-1, "") }
+            DispatchQueue.main.async { completion?(-1, error.localizedDescription) }
             return nil
         }
         return p

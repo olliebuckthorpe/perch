@@ -81,6 +81,7 @@ final class CodingSessions {
         for a in store.sessions {
             titled.insert(a.id)
             if a.kept { Threads.load(a) }
+            for (id, text) in a.failedReplies { installCodexRetry(a, text: text, messageID: id) }
         }
         seed()
         // Coming back to the agent's own app means you will answer there, so let go of anything held.
@@ -329,7 +330,7 @@ final class CodingSessions {
     }
 
     private func release(host bundle: String) {
-        for a in store.agents where a.hostBundleID == bundle && a.pending != nil { clearPending(a) }
+        for a in store.agents where a.hostBundleID == bundle && a.pending != nil && a.codexQuestion == nil { clearPending(a) }
     }
 
     // MARK: Answers from the notch
@@ -358,6 +359,10 @@ final class CodingSessions {
     }
 
     func answer(_ agent: Agent, answers: [String: String]) {
+        if let batch = agent.codexQuestion {
+            answerCodex(agent, batch: batch, answers: answers)
+            return
+        }
         guard let pending = agent.pending, case .question(_, let raw) = pending.kind else { return }
         var updated = raw
         updated["answers"] = answers
@@ -369,13 +374,76 @@ final class CodingSessions {
         agent.detail = "Got your answer"
     }
 
+    func syncCodexQuestions(_ agent: Agent, batches: [CodexQuestionBatch]) {
+        let batch = batches.first { !agent.handledCodexQuestions.contains($0.callID) }
+        guard let batch else {
+            if agent.codexQuestion != nil {
+                agent.codexQuestion = nil
+                agent.codexQuestionError = nil
+                agent.pending = nil
+                agent.status = agent.codexWorking ? .working : .done
+            }
+            return
+        }
+        // Keep the same card and selections while unrelated transcript records arrive.
+        if agent.codexQuestion == batch { return }
+        if agent.pending != nil && agent.codexQuestion == nil { return }
+        let questions = batch.items.map { Question(text: $0.title, header: "", options: $0.options, multiSelect: false) }
+        agent.codexQuestion = batch
+        agent.codexQuestionError = nil
+        agent.pending = PendingRequest(kind: .question(questions: questions, rawInput: [:]), deadline: .distantFuture) { _ in }
+        agent.status = .needsYou
+        agent.detail = batch.items.first?.title ?? "Has a question"
+        store.ping(agent)
+    }
+
+    private func answerCodex(_ agent: Agent, batch: CodexQuestionBatch, answers: [String: String]) {
+        guard !agent.sending, let text = batch.reply(answers: answers) else { return }
+        guard let exe = Shell.find("codex") else {
+            agent.codexQuestionError = "Could not find Codex. Your answer has not been sent."
+            return
+        }
+        agent.codexQuestionError = nil
+        agent.sending = true
+        Shell.run(exe, ["queue", "--thread", agent.sessionID, "--message", text], cwd: agent.cwd,
+                  env: ["PERCH_HEADLESS": "1"], captureErrors: true, completion: { [weak self, weak agent] code, output in
+            guard let self, let agent else { return }
+            agent.sending = false
+            guard code == 0 else {
+                agent.codexQuestionError = "Could not send your answer. Try again. " + oneLine(output, max: 160)
+                return
+            }
+            agent.handledCodexQuestions.insert(batch.callID)
+            if agent.codexQuestion?.callID == batch.callID {
+                agent.pending = nil
+                agent.codexQuestion = nil
+                agent.codexQuestionError = nil
+                agent.status = agent.codexWorking ? .working : .done
+                agent.detail = "Answer queued in Codex"
+            }
+            if let readable = CodexQuestionTracker.readableAnswer(text) { agent.addLocal(readable) }
+            self.store.save()
+        })
+    }
+
     /// Hands the prompt back to the agent's own app.
-    func dismiss(_ agent: Agent) { clearPending(agent) }
+    func dismiss(_ agent: Agent) {
+        if let batch = agent.codexQuestion {
+            agent.handledCodexQuestions.insert(batch.callID)
+            agent.codexQuestion = nil
+            agent.codexQuestionError = nil
+        }
+        clearPending(agent)
+    }
 
     func reply(_ agent: Agent, text: String) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        agent.addLocal(text)
+        let messageID = agent.addLocal(text)
+        if agent.source == .codex {
+            queueCodex(agent, text: text, messageID: messageID)
+            return
+        }
         // While a background run is going, a second turn through the desktop app would collide with it.
         if let waiter = agent.waiter, !agent.sending {
             deliver(text, to: agent, through: waiter)
@@ -518,9 +586,63 @@ final class CodingSessions {
         return agent
     }
 
+    /// Queue through the running Codex daemon. Resuming in a new process would collide
+    /// with the desktop app's writer even when its visible turn is idle.
+    private func queueCodex(_ agent: Agent, text: String, messageID: String) {
+        guard let exe = Shell.find("codex") else {
+            failCodexDelivery(agent, text: text, messageID: messageID, reason: "Could not find the codex command")
+            return
+        }
+        agent.unsent[messageID] = nil
+        agent.sending = true
+        agent.detail = "Sending to Codex…"
+        Shell.run(exe, ["queue", "--thread", agent.sessionID, "--message", text], cwd: agent.cwd,
+                  env: ["PERCH_HEADLESS": "1"], captureErrors: true, completion: { [weak self, weak agent] code, output in
+            guard let self, let agent else { return }
+            agent.sending = false
+            guard code == 0 else {
+                self.failCodexDelivery(agent, text: text, messageID: messageID,
+                                       reason: oneLine(output, max: 400))
+                return
+            }
+            agent.failedReplies[messageID] = nil
+            agent.unsent[messageID] = nil
+            agent.lastActivity = Date()
+            agent.detail = "Message queued in Codex"
+            // Only accepted rollout messages belong in history. Queued or cancelled messages
+            // must not linger as optimistic delivered bubbles.
+            agent.thread.removeAll { $0.id == messageID }
+            CodexQueue.shared.refresh(agent)
+            // Queue acknowledgement is not an assistant response. The rollout watcher
+            // supplies lifecycle and answer updates from the existing owner.
+            if let pending = agent.pending, case .followUp = pending.kind { self.clearPending(agent) }
+            self.store.save()
+            Threads.load(agent)
+        })
+    }
+
+    private func installCodexRetry(_ agent: Agent, text: String, messageID: String) {
+        agent.unsent[messageID] = { [weak self, weak agent] in
+            guard let self, let agent else { return }
+            self.queueCodex(agent, text: text, messageID: messageID)
+        }
+    }
+
+    private func failCodexDelivery(_ agent: Agent, text: String, messageID: String, reason: String) {
+        agent.detail = reason.isEmpty ? "Could not queue the message in Codex. Try again." : reason
+        agent.failedReplies[messageID] = text
+        installCodexRetry(agent, text: text, messageID: messageID)
+        store.save()
+    }
+
     /// The turn is long over, so continue the session in the background instead.
     private func resume(_ agent: Agent, text: String) {
-        let tool = agent.source == .codex ? "codex" : "claude"
+        if agent.source == .codex {
+            let id = agent.thread.last(where: { $0.fromUser && $0.text == text })?.id ?? agent.addLocal(text)
+            queueCodex(agent, text: text, messageID: id)
+            return
+        }
+        let tool = "claude"
         guard let exe = Shell.find(tool) else {
             agent.detail = "Could not find the \(tool) command"
             return
@@ -529,9 +651,7 @@ final class CodingSessions {
         let neverStarted = agent.background && agent.transcriptPath == nil
         // Chats started from the notch run in auto mode, so they do not stop to ask at every step.
         let auto = agent.background ? ["--permission-mode", "auto"] : []
-        let args = agent.source == .codex
-            ? ["exec", "resume", agent.sessionID, text, "--skip-git-repo-check"]
-            : neverStarted ? ["-p"] + auto + ["--session-id", agent.sessionID, text] : ["-p"] + auto + ["--resume", agent.sessionID, text]
+        let args = neverStarted ? ["-p"] + auto + ["--session-id", agent.sessionID, text] : ["-p"] + auto + ["--resume", agent.sessionID, text]
         run(agent, exe: exe, text: text, args: args)
     }
 
@@ -540,20 +660,23 @@ final class CodingSessions {
         agent.status = .working
         agent.detail = oneLine(text)
         agent.lastActivity = Date()
-        Shell.run(exe, args, cwd: agent.cwd, env: ["PERCH_HEADLESS": "1"]) { [weak self, weak agent] code, output in
+        Shell.run(exe, args, cwd: agent.cwd, env: ["PERCH_HEADLESS": "1"], captureErrors: true) { [weak self, weak agent] code, output in
             guard let self, let agent else { return }
             agent.sending = false
             agent.lastActivity = Date()
             let reply = output.trimmingCharacters(in: .whitespacesAndNewlines)
             if code != 0 {
                 agent.status = .done
-                // The usual cause by far: the terminal `claude` has its own sign-in, separate from the app.
-                let why = reply.isEmpty || reply.contains("authenticate")
-                    ? "Could not run this. The claude command is probably not signed in: run claude in a terminal, log in, then try again."
-                    : oneLine(reply, max: 200)
+                let tool = agent.source == .codex ? "codex" : "claude"
+                let errorLine = reply.components(separatedBy: .newlines).last(where: {
+                    $0.hasPrefix("ERROR:") || $0.hasPrefix("Error:") || $0.hasPrefix("error:")
+                }) ?? reply
+                let why = errorLine.isEmpty
+                    ? "Could not run \(tool) (exit \(code)). Check \(tool) login status in Terminal."
+                    : oneLine(errorLine, max: 400)
                 agent.detail = why
                 agent.thread.append(ChatMessage(id: "error-\(UUID().uuidString)", fromUser: false, text: "_\(why)_"))
-            } else if agent.source == .claude, !reply.isEmpty {
+            } else if !reply.isEmpty {
                 agent.lastMessage = reply
                 agent.status = .done
                 agent.detail = oneLine(reply)
@@ -568,6 +691,15 @@ final class CodingSessions {
                 self.resume(agent, text: next)
             }
         }
+    }
+
+    /// The rollout watcher can finish a Codex turn even when no stop hook is installed.
+    func flushQueued(_ agent: Agent) {
+        guard !agent.sending, agent.pending == nil, !agent.queued.isEmpty else { return }
+        let next = agent.queued.joined(separator: Threads.queueSeparator)
+        agent.queued = []
+        store.save()
+        resume(agent, text: next)
     }
 
     func open(_ agent: Agent) {

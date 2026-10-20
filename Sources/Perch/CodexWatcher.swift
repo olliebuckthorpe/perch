@@ -11,6 +11,8 @@ final class CodexWatcher {
     private var meta: [String: (id: String, cwd: String?, user: Bool)] = [:]
     private var names: [String: String] = [:]
     private var indexStamp: Date?
+    private let questionQueue = DispatchQueue(label: "perch.codex-questions", qos: .utility)
+    private let questionScanner = CodexQuestionScanner()
 
     func start() {
         guard FileManager.default.fileExists(atPath: root) else { return }
@@ -42,16 +44,19 @@ final class CodexWatcher {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy/MM/dd"
         let now = Date()
+        // Resumed threads retain their original rollout directory, which may be months old.
+        var paths = Set(store.sessions.filter { $0.source == .codex }.compactMap(\.transcriptPath))
         for day in [now, now.addingTimeInterval(-86400)] {
             let dir = "\(root)/\(fmt.string(from: day))"
-            guard let files = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-            for f in files where f.hasSuffix(".jsonl") {
-                let path = "\(dir)/\(f)"
-                guard let mtime = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date,
-                      now.timeIntervalSince(mtime) < 3 * 3600, seen[path] != mtime else { continue }
-                seen[path] = mtime
-                update(path: path, mtime: mtime)
+            for file in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where file.hasSuffix(".jsonl") {
+                paths.insert("\(dir)/\(file)")
             }
+        }
+        for path in paths {
+            guard let mtime = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date,
+                  now.timeIntervalSince(mtime) < 3 * 3600, seen[path] != mtime else { continue }
+            seen[path] = mtime
+            update(path: path, mtime: mtime)
         }
     }
 
@@ -89,6 +94,14 @@ final class CodexWatcher {
         agent.transcriptPath = path
         if agent.hostBundleID == nil { agent.hostBundleID = CodingSessions.codexBundleID }
         agent.lastActivity = mtime
+        if let lifecycle { agent.codexWorking = lifecycle == "task_started" }
+        questionQueue.async { [weak agent, questionScanner] in
+            let batches = questionScanner.scan(path)
+            DispatchQueue.main.async {
+                guard let agent else { return }
+                CodingSessions.shared.syncCodexQuestions(agent, batches: batches)
+            }
+        }
         guard agent.pending == nil else { return }
 
         switch lifecycle {
@@ -105,6 +118,7 @@ final class CodexWatcher {
             }
             agent.status = fresh ? .done : .idle
             if wasWorking { store.ping(agent) }
+            CodingSessions.shared.flushQueued(agent)
         default:
             // No lifecycle marker in the tail: a long turn that is still writing.
             if fresh, agent.status != .needsYou { agent.status = .working }

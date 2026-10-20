@@ -47,6 +47,15 @@ struct SlackLine: Identifiable, Equatable {
     var ticks: Int?
     /// Reactions on it, by who reacted ("me" for the user).
     var reactions: [String: String] = [:]
+    /// WhatsApp only: the message this one replies to.
+    var quote: SlackQuote?
+}
+
+/// The message a reply quotes: who sent it and a line of what it said.
+struct SlackQuote: Equatable {
+    let id: String
+    let sender: String
+    let text: String
 }
 
 /// A file shared in a Slack message. Its links need the workspace's key to open.
@@ -112,9 +121,9 @@ final class SlackConversations {
     }
 
     /// A message the user just sent, shown at once while it goes.
-    func showSent(_ key: String, text: String, whatsapp: Bool) {
+    func showSent(_ key: String, text: String, whatsapp: Bool, quote: SlackQuote? = nil) {
         let id = "local-\(UUID().uuidString)"
-        let line = SlackLine(id: id, viewID: id, sender: "You", mine: true, text: text, time: Date(), ticks: whatsapp ? 0 : nil)
+        let line = SlackLine(id: id, viewID: id, sender: "You", mine: true, text: text, time: Date(), ticks: whatsapp ? 0 : nil, quote: quote)
         withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
             if lines[key] == nil { lines[key] = [] }
             lines[key]?.append(line)
@@ -140,6 +149,9 @@ struct SlackAlert: Identifiable, Equatable {
     var senderID = ""
     /// The sender's profile picture (or the posting app's icon).
     var picture: URL?
+
+    /// Attachment metadata and local previews carried by the notification.
+    var files: [SlackFile] = []
 
     /// The conversation it came from, as somewhere to reply: the channel, or the person for a DM.
     var target: SlackTarget {
@@ -188,8 +200,10 @@ final class SlackSource {
     }
 
     /// A fresh message to a person or channel, as the user, with any files attached.
-    func send(to target: SlackTarget, text: String, files: [URL] = [], done: @escaping (Bool) -> Void) {
-        if target.workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.send(to: target, text: text, files: files, done: done) }
+    func send(to target: SlackTarget, text: String, files: [URL] = [], replyTo: String? = nil, done: @escaping (Bool) -> Void) {
+        if target.workspace == WhatsAppSource.workspace {
+            return WhatsAppSource.shared.send(to: target, text: text, files: files, replyTo: replyTo, done: done)
+        }
         guard let link = links.values.first(where: { $0.name == target.workspace }) else { return done(false) }
         link.send(to: target, text: text, files: files, done: done)
     }

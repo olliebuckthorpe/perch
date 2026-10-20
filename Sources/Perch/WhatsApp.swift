@@ -334,7 +334,11 @@ final class WhatsAppSource {
         return SlackLine(id: id, sender: mine ? "You" : (m["senderName"] as? String ?? ""), mine: mine,
                          text: m["text"] as? String ?? "", picture: mine ? nil : shared.picture(for: who), files: files,
                          time: time, ticks: mine ? max(1, m["status"] as? Int ?? 1) : nil,
-                         reactions: m["reactions"] as? [String: String] ?? [:])
+                         reactions: m["reactions"] as? [String: String] ?? [:],
+                         quote: (m["quote"] as? [String: String]).flatMap { q in
+                             q["id"].map { SlackQuote(id: $0, sender: q["sender"] ?? "",
+                                                      text: (q["text"]).flatMap { $0.isEmpty ? nil : $0 } ?? label(q["kind"])) }
+                         })
     }
 
     // MARK: Chats
@@ -464,14 +468,16 @@ final class WhatsAppSource {
         }
     }
 
-    func send(to target: SlackTarget, text: String, files: [URL], done: @escaping (Bool) -> Void) {
+    func send(to target: SlackTarget, text: String, files: [URL], replyTo: String? = nil, done: @escaping (Bool) -> Void) {
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
         func after(_ ok: Bool) {
             done(ok)
             if ok { history(target) }
         }
         guard !files.isEmpty else {
-            return request("send", ["chat": target.id, "text": message]) { after($0 != nil) }
+            var body: [String: Any] = ["chat": target.id, "text": message]
+            if let replyTo { body["message"] = replyTo }
+            return request("send", body) { after($0 != nil) }
         }
         // Each file goes as its own message; the text rides along with the first.
         var remaining = files

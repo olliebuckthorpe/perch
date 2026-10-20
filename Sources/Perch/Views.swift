@@ -33,7 +33,7 @@ struct NotchContent: View {
         // so the gap always stays lined up with the hardware notch.
         // A chat needs more room than the roster.
         let chatting = ui.selectedID != nil || ui.composing
-        let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : (ui.showingClips && !ui.clipsInline) || ui.showingShelf ? 380 : 680) - (l + ui.notch.width + r)) : 0
+        let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : (ui.showingClips && !ui.clipsInline) || ui.showingShelf ? 380 : 768) - (l + ui.notch.width + r)) : 0
         let side = max(l, r, extra > 0 ? (l + r + extra) / 2 : 0)
         let leftWidth = ui.expanded ? side : l, rightWidth = ui.expanded ? side : r
         let radius: CGFloat = ui.expanded ? 18 : 10
@@ -832,6 +832,36 @@ private struct Rail: View {
     @State private var overButton = false
     @State private var overStrip = false
 
+    /// While the pointer is over the list its order holds still, so a row never moves out from
+    /// under a click. Everywhere else the list is newest first, live.
+    @State private var frozen: [String]?
+
+    private var displayedAgents: [Agent] {
+        agents.filter { agent in
+            !ui.isDismissed(agent) && !(agent.source == .grok && GrokSource.hidden.contains(agent.sessionID) && ui.selectedID != agent.id)
+        }
+    }
+
+    /// Slack and WhatsApp conversations stay while they have something unread, while open, or
+    /// when pinned. Once read and left, they go.
+    private var displayedConversations: [SlackTarget] {
+        ui.slackRecent.filter { t in
+            let key = "\(t.workspace):\(t.id)"
+            let open = ui.slackTarget?.workspace == t.workspace && ui.slackTarget?.id == t.id
+            let whatsappUnread = t.workspace == WhatsAppSource.workspace
+                && WhatsAppSource.shared.chats.contains { $0.id == t.id && $0.unread > 0 && !$0.crowd }
+            return open || (ui.slackUnread[key] ?? 0) > 0 || whatsappUnread || ui.pinnedConversations.contains(key)
+        }
+    }
+
+    /// When something last really happened in a chat: a message or a turn, not housekeeping.
+    private func lastActive(_ chat: SidebarChat) -> Double {
+        switch chat {
+        case .agent(let a): return (a.lastTurnAt.map { max($0, a.lastActivity) } ?? a.lastActivity).timeIntervalSince1970
+        case .conversation(let t): return lastAt(t)
+        }
+    }
+
     private var agents: [Agent] {
         var seen = Set<String>()
         let sessions = store.sessions.filter { !ui.isDismissed($0) }
@@ -884,37 +914,68 @@ private struct Rail: View {
             .contentShape(Rectangle())
             .onTapGesture { ui.browse() }
             .padding(.bottom, 5)
-            // The pinned bot leads in a tile of its own, as in Grok Bot.
-            let leads = agents.filter { $0.source == .grok && ui.pinned.contains($0.name) }
-            ForEach(leads) { agent in
-                LeadTile(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks)
-                    .padding(.bottom, 4)
-            }
-            // Slack and WhatsApp conversations sit just under it, newest first; unread ones in bold.
-            ForEach(ui.slackRecent.sorted { lastAt($0) > lastAt($1) }) { target in
-                SlackRailRow(target: target, selected: ui.slackTarget?.id == target.id)
-                    .transition(.opacity.combined(with: .offset(x: -20)))
-            }
-            ForEach(agents.filter { a in !leads.contains { $0.id == a.id } }) { agent in
-                let star = agent.source == .grok && ui.pinned.contains(agent.name)
-                RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks, star: star) { dragged in
-                    // Pinned bots stay at the top; everything else can be dragged into any order.
-                    guard !star else { return }
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                        ui.move(dragged, before: agent.id, in: agents.map(\.id))
+            let entries = sidebarEntries
+            let pinned = entries.filter(ui.sidebarPinned)
+            let chats = entries.filter { !ui.sidebarPinned($0) }
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 1) {
+                    if !pinned.isEmpty {
+                        sidebarHeading("Pinned")
+                        ForEach(pinned) { sidebarRow($0) }
                     }
-                }
-                // A cleared chat slides out to the left and fades, and the rows below close up.
-                .transition(.asymmetric(insertion: .opacity,
-                                        removal: .opacity.combined(with: .offset(x: -28)).combined(with: .scale(scale: 0.94, anchor: .leading))))
+                    if !chats.isEmpty {
+                        sidebarHeading("Chats")
+                        ForEach(chats) { sidebarRow($0) }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .topLeading)
+                .animation(.spring(response: 0.36, dampingFraction: 0.86), value: entries.map(\.id))
             }
-            // Slack conversations you have opened, until cleared.
-
-            Spacer(minLength: 0)
+            .frame(maxHeight: .infinity)
+            .onHover { inside in frozen = inside ? sidebarEntries.map(\.id) : nil }
+            if let name = ui.sidebarUndoName {
+                HStack(spacing: 6) {
+                    Text("\(name) removed").lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    Button("Undo") { ui.undoSidebarRemoval() }.buttonStyle(LinkButton())
+                }
+                .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.65))
+                .padding(.horizontal, 7).padding(.top, 5)
+            }
         }
-        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: agents.map(\.id))
-        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: ui.slackRecent.map(\.id))
-        .frame(width: 176)
+        .frame(width: 264, height: 452, alignment: .top)
+    }
+
+    private var sidebarEntries: [SidebarChat] {
+        let remmi = displayedAgents.filter { $0.source == .grok && $0.name == "Remmi" }
+        let rest = (displayedConversations.map(SidebarChat.conversation)
+            + displayedAgents.filter { agent in !remmi.contains(where: { $0.id == agent.id }) }.map(SidebarChat.agent))
+            .sorted { lastActive($0) == lastActive($1) ? $0.id < $1.id : lastActive($0) > lastActive($1) }
+        let live = remmi.map(SidebarChat.agent) + rest
+        guard let frozen else { return live }
+        // Held still under the pointer; anything new waits at the bottom until it leaves.
+        let rank = Dictionary(frozen.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        return live.enumerated().sorted {
+            let (l, r) = (rank[$0.element.id] ?? Int.max, rank[$1.element.id] ?? Int.max)
+            return l != r ? l < r : $0.offset < $1.offset
+        }.map(\.element)
+    }
+
+    private func sidebarHeading(_ title: String) -> some View {
+        Text(title).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+            .padding(.horizontal, 7).padding(.top, 6).padding(.bottom, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private func sidebarRow(_ chat: SidebarChat) -> some View {
+        switch chat {
+        case .agent(let agent):
+            RailRow(agent: agent, selected: ui.selectedID == agent.id && !ui.composing && !ui.showingProfiles && !ui.showingTasks,
+                    star: ui.sidebarPinned(chat)) { dragged in
+                ui.move(dragged, before: agent.id, in: displayedAgents.map(\.id))
+            }
+        case .conversation(let target):
+            SlackRailRow(target: target, selected: ui.slackTarget?.workspace == target.workspace && ui.slackTarget?.id == target.id)
+        }
     }
 
     /// Open while the pointer is on the button or the strip, with a short grace period so it
@@ -969,36 +1030,77 @@ private struct NavRow: View {
     }
 }
 
-/// One chat in the sidebar: its face, its name, and a mark if it wants something.
-/// The pinned bot at the head of the sidebar: its face large, its name under it.
-private struct LeadTile: View {
-    let agent: Agent
-    let selected: Bool
-    @Environment(NotchUI.self) private var ui
-    @State private var hovered = false
+/// Shared geometry keeps every chat on the same simple sidebar grid.
+private enum SidebarStyle {
+    static let avatar: CGFloat = 22
+    static let rowHeight: CGFloat = 30
+    static let spacing: CGFloat = 7
+    static let inset: CGFloat = 5
+    static let nameSize: CGFloat = 11.5
+}
 
+private struct SidebarActionButtons: View {
+    let chat: SidebarChat
+    @Environment(NotchUI.self) private var ui
     var body: some View {
-        VStack(spacing: 4) {
-            FaceView(agent: agent, size: 34)
-            Text(agent.name).font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(.white.opacity(selected ? 0.95 : 0.8)).lineLimit(1)
+        Button { ui.toggleSidebarPin(chat) } label: {
+            Label(ui.sidebarPinned(chat) ? "Unpin" : "Pin to top", systemImage: ui.sidebarPinned(chat) ? "pin.slash" : "pin")
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .background(.white.opacity(selected ? 0.14 : hovered ? 0.09 : 0.06), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(alignment: .topTrailing) {
-            if agent.unread > 0 && !selected {
-                Text("\(agent.unread)").font(.system(size: 9.5, weight: .bold)).foregroundStyle(.black)
-                    .padding(.horizontal, 5).frame(minWidth: 16, minHeight: 16)
-                    .background(.white, in: Capsule()).padding(6)
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { ui.select(agent.id) }
-        .onHover { hovered = $0 }
+        Button { ui.removeSidebarChat(chat) } label: { Label("Remove from Perch", systemImage: "xmark") }
     }
 }
 
+private struct SidebarActions: View {
+    let chat: SidebarChat
+    var body: some View {
+        Menu { SidebarActionButtons(chat: chat) } label: {
+            Image(systemName: "ellipsis").font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.5)).frame(width: 24, height: 28).contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help("Actions for \(chat.name)")
+        .accessibilityLabel("Actions for \(chat.name)")
+    }
+}
+
+private struct SidebarSwipeRow: ViewModifier {
+    let chat: SidebarChat
+    @Environment(NotchUI.self) private var ui
+    func body(content: Content) -> some View {
+        let current = ui.sidebarSwipe?.id == chat.id ? ui.sidebarSwipe : nil
+        let exiting = ui.sidebarExitingID == chat.id
+        let collapsing = ui.sidebarCollapsingID == chat.id
+        content
+            .offset(x: current?.x ?? 0)
+            .opacity(exiting && NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 1)
+            .background(alignment: .trailing) {
+                if let current {
+                    HStack(spacing: 5) {
+                        Image(systemName: "xmark")
+                        Text("Remove")
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(current.ready ? 1 : 0.55))
+                    .scaleEffect(current.ready ? 1.08 : 0.88)
+                    .animation(.spring(response: 0.24, dampingFraction: 0.6), value: current.ready)
+                    .padding(.horizontal, 12).frame(maxHeight: .infinity)
+                    .background(Color(red: 0.52, green: 0.18, blue: 0.2))
+                    .opacity(min(1, abs(current.x) / 30))
+                }
+            }
+            .frame(height: collapsing ? 0 : SidebarStyle.rowHeight)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+            .onHover { over in
+                if over { ui.hoveredSidebarChat = chat }
+                else if ui.hoveredSidebarChat?.id == chat.id { ui.hoveredSidebarChat = nil }
+            }
+            .onDisappear { if ui.hoveredSidebarChat?.id == chat.id { ui.hoveredSidebarChat = nil } }
+    }
+}
+
+/// One chat in the sidebar: its face, its name, and a mark if it wants something.
 private struct RailRow: View {
     let agent: Agent
     let selected: Bool
@@ -1009,47 +1111,18 @@ private struct RailRow: View {
     @State private var targeted = false
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: SidebarStyle.spacing) {
             FaceView(agent: agent, size: 16)
-                .frame(width: 20, height: 20)
+                .frame(width: SidebarStyle.avatar, height: SidebarStyle.avatar)
             Text(agent.name)
-                .font(.system(size: 11.5, weight: selected || agent.status > .done ? .semibold : .regular))
+                .font(.system(size: SidebarStyle.nameSize, weight: selected || agent.status > .done ? .semibold : .regular))
                 .foregroundStyle(.white.opacity(agent.status == .idle && !selected ? 0.6 : 0.95))
                 .lineLimit(1).truncationMode(.tail)
-            Spacer(minLength: 0)
-            if hovered && agent.source != .grok {
-                // Pin it so it always stays in the notch.
-                Button { withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { ui.togglePin(agent) } } label: {
-                    Image(systemName: ui.pinnedChats.contains(agent.id) ? "pin.slash.fill" : "pin.fill")
-                        .font(.system(size: 8.5, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.6)).frame(width: 16, height: 16)
-                        .background(.white.opacity(0.12), in: Circle()).contentShape(Rectangle())
-        .contextMenu {
-            if agent.source == .grok {
-                Button("Hide from Perch") { GrokSource.shared.hide(agent) }
-            }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            SidebarActions(chat: .agent(agent))
         }
-                }
-                .buttonStyle(Press()).help(ui.pinnedChats.contains(agent.id) ? "Unpin" : "Pin to the notch")
-            } else if ui.pinnedChats.contains(agent.id) {
-                Image(systemName: "pin.fill").font(.system(size: 8.5)).foregroundStyle(.white.opacity(0.4))
-                    .rotationEffect(.degrees(45))
-            }
-            if hovered && !star {
-                // Clears it from the notch. It returns by itself if it does something new.
-                Button {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { ui.dismiss(agent) }
-                } label: {
-                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.6)).frame(width: 16, height: 16)
-                        .background(.white.opacity(0.12), in: Circle()).contentShape(Rectangle())
-                }
-                .buttonStyle(Press()).help("Remove from the notch")
-            } else if ui.isDrafting(agent.id) {
-                Image(systemName: "pencil").font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
-            }
-        }
-        .padding(.horizontal, 5).padding(.vertical, 4)
+        .frame(height: SidebarStyle.rowHeight)
+        .padding(.horizontal, SidebarStyle.inset)
         .background(.white.opacity(selected ? 0.14 : hovered ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contentShape(Rectangle())
         .onTapGesture { ui.select(agent.id) }
@@ -1061,6 +1134,8 @@ private struct RailRow: View {
         })
         .onHover { hovered = $0 }
         .help("\(agent.name). Double click to open in its own app.")
+        .contextMenu { SidebarActionButtons(chat: .agent(agent)) }
+        .modifier(SidebarSwipeRow(chat: .agent(agent)))
         // Drag a chat onto another to place it just above.
         .overlay(alignment: .top) {
             Rectangle().fill(Palette.blue).frame(height: 2).opacity(targeted && !star ? 1 : 0).offset(y: -1)
@@ -1150,10 +1225,12 @@ private struct NoticeView: View {
 // MARK: To-do list
 
 /// A card being dragged around the board. The board draws the card floating under the pointer,
-/// a gap where it would land, and moves the other cards aside as it goes; nothing is sent to
-/// Notion until it is let go.
+/// a stable insertion line where it would land. Existing cards keep their geometry until
+/// release; nothing is sent to Notion while the pointer moves.
 @Observable
 private final class BoardDrag {
+    static weak var current: BoardDrag?
+    @ObservationIgnored var scrollViews: [String: NSScrollView] = [:]
     var card: TaskItem?
     /// Pointer position in the board's space, and where on the card it was picked up. Only the
     /// floating card watches this; everything else watches the few things below that change
@@ -1170,27 +1247,51 @@ private final class BoardDrag {
     @ObservationIgnored var columns: [String: CGRect] = [:]
     @ObservationIgnored var lists: [String: CGRect] = [:]
 
+    @ObservationIgnored private var orderedIDs: [String: [String]] = [:]
+
+    func begin(_ task: TaskItem, at start: CGPoint) {
+        guard card == nil, let frame = cards[task.id], frame.width > 0, frame.height > 0 else { return }
+        orderedIDs = Dictionary(uniqueKeysWithValues: NotionTasks.columns.map { ($0, NotionTasks.shared.cards(in: $0).map(\.id)) })
+        size = frame.size
+        grab = CGSize(width: start.x - frame.minX, height: start.y - frame.minY)
+        point = start
+        NotionTasks.shared.beginArrangement()
+        card = task
+    }
+
     func move(to point: CGPoint) {
         self.point = point
         guard let card else { return }
-        let column = columns.first { $0.value.minX - 4 <= point.x && point.x <= $0.value.maxX + 4 }?.key ?? card.column
-        let ids = NotionTasks.shared.cards(in: column).map(\.id).filter { $0 != card.id }
-        // The landing spot is above the first card whose middle is below the pointer.
-        let index = ids.firstIndex { id in (cards[id]?.midY ?? .infinity) > point.y } ?? ids.count
-        if target?.column != column || target?.index != index {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) { target = (column, index) }
+        let next = BoardDropGeometry.target(at: point, columns: columns, frames: cards, orderedIDs: orderedIDs, dragging: card.id)
+        if target?.column != next?.column || target?.index != next?.index {
+            target = next
         }
         var now: (column: String, dir: Int)?
-        if let (name, frame) = lists.first(where: { $0.value.minX <= point.x && point.x <= $0.value.maxX }) {
-            if point.y < frame.minY + 30 { now = (name, -1) } else if point.y > frame.maxY - 30 { now = (name, 1) }
+        if let column = next?.column, let frame = lists[column], frame.contains(point) {
+            if point.y < frame.minY + 28 { now = (column, -1) }
+            else if point.y > frame.maxY - 28 { now = (column, 1) }
         }
         if now?.column != edge?.column || now?.dir != edge?.dir { edge = now }
+    }
+
+    func finish() {
+        guard let card else { return }
+        let destination = target
+        // End first: both the gesture and mouse-up fallback may arrive, but only one commits.
+        end()
+        if let destination {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+                NotionTasks.shared.place(card.id, in: destination.column, at: destination.index)
+            }
+        }
     }
 
     func end() {
         card = nil
         target = nil
         edge = nil
+        orderedIDs = [:]
+        NotionTasks.shared.endArrangement()
     }
 }
 
@@ -1249,15 +1350,12 @@ private struct TasksView: View {
         .padding(.top, 2)
         .onAppear {
             notion.refresh()
+            BoardDrag.current = drag
             // Belt and braces: letting go of the mouse always ends a drag, even if the card's own
             // gesture missed it.
             mouseUp = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [drag] event in
                 DispatchQueue.main.async {
-                    guard let card = drag.card else { return }
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-                        if let target = drag.target { NotionTasks.shared.place(card.id, in: target.column, at: target.index) }
-                        drag.end()
-                    }
+                    drag.finish()
                 }
                 return event
             }
@@ -1265,6 +1363,7 @@ private struct TasksView: View {
         .onDisappear {
             if let mouseUp { NSEvent.removeMonitor(mouseUp) }
             mouseUp = nil
+            if BoardDrag.current === drag { BoardDrag.current = nil }
             drag.end()
         }
     }
@@ -1291,7 +1390,25 @@ private struct FloatingCard: View {
                 .position(x: drag.point.x - drag.grab.width + drag.size.width / 2,
                           y: drag.point.y - drag.grab.height + drag.size.height / 2)
                 .allowsHitTesting(false)
+                .transaction { $0.animation = nil }
         }
+    }
+}
+
+/// Resolves the actual clip view so edge scrolling is smooth, in pixels, without
+/// repeatedly replacing SwiftUI's scroll anchor during an active card gesture.
+private struct BoardScrollProbe: NSViewRepresentable {
+    let found: (NSScrollView) -> Void
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ view: Probe, context: Context) {
+        view.found = found
+        DispatchQueue.main.async { view.resolve() }
+    }
+    static func dismantleNSView(_ view: Probe, coordinator: ()) { view.found = nil }
+    final class Probe: NSView {
+        var found: ((NSScrollView) -> Void)?
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); DispatchQueue.main.async { self.resolve() } }
+        func resolve() { if let scroll = enclosingScrollView { found?(scroll) } }
     }
 }
 
@@ -1299,8 +1416,8 @@ private struct TaskColumn: View {
     let title: String
     let cards: [TaskItem]
     @Environment(BoardDrag.self) private var drag
-    /// The card at the top of what is showing, so a drag held at an edge can scroll from there.
-    @State private var top: String?
+    /// Native scrolling stays continuous while a dragged card is held near an edge.
+    @State private var nativeScroll: NSScrollView?
     @State private var scroller: Timer?
     @State private var hoveredID: String?
 
@@ -1325,30 +1442,26 @@ private struct TaskColumn: View {
 
     /// Holding a dragged card at the top or bottom of the list scrolls it that way.
     private func autoscroll(_ direction: Int) {
-        scroller?.invalidate()
-        scroller = nil
+        scroller?.invalidate(); scroller = nil
         guard direction != 0 else { return }
-        scroller = Timer.scheduledTimer(withTimeInterval: 0.14, repeats: true) { _ in
-            let ids = cards.map(\.id)
-            let at = top.flatMap { ids.firstIndex(of: $0) } ?? 0
-            let next = max(0, min(ids.count - 1, at + direction))
-            guard next != at else { return }
-            withAnimation(.easeOut(duration: 0.14)) { top = ids[next] }
-            drag.move(to: drag.point)
+        scroller = Timer(timeInterval: 1.0 / 60, repeats: true) { _ in
+            guard drag.card != nil, let scroll = nativeScroll, let document = scroll.documentView else { return }
+            let clip = scroll.contentView
+            let origin = clip.bounds.origin
+            let next = max(0, min(max(0, document.bounds.height - clip.bounds.height), origin.y + CGFloat(direction) * 4))
+            guard abs(next - origin.y) > 0.1 else { return }
+            clip.scroll(to: CGPoint(x: origin.x, y: next))
+            scroll.reflectScrolledClipView(clip)
+            DispatchQueue.main.async { drag.move(to: drag.point) }
         }
+        // Keep ticking during AppKit's mouse tracking loop as well as ordinary events.
+        if let scroller { RunLoop.main.add(scroller, forMode: .common) }
     }
 
-    /// The cards to draw, with a gap where the dragged one would land. The dragged card itself
-    /// stays in the list (drawn with no height): taking it out ended the drag gesture, so letting
-    /// go was never noticed and the card was left floating.
-    private var rows: [TaskItem?] {
-        var list: [TaskItem?] = cards
-        if let target = drag.target, target.column == title {
-            let others = cards.filter { $0.id != drag.card?.id }
-            let at = target.index < others.count ? (cards.firstIndex(of: others[target.index]) ?? cards.count) : cards.count
-            list.insert(nil, at: at)
-        }
-        return list
+    private var insertionID: String? {
+        guard let target = drag.target, target.column == title else { return nil }
+        let others = cards.filter { $0.id != drag.card?.id }
+        return target.index < others.count ? others[target.index].id : nil
     }
 
     var body: some View {
@@ -1384,33 +1497,31 @@ private struct TaskColumn: View {
                     .padding(.horizontal, 4)
                     ScrollView {
                         VStack(spacing: 5) {
-                            ForEach(Array(rows.enumerated()), id: \.element?.id) { _, row in
-                                if let card = row, card.id == drag.card?.id {
-                                    // Lifted: still here so the drag carries on, but taking no room.
-                                    TaskCard(task: card, tint: tint).frame(height: 0).opacity(0).clipped()
-                                } else if let card = row {
-                                    TaskCard(task: card, tint: tint, hovered: hoveredID == card.id && drag.card == nil)
-                                        .transition(.asymmetric(insertion: .scale(scale: 0.92).combined(with: .opacity),
-                                                                removal: .opacity.combined(with: .offset(x: 30))))
-                                } else {
-                                    // Where the card will land.
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .fill(tint.opacity(0.12))
-                                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                            .strokeBorder(tint.opacity(0.6), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4])))
-                                        .frame(height: max(34, drag.size.height))
-                                        .transition(.opacity)
-                                }
+                            ForEach(cards) { card in
+                                TaskCard(task: card, tint: tint, hovered: hoveredID == card.id && drag.card == nil)
+                                    .id(card.id)
+                                    .opacity(drag.card?.id == card.id ? 0.18 : 1)
+                                    .overlay(alignment: .top) {
+                                        if drag.card != nil, insertionID == card.id {
+                                            Capsule().fill(tint).frame(height: 3).offset(y: -4)
+                                                .allowsHitTesting(false)
+                                        }
+                                    }
                             }
+                            Color.clear.frame(height: 3)
+                                .overlay { if landing, insertionID == nil { Capsule().fill(tint) } }
+                                .allowsHitTesting(false)
                             if cards.isEmpty && !landing {
                                 Text("Nothing here").font(.system(size: 11)).foregroundStyle(.white.opacity(0.3))
                                     .frame(maxWidth: .infinity).padding(.top, 20)
                             }
                         }
-                        .scrollTargetLayout()
                         .padding(.bottom, 30)
+                        .background(BoardScrollProbe { scroll in
+                            if nativeScroll !== scroll { nativeScroll = scroll }
+                            drag.scrollViews[title] = scroll
+                        }.frame(width: 0, height: 0))
                     }
-                    .scrollPosition(id: $top, anchor: .top)
                     .frame(height: 366)
                     // Which card is under the pointer is worked out here, from where the pointer is,
                     // so a highlight can never be left behind on a card the pointer has already left.
@@ -1434,7 +1545,42 @@ private struct TaskColumn: View {
                     in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .animation(.easeOut(duration: 0.15), value: landing)
         .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named("board")) }) { drag.columns[title] = $0 }
-        .onDisappear { scroller?.invalidate() }
+        .onDisappear {
+            scroller?.invalidate()
+            nativeScroll = nil
+            drag.columns[title] = nil; drag.lists[title] = nil; drag.scrollViews[title] = nil
+        }
+    }
+}
+
+/// Read-only native drag regression: lift a real visible card, check geometry, cancel.
+/// No completion or place call is made, so this never writes a task to Notion.
+func checkBoardDrag(to path: String) {
+    guard let drag = BoardDrag.current,
+          let task = NotionTasks.shared.tasks.first(where: { task in
+              guard let frame = drag.cards[task.id], let list = drag.lists[task.column] else { return false }
+              return frame.height > 0 && list.contains(CGPoint(x: frame.midX, y: frame.midY))
+          }), let frame = drag.cards[task.id] else {
+        try? Data("{\"Board is ready\":false}".utf8).write(to: URL(fileURLWithPath: path))
+        return
+    }
+    let original = drag.cards
+    let point = CGPoint(x: frame.midX, y: frame.midY)
+    drag.begin(task, at: point)
+    drag.move(to: point)
+    let slot = drag.target
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+        var results: [String: Bool] = [:]
+        results["Native scroll view resolved"] = drag.scrollViews[task.column] != nil
+        results["Source card keeps its full frame"] = drag.cards[task.id] == frame
+        results["Other cards do not shift during pickup"] = original.allSatisfy { drag.cards[$0.key] == $0.value }
+        drag.move(to: point)
+        results["Stationary pointer keeps the insertion slot"] = drag.target?.column == slot?.column && drag.target?.index == slot?.index
+        drag.move(to: CGPoint(x: -100, y: -100))
+        results["Outside-board release has no destination"] = drag.target == nil
+        drag.end()
+        results["Cancel clears floating card and target"] = drag.card == nil && drag.target == nil
+        try? JSONSerialization.data(withJSONObject: results, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: path))
     }
 }
 
@@ -1560,7 +1706,7 @@ private struct TaskCard: View {
             }
             // Hand it to Remmi: shown while the pointer is on the card. Its space is always kept,
             // so the text never re-wraps and the card never changes size as the pointer passes.
-            if !floating, bot != nil {
+            if bot != nil {
                 let showing = hovered || pushing
                 Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { pushing.toggle() } } label: {
                     Image(systemName: "paperplane.fill").font(.system(size: 10))
@@ -1570,8 +1716,8 @@ private struct TaskCard: View {
                 }
                 .buttonStyle(Press(reach: 3))
                 .help("Push to \(bot?.name ?? "Remmi") with a note")
-                .opacity(showing ? 1 : 0)
-                .allowsHitTesting(showing)
+                .opacity(!floating && showing ? 1 : 0)
+                .allowsHitTesting(!floating && showing)
                 .animation(.easeOut(duration: 0.1), value: showing)
             }
         }
@@ -1587,27 +1733,17 @@ private struct TaskCard: View {
             if !floating { drag.cards[task.id] = frame }
         }
         .onTapGesture(count: 2) { NotionTasks.shared.open(task) }
-        // Pick it up and move it: the card follows the pointer straight away, the others make
-        // room, and letting go drops it where the gap is.
-        .gesture(floating ? nil : DragGesture(minimumDistance: 3, coordinateSpace: .named("board"))
+        // Keep this gesture's source mounted at its original size throughout the drag.
+        // The floating copy follows the pointer; release commits the insertion line once.
+        .gesture(floating || pushing ? nil : DragGesture(minimumDistance: 6, coordinateSpace: .named("board"))
             .onChanged { value in
-                if drag.card == nil {
-                    let frame = drag.cards[task.id] ?? .zero
-                    drag.size = frame.size
-                    drag.grab = CGSize(width: value.startLocation.x - frame.minX, height: value.startLocation.y - frame.minY)
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) { drag.card = task }
-                }
-                drag.move(to: value.location)
+                if drag.card == nil { drag.begin(task, at: value.startLocation) }
+                if drag.card?.id == task.id { drag.move(to: value.location) }
             }
-            .onEnded { _ in
-                if let target = drag.target {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-                        NotionTasks.shared.place(task.id, in: target.column, at: target.index)
-                        drag.end()
-                    }
-                } else {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { drag.end() }
-                }
+            .onEnded { value in
+                guard drag.card?.id == task.id else { return }
+                drag.move(to: value.location)
+                drag.finish()
             })
         .help("Drag to move. Double click to open in Notion.")
     }
@@ -2094,6 +2230,52 @@ private struct NewChatView: View {
 
 // MARK: Chat
 
+/// Pending follow-ups remain visibly separate from messages already accepted by Codex.
+private struct CodexQueueCard: View {
+    let agent: Agent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                Text("Queued in Codex" + (agent.codexQueue.isEmpty ? "" : " · \(agent.codexQueue.count)"))
+                Spacer(minLength: 0)
+                Button("Manage in Codex") { CodingSessions.shared.open(agent) }
+                    .buttonStyle(LinkButton())
+                    .help("Steer, edit, reorder or remove queued messages in Codex")
+            }
+            .font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.65))
+            if let error = agent.codexQueueError {
+                Text(error).font(.system(size: 10.5)).foregroundStyle(.orange)
+            }
+            if !agent.codexQueue.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(agent.codexQueue) { message in
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "arrow.turn.down.right").foregroundStyle(.white.opacity(0.4))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    if !message.text.isEmpty {
+                                        Text(message.text).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                                            .help(message.text)
+                                    }
+                                    if !message.attachments.isEmpty {
+                                        Label(message.attachments.joined(separator: ", "), systemImage: "paperclip")
+                                            .foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+                                    }
+                                }
+                            }
+                            .font(.system(size: 11)).foregroundStyle(.white.opacity(0.85))
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(8)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
 /// One agent's conversation: recent messages in full, and a reply box.
 struct ChatView: View {
     let agent: Agent
@@ -2119,6 +2301,14 @@ struct ChatView: View {
         }
         return id
     }
+
+    private var queueHeight: CGFloat {
+        guard agent.source == .codex else { return 0 }
+        if !agent.codexQueue.isEmpty { return min(148, 36 + CGFloat(agent.codexQueue.count) * 36) }
+        return agent.codexQueueError == nil ? 0 : 52
+    }
+
+    private var historyHeight: CGFloat { max(100, (agent.codexQuestion == nil ? 380 : 160) - queueHeight) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -2163,8 +2353,8 @@ struct ChatView: View {
                 }
                 // A fixed height keeps the island the same size every time it opens, so the
                 // opening animation has one target instead of jumping as the history loads.
-                .frame(height: sideWindow == nil ? 380 : nil)
-                .frame(maxHeight: sideWindow == nil ? 380 : .infinity)
+                .frame(height: sideWindow == nil ? historyHeight : nil)
+                .frame(maxHeight: sideWindow == nil ? historyHeight : .infinity)
                 .onChange(of: messages.last?.id) { before, _ in
                     // A new message glides into view. A whole history arriving at once (opening
                     // a chat, or after a relaunch) jumps straight to the end instead of racing past.
@@ -2210,6 +2400,9 @@ struct ChatView: View {
                 }
                 .padding(.horizontal, 6)
             }
+            if queueHeight > 0 {
+                CodexQueueCard(agent: agent).frame(height: queueHeight)
+            }
             if !agent.queued.isEmpty {
                 Text("Sent. It will read this at its next step.").font(.system(size: 10.5))
                     .foregroundStyle(.white.opacity(0.4)).padding(.horizontal, 6)
@@ -2218,6 +2411,10 @@ struct ChatView: View {
                 if case .followUp = pending.kind {
                     // Just finished: it is simply a chat, so only the reply box.
                     ReplyField(agent: agent, autofocus: ui.focusReply)
+                } else if agent.codexQuestion != nil {
+                    ScrollView {
+                        PendingCard(agent: agent)
+                    }.frame(height: 250, alignment: .top)
                 } else {
                     PendingCard(agent: agent)
                 }
@@ -2226,6 +2423,13 @@ struct ChatView: View {
             }
         }
         .padding(.top, 2)
+        .task(id: agent.id) {
+            guard agent.source == .codex else { return }
+            while !Task.isCancelled {
+                CodexQueue.shared.refresh(agent)
+                do { try await Task.sleep(for: .seconds(3)) } catch { break }
+            }
+        }
         // A picture clicked in this chat, enlarged over it.
         .overlay { Lightbox(side: sideWindow != nil) }
         // Reload when the agent says something new or changes state.
@@ -2275,9 +2479,6 @@ struct ChatView: View {
         HStack(spacing: 7) {
             FaceView(agent: agent, size: 18)
             Text(agent.name).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-            if agent.source != .grok {
-                Text(agent.source.label).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
-            }
             Spacer(minLength: 4)
             if agent.source != .grok, let used = agent.contextUsed { ContextMeter(used: used, model: agent.contextModel) }
             StatusChip(agent: agent)
@@ -2418,7 +2619,7 @@ struct ChatView: View {
                     Color.white.opacity(0.06).frame(width: 170, height: 110)
                 }
             }
-            .frame(maxWidth: 230, maxHeight: 170)
+            .frame(width: 300)
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay(alignment: .topTrailing) { if hovered { SaveButton { saveToDownloads(path: path) } } }
             .onHover { hovered = $0 }
@@ -2602,6 +2803,7 @@ private struct ReplyField: View {
         if let problem = Dictation.shared.problem { return problem }
         if Dictation.shared.activeAgentID == agent.id { return "Listening…" }
         if agent.source == .grok { return "Message \(agent.name)" }
+        if agent.source == .codex { return "Message Codex" }
         if agent.source != .grok, agent.status == .working, agent.pending == nil { return "Message now, it reads it at its next step" }
         if agent.pending != nil { return "Tell it what to do next" }
         return agent.waiter != nil ? "Reply to this session" : "Reply in the background"
@@ -2617,6 +2819,9 @@ private struct ReplyField: View {
         let offers = agent.source != .grok && typed.hasPrefix("/") && !typed.contains(" ")
             ? Array(SkillIndex.shared.matching(typed).prefix(6)) : []
         VStack(alignment: .leading, spacing: 6) {
+            if let problem = ui.attachmentSaveError {
+                Text(problem).font(.system(size: 11)).foregroundStyle(Palette.red)
+            }
             if !offers.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(offers) { skill in
@@ -2756,16 +2961,18 @@ private struct ReplyField: View {
         panel.allowsMultipleSelection = true
         panel.prompt = "Attach"
         panel.level = .popUpMenu
-        // The notch stays open behind the chooser, on this chat.
-        ui.heldOpen = true
+        // The notch stays open behind the chooser, on this chat. From a floating window, the
+        // notch is left alone and the window gets the keyboard back.
+        let side = sideWindow
+        if side == nil { ui.heldOpen = true }
         NSApp.activate(ignoringOtherApps: true)
         let ui = ui, id = agent.id
         panel.begin { response in
-            ui.heldOpen = false
+            if side == nil { ui.heldOpen = false }
             if response == .OK {
                 ui.attachments[id, default: []].append(contentsOf: panel.urls.compactMap { Attachment.from(file: $0) })
             }
-            ui.show(id)
+            if let side { side.makeKey() } else { ui.show(id) }
         }
     }
 
@@ -3887,6 +4094,7 @@ private struct EmailCard: View {
 private struct PendingCard: View {
     let agent: Agent
     @State private var picks: [UUID: Set<String>] = [:]
+    @State private var written: [UUID: String] = [:]
 
     var body: some View {
         let tint = agent.color
@@ -3956,13 +4164,24 @@ private struct PendingCard: View {
                         Button(option) { pick(option, for: q, in: questions) }
                             .buttonStyle(ChipButton(fill: on ? agent.color : nil, wide: true))
                     }
+                    if agent.source == .codex {
+                        TextField(q.options.isEmpty ? "Your answer" : "Or type an answer", text: Binding(
+                            get: { written[q.id] ?? "" }, set: { written[q.id] = $0 }
+                        ))
+                        .textFieldStyle(.plain).font(.system(size: 11.5)).foregroundStyle(.white)
+                        .padding(7).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+                        .onSubmit { if ready(questions) { submit(questions) } }
+                    }
                 }
             }
+            if let error = agent.codexQuestionError {
+                Text(error).font(.system(size: 11)).foregroundStyle(Palette.red).fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
-                if questions.count > 1 || questions.contains(where: \.multiSelect) {
+                if agent.source == .codex || questions.count > 1 || questions.contains(where: \.multiSelect) {
                     Button("Send") { submit(questions) }
                         .buttonStyle(ChipButton(fill: Palette.green))
-                        .disabled(!questions.allSatisfy { !(picks[$0.id] ?? []).isEmpty })
+                        .disabled(!ready(questions) || agent.sending)
                 }
                 Spacer()
                 Button("In the app") { CodingSessions.shared.dismiss(agent) }.buttonStyle(LinkButton())
@@ -3971,6 +4190,8 @@ private struct PendingCard: View {
     }
 
     private func pick(_ option: String, for q: Question, in questions: [Question]) {
+        guard !agent.sending else { return }
+        written[q.id] = nil
         if q.multiSelect {
             var set = picks[q.id] ?? []
             if set.contains(option) { set.remove(option) } else { set.insert(option) }
@@ -3981,11 +4202,16 @@ private struct PendingCard: View {
         }
     }
 
+    private func ready(_ questions: [Question]) -> Bool {
+        questions.allSatisfy { !(written[$0.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(picks[$0.id] ?? []).isEmpty }
+    }
+
     private func submit(_ questions: [Question]) {
+        guard ready(questions), !agent.sending else { return }
         var answers: [String: String] = [:]
         for q in questions {
-            // Keep the order the options were offered in.
-            answers[q.text] = q.options.filter { picks[q.id]?.contains($0) ?? false }.joined(separator: ", ")
+            let text = (written[q.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            answers[q.text] = text.isEmpty ? q.options.filter { picks[q.id]?.contains($0) ?? false }.joined(separator: ", ") : text
         }
         CodingSessions.shared.answer(agent, answers: answers)
     }
@@ -4613,48 +4839,44 @@ enum References {
 
 // MARK: Slack
 
+private extension SlackTarget {
+    var railID: String { "\(workspace):\(id)" }
+}
+
 private struct SlackRailRow: View {
     let target: SlackTarget
     let selected: Bool
     @Environment(NotchUI.self) private var ui
     @State private var hovered = false
+    private var whatsapp: Bool { target.workspace == WhatsAppSource.workspace }
 
     var body: some View {
-        HStack(spacing: 6) {
-            SlackAvatar(url: livePicture(target), channel: target.channel, size: 16, whatsapp: target.workspace == WhatsAppSource.workspace).frame(width: 20, height: 20)
-            let waiting = ui.slackUnread["\(target.workspace):\(target.id)"] ?? 0
-VStack(alignment: .leading, spacing: 1) {
-                Text(liveName(target)).font(.system(size: 11.5, weight: selected || waiting > 0 ? .semibold : .regular))
-                    .foregroundStyle(.white.opacity(selected || waiting > 0 ? 0.95 : 0.7)).lineLimit(1)
-                // WhatsApp: a short look at the last message, with ticks when it was the user's.
-                if let chat = WhatsAppSource.shared.chats.first(where: { $0.id == target.id && target.workspace == WhatsAppSource.workspace }),
-                   !chat.last.isEmpty {
-                    HStack(spacing: 3) {
-                        if chat.lastMine { Ticks(level: chat.lastTicks, size: 7.5) }
-                        Text(oneLine(chat.last, max: 60)).font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
-                    }
-                }
-            }
-            Spacer(minLength: 0)
-            if waiting > 0 && !hovered {
-                Text("\(waiting)").font(.system(size: 9.5, weight: .bold)).foregroundStyle(.black)
+        let waiting = max(ui.slackUnread["\(target.workspace):\(target.id)"] ?? 0,
+                          whatsapp ? (WhatsAppSource.shared.chats.first { $0.id == target.id }?.unread ?? 0) : 0)
+        HStack(spacing: SidebarStyle.spacing) {
+            SlackAvatar(url: livePicture(target), channel: target.channel, size: SidebarStyle.avatar,
+                        whatsapp: whatsapp, sidebar: true)
+            Text(liveName(target))
+                .font(.system(size: SidebarStyle.nameSize, weight: waiting > 0 || selected ? .semibold : .regular))
+                .foregroundStyle(.white.opacity(waiting > 0 || selected ? 0.95 : 0.6))
+                .lineLimit(1).truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if waiting > 0 {
+                Text(waiting > 99 ? "99+" : "\(waiting)").font(.system(size: 9.5, weight: .bold))
+                    .foregroundStyle(whatsapp ? .white : .black)
                     .padding(.horizontal, 5).frame(minWidth: 16, minHeight: 16)
-                    .background(.white, in: Capsule())
+                    .background(whatsapp ? Color(red: 0.10, green: 0.67, blue: 0.36) : .white, in: Capsule())
             }
-            if hovered {
-                Button { withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { ui.dropSlack(target) } } label: {
-                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.6)).frame(width: 16, height: 16)
-                        .background(.white.opacity(0.12), in: Circle())
-                }
-                .buttonStyle(Press()).help("Remove from the sidebar")
-            }
+            SidebarActions(chat: .conversation(target))
         }
-        .padding(.horizontal, 5).padding(.vertical, 4)
-        .background(.white.opacity(selected ? 0.14 : hovered ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frame(height: SidebarStyle.rowHeight)
+        .padding(.horizontal, SidebarStyle.inset)
+        .background(.white.opacity(selected ? 0.14 : hovered ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onTapGesture { ui.openSlack(target) }
         .onHover { hovered = $0 }
+        .contextMenu { SidebarActionButtons(chat: .conversation(target)) }
+        .modifier(SidebarSwipeRow(chat: .conversation(target)))
     }
 }
 
@@ -4666,6 +4888,8 @@ private struct SlackAvatar: View {
     let size: CGFloat
     /// A WhatsApp chat: WhatsApp's logo in the corner instead of Slack's.
     var whatsapp = false
+    var plainWhatsApp = false
+    var sidebar = false
     @State private var image: NSImage?
 
     private static let cache = NSCache<NSURL, NSImage>()
@@ -4693,14 +4917,17 @@ private struct SlackAvatar: View {
     var body: some View {
         Group {
             if channel {
-                Image(nsImage: logo).resizable().frame(width: size, height: size)
+                Image(nsImage: logo).resizable()
+                    .frame(width: sidebar ? size * 0.72 : size, height: sidebar ? size * 0.72 : size)
+                    .frame(width: size, height: size)
+                    .background(.white.opacity(sidebar ? 0.10 : 0), in: Circle())
             } else {
                 picture.frame(width: size, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: plainWhatsApp || sidebar ? size / 2 : size * 0.28, style: .continuous))
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            Group {
+            if !plainWhatsApp && !sidebar { Group {
                 if channel {
                     picture.frame(width: size * 0.46, height: size * 0.46)
                         .clipShape(RoundedRectangle(cornerRadius: size * 0.12, style: .continuous))
@@ -4711,6 +4938,7 @@ private struct SlackAvatar: View {
             }
             .background(Color.black, in: RoundedRectangle(cornerRadius: size * 0.14, style: .continuous))
             .offset(x: size * 0.16, y: size * 0.16)
+            }
         }
         .task(id: url) {
             guard let url else { return }
@@ -4727,6 +4955,7 @@ private struct SlackAvatar: View {
 private struct SlackComposer: View {
     let target: SlackTarget
     @Environment(NotchUI.self) private var ui
+    @State private var voice = VoiceRecording()
     @State private var sent = 0
     @State private var text = ""
     @State private var files: [URL] = []
@@ -4765,7 +4994,16 @@ private struct SlackComposer: View {
                             if lines.isEmpty {
                                 Text("No messages yet.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
                             }
+                            let newDays = Self.dayStarts(lines)
                             ForEach(lines, id: \.viewKey) { line in
+                                if newDays.contains(line.viewKey), let time = line.time {
+                                    // Each day starts with its date, as in WhatsApp.
+                                    Text(Self.dayLabel(time)).font(.system(size: 10.5, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.55))
+                                        .padding(.horizontal, 9).padding(.vertical, 3)
+                                        .background(Color(white: 0.14), in: Capsule())
+                                        .frame(maxWidth: .infinity).padding(.vertical, 2)
+                                }
                                 HStack(alignment: .top, spacing: 8) {
                                     if line.mine { Spacer(minLength: 50) }
                                     if !line.mine && !(target.workspace == WhatsAppSource.workspace && !target.id.hasSuffix("@g.us")) { SlackAvatar(url: line.picture, channel: false, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace) }
@@ -4787,6 +5025,24 @@ private struct SlackComposer: View {
                                     }
                                     if !line.mine { Spacer(minLength: 40) }
                                 }
+                                .offset(x: target.workspace == WhatsAppSource.workspace && ui.swipe?.id == line.viewKey ? ui.swipe!.x : 0)
+                                .background(alignment: line.mine ? .trailing : .leading) {
+                                    // Pulled far enough, the reply arrow shows.
+                                    if ui.swipe?.id == line.viewKey, abs(ui.swipe!.x) > 28 {
+                                        Image(systemName: "arrowshape.turn.up.left.fill").font(.system(size: 12))
+                                            .foregroundStyle(.white.opacity(0.6)).padding(.horizontal, 6)
+                                    }
+                                }
+                                .onHover { over in
+                                    guard target.workspace == WhatsAppSource.workspace, !line.id.hasPrefix("local-") else { return }
+                                    if over { ui.hoveredLine = (replyKey, line); ui.hoveredMessage = nil }
+                                    else if ui.hoveredLine?.line.id == line.id { ui.hoveredLine = nil }
+                                }
+                                .contextMenu {
+                                    if target.workspace == WhatsAppSource.workspace, !line.id.hasPrefix("local-") {
+                                        Button("Reply") { ui.lineReply[replyKey] = line }
+                                    }
+                                }
                                 .id(line.id)
                                 .transition(line.mine ? .sent : .opacity)
                             }
@@ -4801,11 +5057,28 @@ private struct SlackComposer: View {
                 }
                 .onAppear { if let id = lines?.last?.id { proxy.scrollTo(id, anchor: .bottom) } }
             }
+            if let problem = voice.problem {
+                Text(problem).font(.system(size: 11)).foregroundStyle(Palette.red)
+            }
+            if voice.recording {
+                HStack {
+                    Label("Recording voice message…", systemImage: "record.circle").foregroundStyle(Palette.red)
+                    Spacer()
+                    Button("Cancel") { voice.cancel() }.buttonStyle(.plain)
+                }.font(.system(size: 11))
+            }
             if state == "failed" {
                 Text("Did not send. Check Slack is set up to send for this workspace.")
                     .font(.system(size: 11)).foregroundStyle(Palette.red)
             }
             VStack(alignment: .leading, spacing: 6) {
+                if let replying = ui.lineReply[replyKey] {
+                    WhatsAppQuote(quote: SlackQuote(id: replying.id, sender: replying.mine ? "You" : replying.sender,
+                                                    text: replying.text.isEmpty ? (replying.files.first?.name ?? "") : replying.text),
+                                  closable: { ui.lineReply[replyKey] = nil })
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
                 if !files.isEmpty {
                     HStack(spacing: 6) {
                         ForEach(files, id: \.self) { file in
@@ -4838,11 +5111,22 @@ private struct SlackComposer: View {
                         Image(systemName: "paperclip").font(.system(size: 13)).foregroundStyle(.white.opacity(0.45))
                     }
                     .buttonStyle(Press()).help("Attach files")
+                    if target.workspace == WhatsAppSource.workspace {
+                        Button {
+                            if voice.recording { voice.finish { files.append($0) } }
+                            else { voice.start() }
+                        } label: {
+                            Image(systemName: voice.recording ? "stop.circle.fill" : "mic.fill")
+                                .font(.system(size: 14)).foregroundStyle(voice.recording ? Palette.red : .white.opacity(0.6))
+                        }
+                        .buttonStyle(Press()).disabled(voice.preparing || state == "sending")
+                        .help(voice.recording ? "Stop and attach voice message" : "Record a voice message")
+                    }
                     Button(action: send) {
                         Image(systemName: "arrow.up.circle.fill").font(.system(size: 15)).symbolEffect(.bounce, value: sent)
                             .foregroundStyle(text.isEmpty && files.isEmpty ? .white.opacity(0.2) : .white)
                     }
-                    .buttonStyle(Press()).disabled((text.isEmpty && files.isEmpty) || state == "sending")
+                    .buttonStyle(Press()).disabled((text.isEmpty && files.isEmpty) || state == "sending" || voice.recording || voice.preparing)
                 }
             }
             .padding(.horizontal, 11).padding(.vertical, 8)
@@ -4859,6 +5143,10 @@ private struct SlackComposer: View {
         }
         .frame(height: 452, alignment: .top)
         .overlay { Lightbox(side: false) }
+        .animation(.spring(response: 0.3, dampingFraction: 0.86), value: ui.lineReply[replyKey]?.id)
+        // Aiming a reply puts the cursor in the box, ready to type.
+        .onChange(of: ui.lineReply[replyKey]?.id) { _, id in if id != nil { ask += 1 } }
+        .onDisappear { voice.cancel(); ui.hoveredLine = nil }
         .onAppear {
             SlackSource.shared.history(for: target)
             ui.controller?.panel.makeKey()
@@ -4881,19 +5169,47 @@ private struct SlackComposer: View {
         }
     }
 
+    private var replyKey: String { "\(target.workspace):\(target.id)" }
+
+    /// The messages that are the first of their day.
+    static func dayStarts(_ lines: [SlackLine]) -> Set<String> {
+        var seen: Date?
+        var starts = Set<String>()
+        for line in lines {
+            guard let time = line.time else { continue }
+            let day = Calendar.current.startOfDay(for: time)
+            if day != seen { starts.insert(line.viewKey); seen = day }
+        }
+        return starts
+    }
+
+    static func dayLabel(_ time: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(time) { return "Today" }
+        if calendar.isDateInYesterday(time) { return "Yesterday" }
+        let f = DateFormatter()
+        f.dateFormat = calendar.isDate(time, equalTo: Date(), toGranularity: .year) ? "EEE d MMM" : "d MMM yyyy"
+        return f.string(from: time)
+    }
+
     private func send() {
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty || !files.isEmpty, state != "sending" else { return }
+        guard !message.isEmpty || !files.isEmpty, state != "sending", !voice.recording, !voice.preparing else { return }
         state = "sending"
         let sending = files
+        // A reply only goes with words; files go as they are.
+        let replying = files.isEmpty ? ui.lineReply[replyKey] : nil
+        let quote = replying.map { SlackQuote(id: $0.id, sender: $0.mine ? "You" : $0.sender,
+                                              text: $0.text.isEmpty ? ($0.files.first?.name ?? "") : $0.text) }
+        if replying != nil { ui.lineReply[replyKey] = nil }
         // Shown straight away, rising into place; the real copy takes its spot when it is back.
         let store = SlackConversations.shared
         let whatsapp = target.workspace == WhatsAppSource.workspace
         let channel = target.channel || whatsapp ? target.id : store.dmChannel["\(target.workspace):\(target.id)"]
-        if !message.isEmpty, let channel { store.showSent(store.key(target.workspace, channel), text: message, whatsapp: whatsapp) }
+        if !message.isEmpty, let channel { store.showSent(store.key(target.workspace, channel), text: message, whatsapp: whatsapp, quote: quote) }
         text = ""
         sent += 1
-        SlackSource.shared.send(to: target, text: message, files: sending) { ok in
+        SlackSource.shared.send(to: target, text: message, files: sending, replyTo: replying?.id) { ok in
             state = ok ? nil : "failed"
             if ok {
                 files = []
@@ -4901,6 +5217,7 @@ private struct SlackComposer: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + (whatsapp ? 0.1 : 0.8)) { SlackSource.shared.history(for: target) }
             } else {
                 text = message
+                if let replying { ui.lineReply[replyKey] = replying }
             }
         }
     }
@@ -5057,6 +5374,17 @@ private struct WhatsAppBubble: View {
     /// A photo or file sits inside the bubble, as in WhatsApp: the caption under it, and with
     /// no caption the time over the picture's corner.
     @ViewBuilder private var content: some View {
+        if let quote = line.quote {
+            VStack(alignment: .leading, spacing: 0) {
+                WhatsAppQuote(quote: quote).padding([.horizontal, .top], 3)
+                media
+            }
+        } else {
+            media
+        }
+    }
+
+    @ViewBuilder private var media: some View {
         if line.files.isEmpty {
             words
         } else {
@@ -5076,9 +5404,8 @@ private struct WhatsAppBubble: View {
                     HStack { Spacer(minLength: 0); stamp }.padding(.horizontal, 6).padding(.bottom, 3)
                 }
             }
-            // As wide as the picture, with the caption wrapping under it.
-            .frame(maxWidth: 260, alignment: .leading)
-            .fixedSize(horizontal: true, vertical: false)
+            // As wide as the picture or file, with the caption wrapping under it in full.
+            .frame(width: 260, alignment: .leading)
             .padding(3)
         }
     }
@@ -5129,6 +5456,38 @@ private struct WhatsAppBubble: View {
             if line.mine, let ticks = line.ticks { Ticks(level: ticks) }
         }
     }
+}
+
+/// The message a WhatsApp reply quotes, as a tinted block with a coloured edge, as in WhatsApp.
+struct WhatsAppQuote: View {
+    let quote: SlackQuote
+    var closable: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Rectangle().fill(Self.accent).frame(width: 3)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(quote.sender.isEmpty ? "Message" : quote.sender)
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(Self.accent).lineLimit(1)
+                Text(oneLine(quote.text, max: 200)).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.65))
+                    .lineLimit(2).truncationMode(.tail)
+            }
+            .padding(.horizontal, 7).padding(.vertical, 5)
+            Spacer(minLength: 0)
+            if let closable {
+                Button(action: closable) {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.white.opacity(0.6))
+                        .frame(width: 20, height: 20).contentShape(Rectangle())
+                }
+                .buttonStyle(Press()).padding(.trailing, 4).help("Cancel the reply")
+            }
+        }
+        .background(.black.opacity(0.22))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .frame(maxWidth: 260, alignment: .leading)
+    }
+
+    static let accent = Color(red: 0.33, green: 0.85, blue: 0.62)
 }
 
 /// A row of quick reactions for a WhatsApp message; the one already chosen is ringed, and
@@ -5204,9 +5563,11 @@ private struct SlackFileView: View {
 
     var body: some View {
         Group {
-            if file.image, let image {
+            if file.kind == "audio" {
+                VoiceMessageView(file: file)
+            } else if file.image, let image {
                 Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 260, maxHeight: bare ? 300 : 220, alignment: .leading)
+                    .frame(width: bare ? 260 : 300, alignment: .leading)
                     .clipShape(RoundedRectangle(cornerRadius: bare ? 6 : 10, style: .continuous))
                     .overlay(alignment: .topTrailing) {
                         if hovered { SaveButton { save() } }
@@ -5235,15 +5596,18 @@ private struct SlackFileView: View {
                     .frame(width: 24)
                 }
                 .padding(.leading, 9).padding(.trailing, 10).padding(.vertical, 9)
-                .frame(width: 270, alignment: .leading)
-                .background(Color(white: hovered ? 0.2 : 0.16), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.08), lineWidth: 1))
+                .frame(width: bare ? 260 : 270, alignment: .leading)
+                // Inside a message bubble: a darker strip, as WhatsApp draws a file in a bubble.
+                .background(bare ? Color.black.opacity(hovered ? 0.28 : 0.2) : Color(white: hovered ? 0.2 : 0.16),
+                            in: RoundedRectangle(cornerRadius: bare ? 6 : 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(bare ? 0 : 0.08), lineWidth: 1))
                 .animation(.easeOut(duration: 0.12), value: hovered)
             }
         }
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
         .onTapGesture {
+            guard file.kind != "audio" else { return }
             guard file.image, let image else { return open() }
             // The preview first, swapped for the full picture once it has downloaded.
             ui.enlarge(image, name: file.name, side: false)
@@ -5303,6 +5667,48 @@ private struct SlackFileView: View {
     }
 }
 
+private func notificationMediaSymbol(_ kind: String) -> String? {
+    switch kind.lowercased() {
+    case "image", "sticker": return "camera.fill"
+    case "video": return "video.fill"
+    case "audio": return "mic.fill"
+    case "document": return "doc.fill"
+    case "reaction": return "face.smiling"
+    default: return nil
+    }
+}
+
+/// Notification content retains the caption and makes attachments visible before opening a chat.
+private struct NotificationMessagePreview: View {
+    let alert: SlackAlert
+    var compact = false
+    var expanded = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            VStack(alignment: .leading, spacing: 4) {
+                if let file = alert.files.first {
+                    Label(file.image ? "Photo" : file.kind.capitalized,
+                          systemImage: file.image ? "photo" : (notificationMediaSymbol(file.kind) ?? "paperclip"))
+                        .font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.65))
+                }
+                if !alert.text.isEmpty && !(alert.files.first?.image == true && alert.text == "Photo") {
+                    Text(alert.workspace == WhatsAppSource.workspace ? WhatsAppText.styled(alert.text) : AttributedString(alert.text))
+                        .font(.system(size: compact ? 11.5 : 12)).foregroundStyle(.white.opacity(0.85))
+                        .lineLimit(expanded ? 40 : compact ? 3 : 6)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if let data = alert.files.first?.preview, let image = NSImage(data: data) {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
+                    .frame(width: compact ? 56 : 92, height: compact ? 56 : 76)
+                    .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+    }
+}
+
 /// A message from another chat while one is open: who and what, sliding down over the top of
 /// the island. Click to go to it; it slips away by itself after a few seconds.
 private struct ToastBanner: View {
@@ -5321,7 +5727,11 @@ private struct ToastBanner: View {
                 case .slack(let alert):
                     SlackAvatar(url: alert.workspace == WhatsAppSource.workspace ? livePicture(alert.target) : alert.picture,
                                 channel: false, size: 26, whatsapp: alert.workspace == WhatsAppSource.workspace)
-                    lines(alert.direct ? alert.sender : "\(alert.sender) in \(alert.place)", alert.text)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(alert.direct ? alert.sender : "\(alert.sender) in \(alert.place)")
+                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                        NotificationMessagePreview(alert: alert, compact: true)
+                    }
                 }
                 Spacer(minLength: 4)
                 Button {
@@ -5384,6 +5794,13 @@ private struct SlackBanner: View {
     @FocusState private var focused: Bool
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            card
+            waitingList
+        }
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top, spacing: 10) {
                 SlackAvatar(url: alert.workspace == WhatsAppSource.workspace ? livePicture(alert.target) : alert.picture,
@@ -5396,8 +5813,7 @@ private struct SlackBanner: View {
                         Spacer(minLength: 0)
                         Button {
                             if alert.workspace == WhatsAppSource.workspace {
-                                ui.openSlack(alert.target)
-                                ui.expand()
+                                ui.openConversation(alert.target)
                             } else {
                                 if let link = alert.link { NSWorkspace.shared.open(link) }
                                 ui.collapse()
@@ -5407,15 +5823,15 @@ private struct SlackBanner: View {
                         }
                         .buttonStyle(Press()).help(alert.workspace == WhatsAppSource.workspace ? "Open the chat" : "Open in Slack")
                     }
-                    // Hovering shows the whole message, without opening the chat or marking it read.
-                    Text(alert.workspace == WhatsAppSource.workspace ? WhatsAppText.styled(alert.text) : AttributedString(alert.text))
-                        .font(.system(size: 12)).foregroundStyle(.white.opacity(0.8))
-                        .lineLimit(hovered ? 40 : 4).fixedSize(horizontal: false, vertical: true)
+                    NotificationMessagePreview(alert: alert, expanded: hovered)
                     if alert.workspace == WhatsAppSource.workspace && hovered {
                         WhatsAppReactions(chat: alert.channel, id: alert.ts, mine: nil).padding(.top, 2)
                     }
                 }
             }
+            // A click anywhere but the reply box opens the chat, in Perch.
+            .contentShape(Rectangle())
+            .onTapGesture { ui.openConversation(alert.target) }
             // Reply straight from here; it posts as you, in the same conversation or thread.
             if state == "sent" {
                 Label("Sent", systemImage: "checkmark").font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.green)
@@ -5445,6 +5861,35 @@ private struct SlackBanner: View {
         .animation(.easeOut(duration: 0.15), value: state)
     }
 
+    /// Whatever came in meanwhile, so nothing is missed while replying. Click one to see it.
+    @ViewBuilder private var waitingList: some View {
+        if !ui.slackQueue.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(ui.slackQueue.prefix(3)) { waiting in
+                    HStack(spacing: 7) {
+                        SlackAvatar(url: waiting.workspace == WhatsAppSource.workspace ? livePicture(waiting.target) : waiting.picture,
+                                    channel: false, size: 18, whatsapp: waiting.workspace == WhatsAppSource.workspace, sidebar: true)
+                        Text(waiting.sender).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
+                            .lineLimit(1).fixedSize()
+                        Text(oneLine(waiting.text, max: 120)).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5))
+                            .lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentShape(Rectangle())
+                    .onTapGesture { ui.showQueued(waiting) }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                if ui.slackQueue.count > 3 {
+                    Text("\(ui.slackQueue.count - 3) more").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+                        .padding(.leading, 8)
+                }
+            }
+            .padding(.top, 5)
+        }
+    }
+
     private func send() {
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, state != "sending" else { return }
@@ -5455,7 +5900,8 @@ private struct SlackBanner: View {
                 reply = ""
                 // Answered, so it no longer waits in the sidebar.
                 ui.slackUnread["\(alert.target.workspace):\(alert.target.id)"] = nil
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { ui.collapse() }
+                // On to the next one waiting, if any; otherwise the island tucks away.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { ui.nextBanner() }
             }
         }
     }
@@ -5940,6 +6386,37 @@ private func freeDownloadsURL(_ name: String) -> URL {
         }
     }
     .frame(width: 420).padding(14).background(.black)
+    let renderer = ImageRenderer(content: view)
+    renderer.scale = 2
+    if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+}
+
+@MainActor func renderNotificationMediaPreview(to path: String) {
+    let art = ImageRenderer(content: ZStack {
+        LinearGradient(colors: [.indigo, .cyan], startPoint: .top, endPoint: .bottom)
+        Image(systemName: "mountain.2.fill").font(.system(size: 42)).foregroundStyle(.white.opacity(0.8))
+    }.frame(width: 128, height: 96))
+    let thumbnail = art.nsImage?.tiffRepresentation
+    var photo = SlackAlert(id: "photo-fixture", workspace: "whatsapp", priority: 1, team: "", channel: "fixture",
+                           place: "WhatsApp", sender: "Grandad Derek", text: "It is a new one to us. Here’s the photo — we thought you’d like to see the rest of it too.", ts: "fixture")
+    photo.files = [SlackFile(id: "fixture", workspace: "whatsapp", name: "Photo", image: true,
+                            thumb: nil, url: nil, link: nil, kind: "image", preview: thumbnail)]
+    let reaction = SlackAlert(id: "reaction-fixture", workspace: "whatsapp", priority: 1, team: "", channel: "fixture",
+                              place: "WhatsApp", sender: "Ollie Buckie", text: "You reacted 👍 to “yh i’ll do that all good”", ts: "fixture")
+    let view = VStack(alignment: .leading, spacing: 14) {
+        ForEach([photo, reaction]) { alert in
+            VStack(alignment: .leading, spacing: 6) {
+                Text(alert.sender).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                NotificationMessagePreview(alert: alert)
+            }.padding(12).background(Color(white: 0.14), in: RoundedRectangle(cornerRadius: 12))
+        }
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Compact banner").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+            NotificationMessagePreview(alert: photo, compact: true)
+        }.padding(12).background(Color(white: 0.14), in: RoundedRectangle(cornerRadius: 12))
+    }.padding(16).frame(width: 460).background(.black)
     let renderer = ImageRenderer(content: view)
     renderer.scale = 2
     if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
