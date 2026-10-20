@@ -167,8 +167,15 @@ final class CodingSessions {
             // After a tool call the waiter doubles as the progress report.
             if event == "PostToolUse" { info(event: event, agent: agent, json: j, tool: tool, input: input, headless: headless) }
             agent.waiter?.respond()
-            // Replies typed mid-turn wait for the turn to end and then go in as real prompts
-            // (see Stop below); they are not slipped in through this hook.
+            // A chat the Claude app owns takes waiting replies through this hook, its only way in.
+            // Others wait for the turn to end and get them as real prompts.
+            if ownedByApp(agent), event == "Stop" || event == "SessionStart", !agent.queued.isEmpty {
+                let text = agent.queued.joined(separator: Threads.queueSeparator)
+                agent.queued = []
+                store.save()
+                relay(text, to: agent, through: req)
+                return
+            }
             agent.waiter = req
             req.onCancel = { [weak agent, weak req] in
                 if agent?.waiter === req { agent?.waiter = nil }
@@ -467,6 +474,18 @@ final class CodingSessions {
             agent.detail = oneLine(text)
             return
         }
+        // A chat the Claude app has open runs in the app's own process. A second copy started here
+        // would work alongside it unseen, so its reply goes through the app's session instead.
+        if ownedByApp(agent) {
+            if let waiter = agent.waiter {
+                relay(text, to: agent, through: waiter)
+            } else {
+                agent.queued.append(text)
+                store.save()
+                agent.detail = "Waiting for the Claude app's session to take it"
+            }
+            return
+        }
         // Idle: the reply goes in as a real prompt, so the session treats it as the user's own
         // words rather than a message relayed by a hook. A hook Perch is holding for this chat is
         // let go first, quietly, so the session is not woken twice.
@@ -479,6 +498,27 @@ final class CodingSessions {
         let earlier = agent.queued
         agent.queued = []
         resume(agent, text: (earlier + [text]).joined(separator: Threads.queueSeparator))
+    }
+
+    /// The chat lives in the Claude app (it was opened there, or handed over to it).
+    func ownedByApp(_ agent: Agent) -> Bool {
+        agent.source == .claude && (agent.adopted || agent.hostBundleID == Self.claudeBundleID) && agent.runner == nil
+    }
+
+    /// Hands a reply to the app's own session through its waiting hook. The session sees it as
+    /// relayed, not typed, so it may ask before spending money or messaging people.
+    private func relay(_ text: String, to agent: Agent, through waiter: HookRequest) {
+        var text = text
+        if let cmd = SkillIndex.shared.command(in: text) {
+            text += "\(Self.skillNote), where slash commands cannot run directly. Invoke the Skill tool with skill \"\(cmd.name)\""
+                + (cmd.arguments.isEmpty ? "" : " and args \"\(cmd.arguments)\"") + ", exactly as if this slash command had been typed.)"
+        }
+        waiter.respond(Data("The user replied from Perch, their notch app. Treat this as their next message:\n\n\(text)".utf8))
+        if agent.waiter === waiter { agent.waiter = nil }
+        clearPending(agent)
+        agent.status = .working
+        agent.detail = oneLine(text)
+        agent.lastActivity = Date()
     }
 
     /// Whether a turn Perch is running could be stopped to send the waiting replies now.
@@ -828,7 +868,7 @@ final class CodingSessions {
 
     /// The rollout watcher can finish a Codex turn even when no stop hook is installed.
     func flushQueued(_ agent: Agent) {
-        guard !agent.sending, agent.pending == nil, !agent.queued.isEmpty else { return }
+        guard !agent.sending, agent.pending == nil, !agent.queued.isEmpty, !ownedByApp(agent) else { return }
         let next = agent.queued.joined(separator: Threads.queueSeparator)
         agent.queued = []
         store.save()
