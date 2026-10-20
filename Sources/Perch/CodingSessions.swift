@@ -449,6 +449,16 @@ final class CodingSessions {
             queueCodex(agent, text: text, messageID: messageID)
             return
         }
+        // A turn Perch is running itself: stop it and go straight on with this message, as a real
+        // prompt, the way typing mid-turn in the Claude app interrupts.
+        if agent.source == .claude, agent.sending, let runner = agent.runner, runner.isRunning {
+            agent.queued.append(text)
+            store.save()
+            agent.interrupting = true
+            agent.detail = "Interrupting…"
+            runner.interrupt()
+            return
+        }
         if (agent.status == .working && agent.pending == nil) || agent.sending {
             // Mid-turn with no way in right now: hold it for the next opening, a moment away.
             agent.queued.append(text)
@@ -699,10 +709,23 @@ final class CodingSessions {
         agent.status = .working
         agent.detail = oneLine(text)
         agent.lastActivity = Date()
-        Shell.run(exe, args, cwd: agent.cwd, env: ["PERCH_HEADLESS": "1"], captureErrors: true) { [weak self, weak agent] code, output in
+        agent.runner = Shell.run(exe, args, cwd: agent.cwd, env: ["PERCH_HEADLESS": "1"], captureErrors: true) { [weak self, weak agent] code, output in
             guard let self, let agent else { return }
             agent.sending = false
+            agent.runner = nil
             agent.lastActivity = Date()
+            if agent.interrupting {
+                // Stopped to make way for what the user just sent: that goes in now.
+                agent.interrupting = false
+                Threads.load(agent)
+                if !agent.queued.isEmpty {
+                    let next = agent.queued.joined(separator: Threads.queueSeparator)
+                    agent.queued = []
+                    self.store.save()
+                    self.resume(agent, text: next)
+                }
+                return
+            }
             let reply = output.trimmingCharacters(in: .whitespacesAndNewlines)
             if code != 0 {
                 agent.status = .done

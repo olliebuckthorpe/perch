@@ -95,6 +95,10 @@ final class Agent: Identifiable {
     var waiter: HookRequest?
     /// Replies sent while there was no way in. Delivered at the next opening.
     var queued: [String] = []
+    /// A turn Perch is running in the background, so a new message can interrupt it.
+    @ObservationIgnored var runner: Process?
+    /// That turn was stopped on purpose to make way for a new message, not because it failed.
+    @ObservationIgnored var interrupting = false
     /// Started from the notch and run in the background, not open in any app.
     var background = false
     /// Handed over to the Claude desktop app, so it shows in its sidebar too.
