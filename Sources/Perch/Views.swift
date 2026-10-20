@@ -1317,7 +1317,7 @@ private struct NoticeView: View {
                     Spacer(minLength: 0)
                 }
                 if !summary.isEmpty {
-                    Text(summary).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.75))
+                    Text(bannerText(summary)).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.75))
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
                 if isPermission {
@@ -2792,7 +2792,11 @@ struct ChatView: View {
                 }
             }
             .frame(width: 300)
-            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // Framed like a photo, so a screenshot never reads as part of the chat around it.
+            .padding(4)
+            .background(Color(white: 0.16), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(hovered ? 0.3 : 0.18), lineWidth: 1))
             .overlay(alignment: .topTrailing) { if hovered { SaveButton { saveToDownloads(path: path) } } }
             .onHover { hovered = $0 }
             .onTapGesture {
@@ -2838,7 +2842,10 @@ struct ChatView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
                         Text("Waiting to send").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
-                        if CodingSessions.shared.canSendNow(agent) {
+                        if CodingSessions.shared.canInterrupt(agent) {
+                            Button("Interrupt with it") { CodingSessions.shared.interrupt(agent) }.buttonStyle(LinkButton())
+                                .help("Stop the current turn and send this now")
+                        } else if CodingSessions.shared.canSendNow(agent) {
                             Button("Send now") { CodingSessions.shared.sendNow(agent) }.buttonStyle(LinkButton())
                                 .help("Interrupt the current turn with it. It arrives as a relayed message, so the chat may ask you to confirm spending or sending")
                         }
@@ -3226,25 +3233,8 @@ private struct AgentBubble: View {
             .padding(.leading, 6)
             .opacity(hovered || picking || copied ? 1 : 0)
             .help("Copy this message")
-            if react != nil {
-                Button { withAnimation(Self.pop) { picking.toggle() } } label: {
-                    Image(systemName: picking ? "face.smiling.inverse" : "face.smiling").font(.system(size: 14))
-                        .foregroundStyle(.white.opacity(picking || overFace ? 0.95 : 0.6))
-                        .rotationEffect(.degrees(picking ? -14 : 0))
-                        .scaleEffect(picking ? 1.15 : 1)
-                        .frame(width: 30, height: 28)
-                        .background(.white.opacity(overFace || picking ? 0.12 : 0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(Press(reach: 2))
-                .onHover { overFace = $0 }
-                .padding(.leading, 4)
-                .opacity(hovered || picking ? 1 : 0)
-                // The tray ends at the face and opens back over the message, so it can never
-                // run off the edge of the island however wide the message is.
-                .overlay(alignment: .bottomTrailing) {
-                    if picking { tray.offset(x: 14, y: -30).transition(.scale(scale: 0.4, anchor: .bottomTrailing).combined(with: .opacity)) }
-                }
+            if let react {
+                ReactFace(hovered: hovered, open: $picking, react: react).padding(.leading, 4)
             }
             Spacer(minLength: 28)
         }
@@ -3261,29 +3251,88 @@ private struct AgentBubble: View {
             }
         }
         .zIndex(picking ? 5 : 0)
-        // While the tray is open, a click anywhere that is not an emoji closes it.
-        .onChange(of: picking) { _, open in
+    }
+
+
+}
+
+/// An agent's message shortened for a banner, with its **bold**, _italic_ and `code` shown as
+/// such. A marker cut in half by the shortening is dropped rather than shown as asterisks.
+func bannerText(_ text: String) -> AttributedString {
+    var t = text
+    for marker in ["**", "__", "`"] where t.components(separatedBy: marker).count % 2 == 0 {
+        if let r = t.range(of: marker, options: .backwards) { t.removeSubrange(r) }
+    }
+    return ChatView.markdown(t)
+}
+
+/// The way to react to any message, in every chat: a small face beside it while the pointer is
+/// on the message. Clicking it springs open a few quick reactions and a "+" for all of them.
+struct ReactFace: View {
+    let hovered: Bool
+    @Binding var open: Bool
+    /// The tray opens over the message: leftwards from a face on the right of it, rightwards
+    /// from a face on the left (the user's own messages).
+    var opensRight = false
+    let react: (String) -> Void
+    @State private var over: String?
+    @State private var chosen: String?
+    @State private var overFace = false
+    @State private var more = false
+    @State private var watcher: Any?
+
+    static let quick = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
+    private static let pop = Animation.spring(response: 0.3, dampingFraction: 0.6)
+
+    var body: some View {
+        Button { withAnimation(Self.pop) { open.toggle() } } label: {
+            Image(systemName: open ? "face.smiling.inverse" : "face.smiling").font(.system(size: 13))
+                .foregroundStyle(.white.opacity(open || overFace ? 0.95 : 0.55))
+                .rotationEffect(.degrees(open ? -14 : 0))
+                .scaleEffect(open ? 1.12 : 1)
+                .frame(width: 26, height: 26)
+                .background(.white.opacity(overFace || open ? 0.12 : 0.06), in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(Press(reach: 2))
+        .onHover { overFace = $0 }
+        .opacity(hovered || open ? 1 : 0)
+        .help("React")
+        .overlay(alignment: opensRight ? .bottomLeading : .bottomTrailing) {
+            if open {
+                tray.offset(x: opensRight ? -10 : 10, y: -32)
+                    .transition(.scale(scale: 0.4, anchor: opensRight ? .bottomLeading : .bottomTrailing).combined(with: .opacity))
+            }
+        }
+        // Everything there is, from the "+": a popover, so it is never cut off at the chat's edge.
+        .popover(isPresented: $more, arrowEdge: .top) {
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(30), spacing: 2), count: 8), spacing: 2) {
+                ForEach(EmojiButton.common, id: \.self) { e in
+                    Button { more = false; pick(e) } label: {
+                        Text(e).font(.system(size: 19)).frame(width: 30, height: 30).contentShape(Rectangle())
+                    }
+                    .buttonStyle(Press())
+                }
+            }
+            .padding(8)
+        }
+        // While the tray is open, a click anywhere that is not a reaction closes it.
+        .onChange(of: open) { _, isOpen in
             if let watcher { NSEvent.removeMonitor(watcher) }
             watcher = nil
-            guard open else { return }
+            guard isOpen else { return }
             watcher = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
-                // After the click has been handled: if it picked an emoji, `chosen` is set by now.
                 DispatchQueue.main.async {
-                    if chosen == nil, picking { withAnimation(.easeOut(duration: 0.15)) { picking = false } }
+                    if chosen == nil, open, !more { withAnimation(.easeOut(duration: 0.15)) { open = false } }
                 }
                 return event
             }
         }
-        .onDisappear {
-            if let watcher { NSEvent.removeMonitor(watcher) }
-            watcher = nil
-        }
+        .onDisappear { if let watcher { NSEvent.removeMonitor(watcher) } }
     }
 
-    @State private var watcher: Any?
-
-    /// The reactions, popping in one after another. Each swells under the pointer, and the one
-    /// picked jumps before the tray closes.
+    /// The quick reactions popping in one after another, each swelling under the pointer, and
+    /// the "+" at the end.
     private var tray: some View {
         HStack(spacing: 2) {
             ForEach(Array(Self.quick.enumerated()), id: \.element) { index, emoji in
@@ -3295,6 +3344,12 @@ private struct AgentBubble: View {
                     .onTapGesture { pick(emoji) }
                     .modifier(PopIn(delay: Double(index) * 0.028))
             }
+            Button { more = true } label: {
+                Image(systemName: "plus").font(.system(size: 11, weight: .bold)).foregroundStyle(.white.opacity(0.75))
+                    .frame(width: 24, height: 24).background(.white.opacity(0.1), in: Circle())
+            }
+            .buttonStyle(Press()).help("More reactions")
+            .modifier(PopIn(delay: Double(Self.quick.count) * 0.028))
         }
         .padding(.horizontal, 6).padding(.vertical, 3)
         .background(Color(white: 0.2), in: Capsule())
@@ -3306,12 +3361,27 @@ private struct AgentBubble: View {
     private func pick(_ emoji: String) {
         withAnimation(.spring(response: 0.22, dampingFraction: 0.5)) { chosen = emoji }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
-            react?(emoji)
-            withAnimation(.easeOut(duration: 0.16)) { picking = false }
+            react(emoji)
+            withAnimation(.easeOut(duration: 0.16)) { open = false }
             chosen = nil
             over = nil
         }
     }
+}
+
+/// Slack's names for the emoji Perch offers as reactions.
+enum SlackEmojiName {
+    static let byEmoji: [String: String] = [
+        "😀": "grinning", "😂": "joy", "🙂": "slightly_smiling_face", "😉": "wink", "😍": "heart_eyes",
+        "🥲": "smiling_face_with_tear", "😅": "sweat_smile", "🤔": "thinking_face", "😎": "sunglasses",
+        "🙃": "upside_down_face", "😬": "grimacing", "😴": "sleeping", "👍": "+1", "👎": "-1", "👏": "clap",
+        "🙌": "raised_hands", "🙏": "pray", "💪": "muscle", "👀": "eyes", "🤝": "handshake", "👋": "wave",
+        "✌️": "v", "🤞": "crossed_fingers", "🫡": "saluting_face", "❤️": "heart", "🔥": "fire", "🎉": "tada",
+        "✅": "white_check_mark", "❌": "x", "⚠️": "warning", "💯": "100", "🚀": "rocket", "⭐️": "star",
+        "💡": "bulb", "📌": "pushpin", "⏰": "alarm_clock", "😢": "cry", "😮": "open_mouth", "😡": "rage",
+        "🤯": "exploding_head", "🥳": "partying_face", "🤣": "rolling_on_the_floor_laughing", "😇": "innocent",
+        "🤷": "shrug", "🤦": "face_palm", "💀": "skull", "☕️": "coffee", "🍻": "beers",
+    ]
 }
 
 /// Reactions on a message, the way Grok Bot draws them: each in a dark round badge with a
@@ -5210,7 +5280,15 @@ private struct SlackComposer: View {
                     .buttonStyle(Press())
                 }
                 SlackAvatar(url: livePicture(target), channel: target.channel, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace)
-                Text(liveName(target)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(liveName(target)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                    // As WhatsApp shows it, under the name.
+                    if target.workspace == WhatsAppSource.workspace, let doing = WhatsAppSource.shared.typingLine(target.id) {
+                        Text(doing).font(.system(size: 10.5)).foregroundStyle(Color(red: 0.33, green: 0.85, blue: 0.62))
+                            .lineLimit(1).transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.2), value: WhatsAppSource.shared.typingLine(target.id))
                 if target.workspace != WhatsAppSource.workspace {
                     Text("Slack · \(target.workspace.capitalized)")
                         .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4)).lineLimit(1)
@@ -5494,7 +5572,11 @@ private struct SlackComposer: View {
             files.append(contentsOf: pasted)
             ui.pastedFiles[replyKey] = nil
         }
-        .onDisappear { voice.cancel(); ui.hoveredLine = nil }
+        .onDisappear {
+            voice.cancel(); ui.hoveredLine = nil
+            if target.workspace == WhatsAppSource.workspace { WhatsAppSource.shared.unwatch(target.id) }
+        }
+        .onAppear { if target.workspace == WhatsAppSource.workspace { WhatsAppSource.shared.watch(target.id) } }
         // Slack's live feed can drop quietly; an open conversation checks itself now and then.
         .task(id: target.id) {
             guard target.workspace != WhatsAppSource.workspace else { return }
@@ -5728,6 +5810,7 @@ private struct SlackRow: View {
     /// Adds or takes away the user's reaction, by Slack's emoji name.
     var react: ((String, Bool) -> Void)?
     @State private var hovered = false
+    @State private var reacting = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -5796,9 +5879,14 @@ private struct SlackRow: View {
             Spacer(minLength: 0)
         }
         .overlay(alignment: .topTrailing) {
-            if hovered, !line.id.hasPrefix("local-") {
+            if hovered || reacting, !line.id.hasPrefix("local-") {
               HStack(spacing: 4) {
-                if let react { SlackQuickReactions { name in react(name, !line.slackReactions.contains { $0.name == name && $0.mine }) } }
+                if let react {
+                    ReactFace(hovered: true, open: $reacting) { emoji in
+                        guard let name = SlackEmojiName.byEmoji[emoji] else { return }
+                        react(name, !line.slackReactions.contains { $0.name == name && $0.mine })
+                    }
+                }
                 if let onThread {
                 Button(action: onThread) {
                     Image(systemName: "bubble.left.and.text.bubble.right").font(.system(size: 11))
@@ -5986,24 +6074,6 @@ struct EmojiButton: View {
             }
             .padding(8)
         }
-    }
-}
-
-/// Quick reactions on a Slack message, by Slack's names for them.
-struct SlackQuickReactions: View {
-    let react: (String) -> Void
-    static let quick: [(name: String, emoji: String)] = [("+1", "👍"), ("heart", "❤️"), ("joy", "😂"), ("eyes", "👀"),
-                                                        ("pray", "🙏"), ("white_check_mark", "✅")]
-    var body: some View {
-        HStack(spacing: 1) {
-            ForEach(Self.quick, id: \.name) { q in
-                Button { react(q.name) } label: { Text(q.emoji).font(.system(size: 13)).frame(width: 24, height: 22) }
-                    .buttonStyle(Press(reach: 1))
-            }
-        }
-        .padding(.horizontal, 3).padding(.vertical, 1)
-        .background(Color(white: 0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
     }
 }
 
@@ -6234,7 +6304,29 @@ private struct WhatsAppBubble: View {
         }
     }
 
+    @State private var reacting = false
+
     var body: some View {
+        // The reaction face sits beside the bubble on its open side, as in WhatsApp.
+        HStack(alignment: .center, spacing: 6) {
+            if line.mine { face }
+            bubble
+            if !line.mine { face }
+        }
+        .contentShape(Rectangle())
+        .onHover { over in withAnimation(.easeOut(duration: 0.12)) { hovered = over } }
+        .zIndex(reacting ? 5 : 0)
+    }
+
+    @ViewBuilder private var face: some View {
+        if !chat.isEmpty, !line.id.hasPrefix("local-") {
+            ReactFace(hovered: hovered, open: $reacting, opensRight: line.mine) { emoji in
+                WhatsAppSource.shared.react(chat: chat, id: line.id, emoji: emoji)
+            }
+        }
+    }
+
+    private var bubble: some View {
         content
             .background(line.mine ? Self.mine : Self.theirs, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             // Reactions sit on the bottom edge, as in WhatsApp.
@@ -6253,15 +6345,6 @@ private struct WhatsAppBubble: View {
                 }
             }
             .padding(.bottom, line.reactions.isEmpty ? 0 : 14)
-            // Hover for a quick reaction.
-            .overlay(alignment: line.mine ? .topLeading : .topTrailing) {
-                if hovered && !chat.isEmpty {
-                    WhatsAppReactions(chat: chat, id: line.id, mine: line.reactions["me"])
-                        .offset(x: line.mine ? -8 : 8, y: -26)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                }
-            }
-            .onHover { over in withAnimation(.easeOut(duration: 0.12)) { hovered = over } }
     }
 
     /// Invisible text as wide as the time and ticks, so the last line always leaves room for them.
@@ -6529,7 +6612,7 @@ private struct NotificationMessagePreview: View {
                         .font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.65))
                 }
                 if !alert.text.isEmpty && !(alert.files.first?.image == true && alert.text == "Photo") {
-                    Text(alert.workspace == WhatsAppSource.workspace ? WhatsAppText.styled(alert.text) : AttributedString(alert.text))
+                    Text(WhatsAppText.styled(alert.text))
                         .font(.system(size: compact ? 11.5 : 12)).foregroundStyle(.white.opacity(0.85))
                         .lineLimit(expanded ? 40 : compact ? 3 : 6)
                         .fixedSize(horizontal: false, vertical: true)
@@ -6594,7 +6677,7 @@ private struct ToastBanner: View {
     private func lines(_ title: String, _ text: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-            Text(oneLine(text, max: 140)).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.65)).lineLimit(2)
+            Text(bannerText(oneLine(text, max: 140))).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.65)).lineLimit(2)
         }
     }
 
@@ -6708,7 +6791,7 @@ private struct SlackBanner: View {
                                     channel: false, size: 18, whatsapp: waiting.workspace == WhatsAppSource.workspace, sidebar: true)
                         Text(waiting.sender).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
                             .lineLimit(1).fixedSize()
-                        Text(oneLine(waiting.text, max: 120)).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5))
+                        Text(WhatsAppText.styled(oneLine(waiting.text, max: 120))).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.5))
                             .lineLimit(1).truncationMode(.tail)
                         Spacer(minLength: 0)
                     }

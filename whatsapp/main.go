@@ -302,6 +302,11 @@ func handle(evt any) {
 			db.Exec(`UPDATE messages SET read = 1 WHERE chat = ?`, key(e.Chat))
 			emit("read", map[string]any{"chat": key(e.Chat)})
 		}
+	case *events.ChatPresence:
+		// Someone typing (or recording a voice note) in a chat: only sent while Perch is online,
+		// which it is while one of its WhatsApp chats is open.
+		emit("typing", map[string]any{"chat": key(e.Chat), "who": nameOf(e.Sender), "group": e.IsGroup,
+			"typing": e.State == types.ChatPresenceComposing, "audio": e.Media == types.ChatPresenceMediaAudio})
 	case *events.MarkChatAsRead:
 		if e.Action.GetRead() {
 			db.Exec(`UPDATE chats SET unread = 0 WHERE jid = ?`, key(e.JID))
@@ -762,6 +767,19 @@ func run(c command) (any, error) {
 		return contacts()
 	case "react":
 		return sendReaction(c.Chat, c.Message, c.Text)
+	case "watch":
+		// A chat is open in Perch: be online, as WhatsApp Web is while in use, so typing comes
+		// through. For a person, typing only arrives once subscribed to them.
+		if err := client.SendPresence(ctx, types.PresenceAvailable); err != nil {
+			return nil, err
+		}
+		if j, err := types.ParseJID(c.Chat); err == nil && j.Server != types.GroupServer {
+			client.SubscribePresence(ctx, j)
+		}
+		return nil, nil
+	case "unwatch":
+		// No chat open: offline again, so the phone keeps getting its notifications.
+		return nil, client.SendPresence(ctx, types.PresenceUnavailable)
 	case "logout":
 		err := client.Logout(ctx)
 		return nil, err

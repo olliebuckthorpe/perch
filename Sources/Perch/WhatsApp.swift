@@ -47,6 +47,30 @@ final class WhatsAppSource {
     private(set) var state: State = .off
     private(set) var chats: [WhatsAppChat] = []
     private(set) var avatars: [String: URL] = [:]
+    /// Who is typing in each chat, and until when (each signal lasts a few seconds unless renewed).
+    private(set) var typing: [String: (who: String, audio: Bool, group: Bool, until: Date)] = [:]
+    /// Chats open on screen right now; Perch is online on WhatsApp only while there is one.
+    @ObservationIgnored private var watching: [String: Int] = [:]
+
+    /// A chat opened: be online and listen for typing in it.
+    func watch(_ chat: String) {
+        watching[chat, default: 0] += 1
+        request("watch", ["chat": chat])
+    }
+
+    /// A chat closed: once none are open, offline again so the phone keeps its notifications.
+    func unwatch(_ chat: String) {
+        watching[chat] = max(0, (watching[chat] ?? 1) - 1)
+        if watching[chat] == 0 { watching[chat] = nil; typing[chat] = nil }
+        if watching.isEmpty { request("unwatch") }
+    }
+
+    /// What to show under a chat's name while someone there is typing.
+    func typingLine(_ chat: String) -> String? {
+        guard let t = typing[chat], t.until > Date() else { return nil }
+        let doing = t.audio ? "recording audio…" : "typing…"
+        return t.group ? "\(t.who.split(separator: " ").first.map(String.init) ?? t.who) is \(doing)" : doing
+    }
     /// Everyone in the user's WhatsApp contacts, for search.
     private(set) var contacts: [(id: String, lid: String, name: String)] = []
     @ObservationIgnored private var contactsTimer: Timer?
@@ -186,6 +210,18 @@ final class WhatsAppSource {
             }
         case "message":
             arrived(o)
+        case "typing":
+            guard let chat = o["chat"] as? String else { break }
+            if o["typing"] as? Bool == true {
+                let until = Date().addingTimeInterval(8)
+                typing[chat] = (o["who"] as? String ?? "", o["audio"] as? Bool ?? false, o["group"] as? Bool ?? false, until)
+                // WhatsApp renews the signal while they keep typing; without that it fades.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8.2) { [weak self] in
+                    if let t = self?.typing[chat], t.until <= Date() { self?.typing[chat] = nil }
+                }
+            } else {
+                typing[chat] = nil
+            }
         case "reaction":
             guard let chat = o["chat"] as? String, let id = o["id"] as? String else { break }
             setReactions(chat, id, o["reactions"] as? [String: String] ?? [:])
@@ -214,6 +250,7 @@ final class WhatsAppSource {
         // Status updates are not chats.
         guard let chat = o["chat"] as? String, !chat.hasSuffix("@broadcast") else { return }
         let line = Self.line(o, chat: chat)
+        if !line.mine { typing[chat] = nil }
         let store = SlackConversations.shared
         let key = store.key(Self.workspace, chat)
         if store.lines[key] != nil, store.lines[key]?.contains(where: { $0.id == line.id }) != true {

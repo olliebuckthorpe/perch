@@ -449,16 +449,9 @@ final class CodingSessions {
             queueCodex(agent, text: text, messageID: messageID)
             return
         }
-        // A turn Perch is running itself: stop it and go straight on with this message, as a real
-        // prompt, the way typing mid-turn in the Claude app interrupts.
-        if agent.source == .claude, agent.sending, let runner = agent.runner, runner.isRunning {
-            agent.queued.append(text)
-            store.save()
-            agent.interrupting = true
-            agent.detail = "Interrupting…"
-            runner.interrupt()
-            return
-        }
+        // A turn Perch is running itself waits for its turn to end, like any other; sending several
+        // messages in a row must not cut its work off halfway. "Interrupt with it" is there for when
+        // that is wanted.
         if (agent.status == .working && agent.pending == nil) || agent.sending {
             // Mid-turn with no way in right now: hold it for the next opening, a moment away.
             agent.queued.append(text)
@@ -486,6 +479,19 @@ final class CodingSessions {
         let earlier = agent.queued
         agent.queued = []
         resume(agent, text: (earlier + [text]).joined(separator: Threads.queueSeparator))
+    }
+
+    /// Whether a turn Perch is running could be stopped to send the waiting replies now.
+    func canInterrupt(_ agent: Agent) -> Bool {
+        agent.source == .claude && !agent.queued.isEmpty && (agent.runner?.isRunning ?? false)
+    }
+
+    /// Stops a turn Perch is running and sends the waiting replies straight away, as real prompts.
+    func interrupt(_ agent: Agent) {
+        guard canInterrupt(agent), let runner = agent.runner else { return }
+        agent.interrupting = true
+        agent.detail = "Interrupting…"
+        runner.interrupt()
     }
 
     /// Whether replies waiting for a turn to end could go in right now instead, mid-turn.
