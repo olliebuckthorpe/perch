@@ -237,7 +237,8 @@ final class WhatsAppSource {
         guard o["fromMe"] as? Bool != true else { return }
         // Reading it right now in the notch: it is read on the phone too.
         let ui = NotchUI.shared
-        if ui.expanded, !ui.cardsOnly, ui.slackTarget?.workspace == Self.workspace, ui.slackTarget?.id == chat {
+        if (ui.expanded && !ui.cardsOnly && ui.slackTarget?.workspace == Self.workspace && ui.slackTarget?.id == chat)
+            || SidePanel.shared.showing(Self.workspace, chat) {
             markRead(chat)
             return
         }

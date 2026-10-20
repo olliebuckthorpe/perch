@@ -916,15 +916,21 @@ private struct Rail: View {
             .padding(.bottom, 5)
             let entries = sidebarEntries
             let pinned = entries.filter(ui.sidebarPinned)
-            let chats = entries.filter { !ui.sidebarPinned($0) }
+            // Messages from people (Slack, WhatsApp) apart from the AI chats.
+            let messages = entries.filter { if case .conversation = $0 { return !ui.sidebarPinned($0) } else { return false } }
+            let chats = entries.filter { if case .agent = $0 { return !ui.sidebarPinned($0) } else { return false } }
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 1) {
                     if !pinned.isEmpty {
                         sidebarHeading("Pinned")
                         ForEach(pinned) { sidebarRow($0) }
                     }
+                    if !messages.isEmpty {
+                        sidebarHeading("Messages")
+                        ForEach(messages) { sidebarRow($0) }
+                    }
                     if !chats.isEmpty {
-                        sidebarHeading("Chats")
+                        sidebarHeading("AI chats")
                         ForEach(chats) { sidebarRow($0) }
                     }
                 }.frame(maxWidth: .infinity, alignment: .topLeading)
@@ -4955,6 +4961,7 @@ private struct SlackAvatar: View {
 private struct SlackComposer: View {
     let target: SlackTarget
     @Environment(NotchUI.self) private var ui
+    @Environment(\.sideWindow) private var sideWindow
     @State private var voice = VoiceRecording()
     @State private var sent = 0
     @State private var text = ""
@@ -4971,16 +4978,38 @@ private struct SlackComposer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
-                Button { ui.slackTarget = nil; ui.browse() } label: {
-                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
+                if sideWindow == nil {
+                    Button { ui.slackTarget = nil; ui.browse() } label: {
+                        Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
+                    }
+                    .buttonStyle(Press())
                 }
-                .buttonStyle(Press())
                 SlackAvatar(url: livePicture(target), channel: target.channel, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace)
-                Text(liveName(target)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                Text(liveName(target)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                 Text(target.workspace == WhatsAppSource.workspace ? "WhatsApp" : "Slack · \(target.workspace.capitalized)")
-                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4)).lineLimit(1)
                 Spacer()
+                if sideWindow != nil {
+                    // Back into the notch, on this same conversation.
+                    Button { SidePanel.shared.returnToNotch(target) } label: {
+                        Image(systemName: "rectangle.topthird.inset.filled").font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
+                    }
+                    .buttonStyle(Press()).help("Back to the notch")
+                    Button { SidePanel.shared.close() } label: {
+                        Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
+                    }
+                    .buttonStyle(Press()).help("Close")
+                } else {
+                    // Keep this conversation open in a slim panel at the side of the screen.
+                    Button { SidePanel.shared.show(conversation: target) } label: {
+                        Image(systemName: "sidebar.right").font(.system(size: 12))
+                            .foregroundStyle(.white.opacity(0.6)).frame(width: 20, height: 20).contentShape(Rectangle())
+                    }
+                    .buttonStyle(Press()).help("Keep open at the side")
+                }
             }
             .background(DoubleClick {
                 SlackSource.shared.open(target)
@@ -5141,16 +5170,20 @@ private struct SlackComposer: View {
                 return true
             }
         }
-        .frame(height: 452, alignment: .top)
-        .overlay { Lightbox(side: false) }
+        .frame(height: sideWindow == nil ? 452 : nil, alignment: .top)
+        .frame(maxHeight: sideWindow == nil ? 452 : .infinity, alignment: .top)
+        .overlay { Lightbox(side: sideWindow != nil) }
         .animation(.spring(response: 0.3, dampingFraction: 0.86), value: ui.lineReply[replyKey]?.id)
         // Aiming a reply puts the cursor in the box, ready to type.
         .onChange(of: ui.lineReply[replyKey]?.id) { _, id in if id != nil { ask += 1 } }
         .onDisappear { voice.cancel(); ui.hoveredLine = nil }
         .onAppear {
             SlackSource.shared.history(for: target)
-            ui.controller?.panel.makeKey()
-            ask += 1
+            // In the notch the keyboard comes straight here; a floating window waits for a click.
+            if sideWindow == nil {
+                ui.controller?.panel.makeKey()
+                ask += 1
+            }
         }
     }
 
@@ -5160,12 +5193,13 @@ private struct SlackComposer: View {
         panel.canChooseDirectories = false
         panel.prompt = "Attach"
         panel.level = .popUpMenu
-        ui.heldOpen = true
+        let side = sideWindow
+        if side == nil { ui.heldOpen = true }
         NSApp.activate(ignoringOtherApps: true)
         panel.begin { response in
-            ui.heldOpen = false
+            if side == nil { ui.heldOpen = false }
             if response == .OK { files.append(contentsOf: panel.urls) }
-            ui.openSlack(target)
+            if let side { side.makeKey() } else { ui.openSlack(target) }
         }
     }
 
@@ -6056,31 +6090,68 @@ final class SidePanel {
     private var window: SidePanelWindow?
     /// The chat the side panel is showing, for pictures pasted into it.
     private(set) var agentID: String?
+    /// Or the Slack or WhatsApp conversation it is showing.
+    private(set) var conversation: SlackTarget?
+
+    /// Whether this conversation is open in the panel right now (so it counts as being read).
+    func showing(_ workspace: String, _ id: String) -> Bool {
+        window != nil && conversation?.workspace == workspace && conversation?.id == id
+    }
 
     private static let savedKey = "sidePanel"
     private var moves: [NSObjectProtocol] = []
 
     /// Puts back the panel that was open when Perch last quit, once its chat has loaded.
     func restore(tries: Int = 0) {
-        guard window == nil, let saved = UserDefaults.standard.dictionary(forKey: Self.savedKey),
-              let id = saved["agent"] as? String else { return }
+        guard window == nil, let saved = UserDefaults.standard.dictionary(forKey: Self.savedKey) else { return }
+        let frame = NSRectFromString(saved["frame"] as? String ?? "")
+        let fits = NSScreen.screens.contains { $0.visibleFrame.intersects(frame) }
+        if let c = saved["conversation"] as? [String: String], let w = c["w"], let id = c["id"] {
+            let t = SlackTarget(workspace: w, id: id, name: c["name"] ?? "", channel: c["c"] == "1",
+                                picture: c["p"].flatMap(URL.init(string:)))
+            return show(conversation: t, at: fits && frame.width > 0 ? frame : nil, quietly: true)
+        }
+        guard let id = saved["agent"] as? String else { return }
         guard let agent = AgentStore.shared.agents.first(where: { $0.id == id }) else {
             // Chats arrive over the first few seconds; give up after a minute.
             if tries < 60 { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.restore(tries: tries + 1) } }
             return
         }
-        let frame = NSRectFromString(saved["frame"] as? String ?? "")
-        let fits = NSScreen.screens.contains { $0.visibleFrame.intersects(frame) }
         show(agent, at: fits && frame.width > 0 ? frame : nil, quietly: true)
     }
 
     private func remember() {
-        guard let window, let agentID else { return UserDefaults.standard.removeObject(forKey: Self.savedKey) }
-        UserDefaults.standard.set(["agent": agentID, "frame": NSStringFromRect(window.frame)], forKey: Self.savedKey)
+        guard let window else { return UserDefaults.standard.removeObject(forKey: Self.savedKey) }
+        let frame = NSStringFromRect(window.frame)
+        if let t = conversation {
+            var c = ["w": t.workspace, "id": t.id, "name": t.name, "c": t.channel ? "1" : "0"]
+            if let p = t.picture { c["p"] = p.absoluteString }
+            UserDefaults.standard.set(["conversation": c, "frame": frame], forKey: Self.savedKey)
+        } else if let agentID {
+            UserDefaults.standard.set(["agent": agentID, "frame": frame], forKey: Self.savedKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.savedKey)
+        }
     }
 
     func show(_ agent: Agent, at saved: NSRect? = nil, quietly: Bool = false) {
         agentID = agent.id
+        conversation = nil
+        present(SideRoot(agent: agent), at: saved, quietly: quietly)
+    }
+
+    /// A Slack or WhatsApp conversation in the panel. Opening it reads it, as in the notch.
+    func show(conversation t: SlackTarget, at saved: NSRect? = nil, quietly: Bool = false) {
+        agentID = nil
+        conversation = t
+        if NotchUI.shared.slackTarget?.workspace == t.workspace, NotchUI.shared.slackTarget?.id == t.id {
+            NotchUI.shared.slackTarget = nil
+        }
+        NotchUI.shared.read(t)
+        present(SideRoot(target: t), at: saved, quietly: quietly)
+    }
+
+    private func present(_ content: SideRoot, at saved: NSRect?, quietly: Bool) {
         if !quietly { NotchUI.shared.collapse() }
         let screen = NSScreen.main ?? NSScreen.screens[0]
         let visible = screen.visibleFrame
@@ -6099,7 +6170,7 @@ final class SidePanel {
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.minSize = NSSize(width: 300, height: 320)
-        let root = SideRoot(agent: agent)
+        let root = content
             .environment(AgentStore.shared).environment(NotchUI.shared)
             .environment(\.sideWindow, panel)
         panel.contentView = FirstClickHostingView(rootView: root)
@@ -6155,7 +6226,14 @@ final class SidePanel {
         window?.close()
         window = nil
         agentID = nil
+        conversation = nil
         remember()
+    }
+
+    /// The conversation goes back into the notch, opened there.
+    func returnToNotch(_ t: SlackTarget) {
+        close()
+        NotchUI.shared.openConversation(t)
     }
 
     /// Shrinks back up into the notch, then the chat opens there.
@@ -6183,10 +6261,14 @@ final class SidePanel {
 }
 
 private struct SideRoot: View {
-    let agent: Agent
+    var agent: Agent?
+    var target: SlackTarget?
 
     var body: some View {
-        ChatView(agent: agent)
+        Group {
+            if let agent { ChatView(agent: agent) }
+            else if let target { SlackComposer(target: target) }
+        }
             .padding(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(.black, in: RoundedRectangle(cornerRadius: 16, style: .continuous))

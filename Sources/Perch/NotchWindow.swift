@@ -73,10 +73,14 @@ final class NotchUI {
         let t = alert.target
         let key = "\(t.workspace):\(t.id)"
         if slackTarget?.workspace == t.workspace, slackTarget?.id == t.id, expanded, !cardsOnly { return }
+        if SidePanel.shared.showing(t.workspace, t.id) { return }
         slackRecent.removeAll { $0.id == t.id && $0.workspace == t.workspace }
         slackRecent.insert(t, at: 0)
         slackUnread[key, default: 0] += 1
     }
+
+    /// Reading a conversation somewhere other than the notch (a floating window).
+    func read(_ t: SlackTarget) { keepSlack(t) }
 
     private func keepSlack(_ t: SlackTarget) {
         // Opening a WhatsApp chat is reading it: the phone shows it read too.
@@ -336,7 +340,7 @@ final class NotchUI {
     /// reply at it. Returns true when the gesture is being handled here, so the chat does not
     /// scroll at the same time.
     func scrolled(_ event: NSEvent) -> Bool {
-        guard event.hasPreciseScrollingDeltas, expanded else { return false }
+        guard event.hasPreciseScrollingDeltas, expanded || event.window is SidePanelWindow else { return false }
         if sidebarScrolled(event) { return true }
         if event.phase == .began {
             swipeSum = .zero
@@ -846,10 +850,13 @@ final class NotchUI {
 
     func slack(_ alert: SlackAlert) {
         noteSlack(alert)
+        // Open in a floating window already: it shows up there.
+        if SidePanel.shared.showing(alert.workspace, alert.channel) { return }
         guard pendingLinks.isEmpty else { return }
         if expanded && !autoOpened {
             // Already reading that very conversation: it shows up there by itself.
-            let reading = slackTarget.map { t in t.workspace == alert.workspace && (t.id == alert.channel || (alert.direct && t.id == alert.senderID)) } ?? false
+            let reading = (slackTarget.map { t in t.workspace == alert.workspace && (t.id == alert.channel || (alert.direct && t.id == alert.senderID)) } ?? false)
+                || SidePanel.shared.showing(alert.workspace, alert.channel)
             if !reading {
                 if Settings.sounds { Settings.playSound() }
                 showToast(.slack(alert))
