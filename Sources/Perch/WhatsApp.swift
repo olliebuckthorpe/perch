@@ -14,6 +14,8 @@ struct WhatsAppChat: Identifiable, Equatable {
     /// The last message was the user's own, and how far it got (ticks).
     var lastMine = false
     var lastTicks = 0
+    var lastKind = "text"
+    var lastPreview: Data?
 
     /// A big group or part of a Community: only worth hearing about when it is talking to the user.
     var crowd: Bool { group && (community || size > WhatsAppSource.smallGroup) }
@@ -56,6 +58,7 @@ final class WhatsAppSource {
     @ObservationIgnored private var nextID = 1
     @ObservationIgnored private var media: [String: String] = [:]
     @ObservationIgnored private var wanted = false
+    @ObservationIgnored private var reactionNotices: [String: (text: String, at: Date)] = [:]
     private static let folder = "\(Shell.home)/.perch/whatsapp"
 
     /// Linked before, so it starts with Perch.
@@ -186,6 +189,7 @@ final class WhatsAppSource {
         case "reaction":
             guard let chat = o["chat"] as? String, let id = o["id"] as? String else { break }
             setReactions(chat, id, o["reactions"] as? [String: String] ?? [:])
+            reactionArrived(o, chat: chat, messageID: id)
         case "status":
             // Delivered or read on the other side: the ticks move on.
             guard let chat = o["chat"] as? String, let ids = o["ids"] as? [String], let tick = o["status"] as? Int else { break }
@@ -207,7 +211,8 @@ final class WhatsAppSource {
     /// A message came in (or was sent from the phone): into its open conversation, the sidebar
     /// and, when it is for the user, a banner.
     private func arrived(_ o: [String: Any]) {
-        guard let chat = o["chat"] as? String else { return }
+        // Status updates are not chats.
+        guard let chat = o["chat"] as? String, !chat.hasSuffix("@broadcast") else { return }
         let line = Self.line(o, chat: chat)
         let store = SlackConversations.shared
         let key = store.key(Self.workspace, chat)
@@ -221,9 +226,13 @@ final class WhatsAppSource {
             chats[i].last = line.text.isEmpty ? Self.label(o["kind"] as? String) : line.text
             chats[i].lastMine = line.mine
             chats[i].lastTicks = line.ticks ?? 1
+            chats[i].lastKind = o["kind"] as? String ?? "text"
+            chats[i].lastPreview = line.files.first?.preview
+            reactionNotices[chat] = nil
             chats[i].name = name
         } else {
-            chats.insert(WhatsAppChat(id: chat, name: name, group: group, ts: Date(), unread: 0, last: line.text), at: 0)
+            chats.insert(WhatsAppChat(id: chat, name: name, group: group, ts: Date(), unread: 0, last: line.text.isEmpty ? Self.label(o["kind"] as? String) : line.text,
+                                       lastKind: o["kind"] as? String ?? "text", lastPreview: line.files.first?.preview), at: 0)
         }
         guard o["fromMe"] as? Bool != true else { return }
         // Reading it right now in the notch: it is read on the phone too.
@@ -232,6 +241,8 @@ final class WhatsAppSource {
             markRead(chat)
             return
         }
+        // WhatsApp already displays the conversation while its desktop app is active.
+        // Leave read receipts to WhatsApp; only suppress Perch's duplicate banner.
         let sender = o["senderName"] as? String ?? name
         var alert = SlackAlert(id: "wa-\(o["id"] as? String ?? UUID().uuidString)", workspace: Self.workspace, priority: 1,
                                team: "", channel: chat, place: group ? name : "WhatsApp",
@@ -240,6 +251,7 @@ final class WhatsAppSource {
         alert.direct = !group
         alert.senderID = chat
         alert.picture = avatars[chat]
+        alert.files = line.files
         avatar(chat)
         // Direct chats and small groups notify like they do on the phone. Big groups and
         // Communities only when someone @s the user or replies to them; the rest wait, unread.
@@ -251,8 +263,43 @@ final class WhatsAppSource {
         }
         // Big groups and Communities stay out entirely unless they are talking to the user.
         if !group || !crowd || o["mentionsMe"] as? Bool == true {
-            NotchUI.shared.slack(alert)
+            if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "net.whatsapp.WhatsApp" {
+                ui.noteSlack(alert)
+            } else { ui.slack(alert) }
         }
+    }
+
+    private func reactionArrived(_ event: [String: Any], chat: String, messageID: String) {
+        guard let emoji = event["emoji"] as? String else { return }
+        let mine = event["fromMe"] as? Bool == true
+        let actor = mine ? "You" : (event["actorName"] as? String ?? "Someone")
+        let original = (event["originalText"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? Self.label(event["originalKind"] as? String)
+        let quote = original.isEmpty ? "a message" : "“\(oneLine(original, max: 160))”"
+        let text = emoji.isEmpty ? "\(actor) removed a reaction from \(quote)" : "\(actor) reacted \(emoji) to \(quote)"
+        let at = Date()
+        reactionNotices[chat] = (text, at)
+        if let i = chats.firstIndex(where: { $0.id == chat }) {
+            chats[i].last = text
+            chats[i].lastKind = "reaction"
+            chats[i].lastPreview = nil
+            chats[i].lastMine = false
+            chats[i].ts = at
+        }
+        // Own reactions sync into the preview. Only reactions to our messages alert us.
+        guard !mine, !emoji.isEmpty, event["originalFromMe"] as? Bool == true else { return }
+        let ui = NotchUI.shared
+        if ui.expanded, !ui.cardsOnly, ui.slackTarget?.workspace == Self.workspace, ui.slackTarget?.id == chat { return }
+        let group = event["group"] as? Bool == true
+        let name = event["chatName"] as? String ?? actor
+        var alert = SlackAlert(id: "wa-reaction-\(messageID)-\(UUID().uuidString)", workspace: Self.workspace,
+                               priority: 1, team: "", channel: chat, place: group ? name : "WhatsApp",
+                               sender: actor, text: text, ts: messageID)
+        alert.direct = !group
+        alert.senderID = chat
+        alert.picture = avatars[chat]
+        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "net.whatsapp.WhatsApp" { ui.noteSlack(alert) }
+        else { ui.slack(alert) }
     }
 
     private static func label(_ kind: String?) -> String {
@@ -279,7 +326,7 @@ final class WhatsAppSource {
             let preview = (m["thumb"] as? String).flatMap { Data(base64Encoded: $0) }
             files.append(SlackFile(id: id, workspace: workspace, name: name, image: kind == "image" || kind == "sticker",
                                    thumb: url, url: url, link: nil,
-                                   kind: ext.isEmpty ? (label(kind)) : ext, size: 0, preview: preview))
+                                   kind: kind == "audio" ? "audio" : (ext.isEmpty ? label(kind) : ext), size: 0, preview: preview))
         }
         // Each person's own picture: the sender's in a group, the other person's in a direct chat.
         let who = (m["group"] as? Bool == true || chat.hasSuffix("@g.us")) ? (m["sender"] as? String ?? chat) : chat
@@ -302,7 +349,18 @@ final class WhatsAppSource {
                                     ts: Date(timeIntervalSince1970: r["ts"] as? Double ?? 0),
                                     unread: r["unread"] as? Int ?? 0, last: last,
                                     size: r["groupSize"] as? Int ?? 0, community: r["community"] as? Bool ?? false,
-                                    lastMine: r["lastMine"] as? Bool ?? false, lastTicks: max(1, r["lastStatus"] as? Int ?? 1))
+                                    lastMine: r["lastMine"] as? Bool ?? false, lastTicks: max(1, r["lastStatus"] as? Int ?? 1),
+                                    lastKind: r["lastKind"] as? String ?? "text",
+                                    lastPreview: (r["lastThumb"] as? String).flatMap { Data(base64Encoded: $0) })
+            }
+            for i in self.chats.indices {
+                if let notice = self.reactionNotices[self.chats[i].id], notice.at >= self.chats[i].ts {
+                    self.chats[i].last = notice.text
+                    self.chats[i].lastKind = "reaction"
+                    self.chats[i].lastPreview = nil
+                    self.chats[i].lastMine = false
+                    self.chats[i].ts = notice.at
+                }
             }
             // Unread chats from the last few days wait in the sidebar, as if they had just arrived.
             // Only people and small groups: big groups and Communities stay out of the sidebar.
@@ -393,6 +451,10 @@ final class WhatsAppSource {
             store.replace(key, with: rows.map { Self.line($0, chat: target.id) })
             // The sidebar's preview follows the newest message, including the user's own.
             if let newest = rows.last, let i = self.chats.firstIndex(where: { $0.id == target.id }) {
+                if let notice = self.reactionNotices[target.id],
+                   notice.at.timeIntervalSince1970 >= (newest["ts"] as? Double ?? 0) { return }
+                self.chats[i].lastKind = newest["kind"] as? String ?? "text"
+                self.chats[i].lastPreview = (newest["thumb"] as? String).flatMap { Data(base64Encoded: $0) }
                 let text = (newest["text"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? Self.label(newest["kind"] as? String)
                 self.chats[i].last = text
                 self.chats[i].lastMine = newest["fromMe"] as? Bool ?? false

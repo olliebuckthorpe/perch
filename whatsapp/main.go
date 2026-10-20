@@ -323,13 +323,21 @@ func boolInt(b bool) int {
 // messages to show (reactions, edits, protocol noise).
 // react records a reaction on a message (an empty one takes it away) and tells Perch.
 func react(chat, id, who, emoji string, mine, live bool) {
-	var stored string
-	db.QueryRow(`SELECT reactions FROM messages WHERE chat = ? AND id = ?`, chat, id).Scan(&stored)
+	var stored, original, kind string
+	var originalMine bool
+	db.QueryRow(`SELECT reactions, text, kind, from_me FROM messages WHERE chat = ? AND id = ?`, chat, id).Scan(&stored, &original, &kind, &originalMine)
+	actor := "You"
+	if !mine {
+		if jid, err := types.ParseJID(who); err == nil {
+			actor = nameOf(jid)
+		}
+	}
 	all := map[string]string{}
 	json.Unmarshal([]byte(stored), &all)
 	if mine {
 		who = "me"
 	}
+	previous := all[who]
 	if emoji == "" {
 		delete(all, who)
 	} else {
@@ -337,8 +345,12 @@ func react(chat, id, who, emoji string, mine, live bool) {
 	}
 	b, _ := json.Marshal(all)
 	db.Exec(`UPDATE messages SET reactions = ? WHERE chat = ? AND id = ?`, string(b), chat, id)
-	if live {
-		emit("reaction", map[string]any{"chat": chat, "id": id, "reactions": all})
+	if live && previous != emoji {
+		jid, _ := types.ParseJID(chat)
+		emit("reaction", map[string]any{"chat": chat, "id": id, "reactions": all,
+			"emoji": emoji, "fromMe": mine, "actorName": actor, "chatName": chatName(jid),
+			"group": jid.Server == types.GroupServer, "originalText": original, "originalKind": kind,
+			"originalFromMe": originalMine})
 	}
 }
 
@@ -356,7 +368,8 @@ func webStatus(s int) int {
 
 func record(e *events.Message, live bool, status int) map[string]any {
 	msg := e.Message
-	if msg == nil {
+	// Status updates are not chats: never stored, shown or notified.
+	if msg == nil || e.Info.Chat.Server == types.BroadcastServer {
 		return nil
 	}
 	if inner := msg.GetEphemeralMessage().GetMessage(); inner != nil {
@@ -661,19 +674,21 @@ func chats(limit int) (any, error) {
 	rows, err := db.Query(`SELECT c.jid, c.name, c.is_group, c.last_ts, c.unread,
 		COALESCE((SELECT text FROM messages m WHERE m.chat = c.jid ORDER BY ts DESC LIMIT 1), ''),
 		COALESCE((SELECT kind FROM messages m WHERE m.chat = c.jid ORDER BY ts DESC LIMIT 1), ''),
-		COALESCE((SELECT from_me * 10 + status FROM messages m WHERE m.chat = c.jid ORDER BY ts DESC LIMIT 1), 0)
+		COALESCE((SELECT from_me * 10 + status FROM messages m WHERE m.chat = c.jid ORDER BY ts DESC LIMIT 1), 0),
+		(SELECT thumb FROM messages m WHERE m.chat = c.jid ORDER BY ts DESC LIMIT 1)
 		FROM chats c WHERE c.last_ts > 0 ORDER BY c.last_ts DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
 	type row struct {
-		jid, name, last, kind     string
+		jid, name, last, kind   string
 		group, ts, unread, mine int64
+		thumb                   []byte
 	}
 	var found []row
 	for rows.Next() {
 		var r row
-		rows.Scan(&r.jid, &r.name, &r.group, &r.ts, &r.unread, &r.last, &r.kind, &r.mine)
+		rows.Scan(&r.jid, &r.name, &r.group, &r.ts, &r.unread, &r.last, &r.kind, &r.mine, &r.thumb)
 		found = append(found, r)
 	}
 	// Names are looked up only once the list has been read, never while it is still open:
@@ -697,7 +712,7 @@ func chats(limit int) (any, error) {
 			}
 		}
 		entry := map[string]any{"chat": r.jid, "name": name, "group": r.group == 1, "ts": r.ts,
-			"unread": r.unread, "last": r.last, "lastKind": r.kind, "lastMine": r.mine >= 10, "lastStatus": r.mine % 10}
+			"unread": r.unread, "last": r.last, "lastKind": r.kind, "lastMine": r.mine >= 10, "lastStatus": r.mine % 10, "lastThumb": r.thumb}
 		// How big a group is, for deciding whether it may notify. Asked only for unread groups.
 		if r.group == 1 && r.unread > 0 && err == nil {
 			size, community := groupShape(j)
@@ -772,6 +787,19 @@ func sendFile(chat, path, caption string) (any, error) {
 		}
 		kind = "image"
 		msg = &waE2E.Message{ImageMessage: &waE2E.ImageMessage{Caption: proto.String(caption), Mimetype: proto.String(mimeType),
+			URL: &up.URL, DirectPath: &up.DirectPath, MediaKey: up.MediaKey, FileEncSHA256: up.FileEncSHA256,
+			FileSHA256: up.FileSHA256, FileLength: proto.Uint64(uint64(len(data)))}}
+	case strings.HasPrefix(mimeType, "audio/") || strings.EqualFold(filepath.Ext(path), ".ogg"):
+		if strings.EqualFold(filepath.Ext(path), ".ogg") {
+			mimeType = "audio/ogg; codecs=opus"
+		}
+		up, err := client.Upload(ctx, data, whatsmeow.MediaAudio)
+		if err != nil {
+			return nil, err
+		}
+		kind = "audio"
+		msg = &waE2E.Message{AudioMessage: &waE2E.AudioMessage{Mimetype: proto.String(mimeType),
+			PTT: proto.Bool(strings.EqualFold(filepath.Ext(path), ".ogg")),
 			URL: &up.URL, DirectPath: &up.DirectPath, MediaKey: up.MediaKey, FileEncSHA256: up.FileEncSHA256,
 			FileSHA256: up.FileSHA256, FileLength: proto.Uint64(uint64(len(data)))}}
 	case strings.HasPrefix(mimeType, "video/"):
@@ -924,7 +952,7 @@ func sendReaction(chat, id, emoji string) (any, error) {
 	if _, err := client.SendMessage(ctx, to, client.BuildReaction(to, who, id, emoji)); err != nil {
 		return nil, err
 	}
-	react(chat, id, "me", emoji, true, false)
+	react(chat, id, "me", emoji, true, true)
 	return nil, nil
 }
 
