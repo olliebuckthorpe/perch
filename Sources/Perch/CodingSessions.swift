@@ -167,6 +167,13 @@ final class CodingSessions {
             // After a tool call the waiter doubles as the progress report.
             if event == "PostToolUse" { info(event: event, agent: agent, json: j, tool: tool, input: input, headless: headless) }
             agent.waiter?.respond()
+            // Stop was pressed while a step was running: this is the first moment to say so.
+            if let note = agent.stopRequested {
+                agent.stopRequested = nil
+                agent.waiter = nil
+                req.respond(Data(note.utf8))
+                return
+            }
             // A chat the Claude app owns takes waiting replies through this hook, its only way in.
             // Others wait for the turn to end and get them as real prompts.
             if ownedByApp(agent), event == "Stop" || event == "SessionStart", !agent.queued.isEmpty {
@@ -521,6 +528,36 @@ final class CodingSessions {
         agent.lastActivity = Date()
     }
 
+    /// Whether Perch has any way to stop this chat's current turn.
+    func canStop(_ agent: Agent) -> Bool {
+        agent.source == .claude && (agent.status == .working || agent.sending)
+            && ((agent.runner?.isRunning ?? false) || agent.waiter != nil || ownedByApp(agent))
+    }
+
+    /// Stops a chat's current turn. One Perch is running stops at once. One running in the Claude
+    /// app is told to stop through its session as soon as its current step ends (its only way in).
+    func stop(_ agent: Agent) {
+        agent.queued = []
+        store.save()
+        if let runner = agent.runner, runner.isRunning {
+            agent.interrupting = true
+            agent.detail = "Stopping…"
+            runner.interrupt()
+            return
+        }
+        let note = "The user pressed Stop in Perch. Stop now: do not run any more commands and do not make any more changes. "
+            + "Say in one line where you got to, then wait for their next message."
+        if let waiter = agent.waiter {
+            waiter.respond(Data(note.utf8))
+            agent.waiter = nil
+            agent.detail = "Stopping…"
+        } else {
+            // Its current step is still running: the stop goes in the moment that step ends.
+            agent.stopRequested = note
+            agent.detail = "Stopping after this step…"
+        }
+    }
+
     /// Whether a turn Perch is running could be stopped to send the waiting replies now.
     func canInterrupt(_ agent: Agent) -> Bool {
         agent.source == .claude && !agent.queued.isEmpty && (agent.runner?.isRunning ?? false)
@@ -826,8 +863,10 @@ final class CodingSessions {
             agent.runner = nil
             agent.lastActivity = Date()
             if agent.interrupting {
-                // Stopped to make way for what the user just sent: that goes in now.
+                // Stopped to make way for what the user just sent (or just stopped): that goes in now.
                 agent.interrupting = false
+                agent.status = .done
+                agent.detail = agent.queued.isEmpty ? "Stopped" : agent.detail
                 Threads.load(agent)
                 if !agent.queued.isEmpty {
                     let next = agent.queued.joined(separator: Threads.queueSeparator)

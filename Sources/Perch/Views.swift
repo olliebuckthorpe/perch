@@ -2714,6 +2714,20 @@ struct ChatView: View {
             Spacer(minLength: 4)
             if agent.source != .grok, let used = agent.contextUsed { ContextMeter(used: used, model: agent.contextModel) }
             StatusChip(agent: agent)
+            if CodingSessions.shared.canStop(agent) {
+                // Stop it, from here, whichever app it is running in.
+                Button { CodingSessions.shared.stop(agent) } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "stop.fill").font(.system(size: 8.5, weight: .bold))
+                        Text("Stop").font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Palette.red.opacity(0.85), in: Capsule())
+                }
+                .buttonStyle(Press()).help("Stop what it is doing")
+                .transition(.scale.combined(with: .opacity))
+            }
             if let sideWindow {
                 // Back into the notch, on this same chat.
                 Button {

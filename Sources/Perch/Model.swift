@@ -99,6 +99,8 @@ final class Agent: Identifiable {
     @ObservationIgnored var runner: Process?
     /// That turn was stopped on purpose to make way for a new message, not because it failed.
     @ObservationIgnored var interrupting = false
+    /// Stop was pressed while a step was running in the Claude app; sent at the next chance.
+    @ObservationIgnored var stopRequested: String?
     /// Started from the notch and run in the background, not open in any app.
     var background = false
     /// Handed over to the Claude desktop app, so it shows in its sidebar too.
