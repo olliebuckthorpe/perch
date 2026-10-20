@@ -497,7 +497,7 @@ final class CodingSessions {
         let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return nil }
         let id = UUID().uuidString.lowercased()
-        let agent = store.upsert(source: .claude, sessionID: id, name: oneLine(prompt, max: 44))
+        let agent = store.upsert(source: .claude, sessionID: id, name: Self.quickTitle(prompt))
         agent.cwd = folder
         agent.background = true
         agent.kept = true
@@ -516,11 +516,40 @@ final class CodingSessions {
         return agent
     }
 
-    /// Asks a small, fast model for a short title for a chat that opens with `prompt`.
+    /// A title to show the moment a chat starts, from its first sentence with the asking words
+    /// taken off ("can you look at the login page" is "Look at the login page"). The model's
+    /// title replaces it a few seconds later.
+    static func quickTitle(_ prompt: String) -> String {
+        var t = oneLine(prompt, max: 200)
+        if let end = t.firstIndex(where: { ".?!\n".contains($0) }), t.distance(from: t.startIndex, to: end) > 12 {
+            t = String(t[..<end])
+        }
+        let filler = ["hey", "hi", "ok", "okay", "so", "please", "can you", "could you", "would you", "can we", "could we",
+                      "i want you to", "i need you to", "i want to", "i need to", "i'd like you to", "i would like you to",
+                      "let's", "lets", "just", "quickly"]
+        var changed = true
+        while changed {
+            changed = false
+            for f in filler where t.lowercased().hasPrefix(f + " ") || t.lowercased().hasPrefix(f + ",") {
+                t = String(t.dropFirst(f.count + 1)).trimmingCharacters(in: .whitespaces.union(.punctuationCharacters))
+                changed = true
+            }
+        }
+        let words = t.split(separator: " ").prefix(7).joined(separator: " ")
+        guard let first = words.first else { return oneLine(prompt, max: 44) }
+        return first.uppercased() + words.dropFirst()
+    }
+
+    /// Asks a small, fast model for a short title for a chat that opens with `prompt`. Started
+    /// without MCP servers, skills or settings, which it has no use for.
     private func makeTitle(for prompt: String, exe: String, completion: @escaping (String?) -> Void) {
         let ask = "Write a short title for a chat that starts with the request below. 3 to 6 words, sentence case, "
             + "no quotes, no full stop. Reply with the title only.\n\nRequest: \(String(prompt.prefix(1200)))"
-        Shell.run(exe, ["-p", "--model", "haiku", ask], cwd: "\(Shell.home)/.perch", env: ["PERCH_SKIP": "1"]) { code, output in
+        let empty = "\(Shell.home)/.perch/no-mcp.json"
+        if !FileManager.default.fileExists(atPath: empty) { try? Data("{\"mcpServers\":{}}".utf8).write(to: URL(fileURLWithPath: empty)) }
+        Shell.run(exe, ["-p", "--model", "haiku", "--strict-mcp-config", "--mcp-config", empty, "--disable-slash-commands",
+                        "--no-session-persistence", "--setting-sources", "", ask],
+                  cwd: "\(Shell.home)/.perch", env: ["PERCH_SKIP": "1"]) { code, output in
             let line = oneLine(output.trimmingCharacters(in: .whitespacesAndNewlines), max: 60)
                 .trimmingCharacters(in: CharacterSet(charactersIn: "\"'.“” "))
             completion(code == 0 && line.count > 2 ? line : nil)

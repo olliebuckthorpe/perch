@@ -5304,7 +5304,21 @@ private struct SlackComposer: View {
                     }
                     withAnimation(.sendSpring) { proxy.scrollTo(id, anchor: .bottom) }
                 }
-                .onAppear { if lines?.isEmpty == false { land(proxy) } }
+                .onAppear {
+                    if lines?.isEmpty == false { land(proxy) }
+                    // Slack's own read marker decides where "New" goes; it may answer a moment later.
+                    if target.workspace != WhatsAppSource.workspace {
+                        SlackSource.shared.lastRead(target) { at in
+                            readUpTo = at
+                            if Date().timeIntervalSince(landedAt) < 2.5 { land(proxy) }
+                        }
+                    }
+                }
+                // Seen here means read there too, including messages that arrive while it is open.
+                .onChange(of: lines?.last?.id) { _, id in
+                    guard id != nil, target.workspace != WhatsAppSource.workspace else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { SlackSource.shared.markRead(target) }
+                }
             }
             if let problem = voice.problem {
                 Text(problem).font(.system(size: 11)).foregroundStyle(Palette.red)
@@ -5453,7 +5467,14 @@ private struct SlackComposer: View {
     @State private var viewHeight: CGFloat = 0
     /// How many were unread when this opened, and the first of them (where it opens).
     private var unreadAtOpen: Int { ui.openedUnread[replyKey] ?? 0 }
+    /// Where Slack itself says the user had read up to, once it has answered.
+    @State private var readUpTo: Double?
+    @State private var landedAt = Date.distantPast
+
     private var newMessages: String? {
+        if target.workspace != WhatsAppSource.workspace, let readUpTo, let lines {
+            return lines.first { !$0.mine && (Double($0.id) ?? 0) > readUpTo }?.viewKey
+        }
         guard unreadAtOpen > 0, let lines else { return nil }
         var left = unreadAtOpen
         for line in lines.reversed() where !line.mine {
@@ -5467,11 +5488,19 @@ private struct SlackComposer: View {
     /// the newest.
     private func land(_ proxy: ScrollViewProxy) {
         landed = true
+        landedAt = Date()
         guard let lines, let last = lines.last else { return }
         if let first = newMessages, let line = lines.first(where: { $0.viewKey == first }) {
             proxy.scrollTo(line.id, anchor: UnitPoint(x: 0.5, y: 0.25))
         } else {
             proxy.scrollTo(last.id, anchor: .bottom)
+            // Pictures take their size once loaded, which pushes the end down: settle again.
+            for delay in [0.15, 0.45, 1.0] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    guard let id = self.lines?.last?.id else { return }
+                    proxy.scrollTo(id, anchor: .bottom)
+                }
+            }
         }
     }
 

@@ -202,6 +202,18 @@ final class SlackSource {
         link.post(channel: alert.channel, text: text, thread: alert.thread ?? (alert.direct ? nil : alert.ts), done: done)
     }
 
+    /// Read in Perch is read in Slack (and on WhatsApp).
+    func markRead(_ target: SlackTarget) {
+        if target.workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.markRead(target.id) }
+        links.values.first(where: { $0.name == target.workspace })?.markRead(target)
+    }
+
+    /// How far the user had read in Slack itself, as a message time.
+    func lastRead(_ target: SlackTarget, done: @escaping (Double?) -> Void) {
+        guard let link = links.values.first(where: { $0.name == target.workspace }) else { return done(nil) }
+        link.lastRead(target, done: done)
+    }
+
     /// A fresh message to a person or channel, as the user, with any files attached.
     func send(to target: SlackTarget, text: String, files: [URL] = [], replyTo: String? = nil, done: @escaping (Bool) -> Void) {
         if target.workspace == WhatsAppSource.workspace {
@@ -280,6 +292,14 @@ private final class Workspace {
     private var retry: TimeInterval = 2
     /// When the user last wrote in each conversation, from Slack's own timestamps.
     private var lastMine: [String: Double] = [:]
+    /// Threads the user has written in: replies there notify, as they do in Slack.
+    private var myThreads = Set<String>()
+    /// The newest message seen, kept across restarts, so messages missed while Perch was off or
+    /// reconnecting are picked up afterwards.
+    private var seen: Double {
+        get { UserDefaults.standard.double(forKey: "slackSeen.\(name)") }
+        set { if newValue > seen { UserDefaults.standard.set(newValue, forKey: "slackSeen.\(name)") } }
+    }
     private var heartbeat: Timer?
 
     init(name: String, priority: Int, apps: Bool, appToken: String, userToken: String) {
@@ -534,6 +554,26 @@ private final class Workspace {
         api("chat.postMessage", token: userToken, params) { o in done(o != nil) }
     }
 
+    /// Tells Slack the conversation is read up to its newest message, as opening it in Slack does.
+    func markRead(_ target: SlackTarget) {
+        channel(for: target) { [weak self] channel in
+            guard let self, let channel else { return }
+            let key = SlackConversations.shared.key(self.name, channel)
+            guard let ts = SlackConversations.shared.lines[key]?.last(where: { !$0.id.hasPrefix("local-") })?.id else { return }
+            self.api("conversations.mark", token: self.userToken, ["channel": channel, "ts": ts]) { _ in }
+        }
+    }
+
+    /// How far the user had read in Slack itself, for opening at the first unread message.
+    func lastRead(_ target: SlackTarget, done: @escaping (Double?) -> Void) {
+        channel(for: target) { [weak self] channel in
+            guard let self, let channel else { return done(nil) }
+            self.api("conversations.info", token: self.userToken, ["channel": channel]) { o in
+                done(((o?["channel"] as? [String: Any])?["last_read"] as? String).flatMap(Double.init))
+            }
+        }
+    }
+
     private func api(_ method: String, token: String, _ params: [String: String] = [:], done: @escaping ([String: Any]?) -> Void) {
         var parts = URLComponents(string: "https://slack.com/api/\(method)")!
         if !params.isEmpty { parts.queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) } }
@@ -579,6 +619,28 @@ private final class Workspace {
             socket.resume()
             self.receive(socket)
             self.beat(socket)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.catchUp() }
+        }
+    }
+
+    /// Direct messages that came while Perch was off or reconnecting: into the sidebar, unread,
+    /// without a banner each. Only for the last few hours, so a long absence is not a flood.
+    private func catchUp() {
+        let since = seen
+        guard since > 0, Date().timeIntervalSince1970 - since < 6 * 3600 else { return }
+        let store = SlackConversations.shared
+        let channels = store.dmChannel.filter { $0.key.hasPrefix("\(name):") && !$0.value.contains(":dm:") }.map(\.value)
+        for (i, channel) in Set(channels).enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.4) { [weak self] in
+                guard let self else { return }
+                self.api("conversations.history", token: self.userToken,
+                         ["channel": channel, "oldest": String(format: "%.6f", since), "limit": "20"]) { [weak self] o in
+                    for var m in ((o?["messages"] as? [[String: Any]]) ?? []).reversed() {
+                        m["channel_type"] = "im"
+                        self?.consider(m, channel: channel)
+                    }
+                }
+            }
         }
     }
 
@@ -661,17 +723,31 @@ private final class Workspace {
                 self?.record(event, channel: channel, sender: sender, who: who)
             }
         }
+        consider(event, channel: channel)
+    }
+
+    /// Whether a message deserves a banner (or at least a place in the sidebar), live or caught
+    /// up after a reconnect.
+    private func consider(_ event: [String: Any], channel: String) {
+        let sender = event["user"] as? String ?? ""
+        let subtype = event["subtype"] as? String
+        if let ts = (event["ts"] as? String).flatMap(Double.init) { seen = ts }
         // The user's own messages: anything in that conversation from before is already answered.
         if sender == me, let ts = event["ts"] as? String {
             lastMine[channel] = max(Double(ts) ?? 0, lastMine[channel] ?? 0)
+            if let thread = event["thread_ts"] as? String { myThreads.insert(thread) }
             return
         }
         let body = event["text"] as? String ?? ""
         let kind = event["channel_type"] as? String ?? ""
         let direct = kind == "im" || kind == "mpim"
         let mentioned = body.contains("<@\(me)>")
+        // As Slack does: @here and @channel, and replies in a thread you started or wrote in.
+        let everyone = body.contains("<!here") || body.contains("<!channel")
+        let thread = event["thread_ts"] as? String
+        let inThread = thread.map { event["parent_user_id"] as? String == me || myThreads.contains($0) } ?? false
         let fromApp = event["bot_id"] != nil || subtype == "bot_message"
-        guard direct || mentioned || (apps && fromApp) else { return }
+        guard direct || mentioned || everyone || inThread || (apps && fromApp) else { return }
 
         let ts = event["ts"] as? String ?? ""
         // Slack resends messages that could not be delivered while the connection was down. A

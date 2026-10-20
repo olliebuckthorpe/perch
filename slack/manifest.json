@@ -24,6 +24,8 @@
         "users:read",
         "team:read",
         "chat:write",
+        "channels:write",
+        "groups:write",
         "im:write",
         "mpim:write",
         "files:write",
