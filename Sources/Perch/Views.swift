@@ -181,11 +181,11 @@ private struct ExpandedBody: View {
             } else if ui.showingProfiles {
                 ProfilesView()
             } else if let target = ui.slackTarget {
-                SlackComposer(target: target).id(target.id)
+                SlackComposer(target: target).id(target.id).transition(.opacity)
             } else if ui.composing {
                 NewChatView()
             } else if let id = ui.selectedID, let agent = store.find(id) {
-                ChatView(agent: agent).id(agent.id)
+                ChatView(agent: agent).id(agent.id).transition(.opacity)
             } else {
                 let asks = store.needing.filter { if case .followUp = $0.pending!.kind { return false } else { return true } }
                 // Search is the same size as a conversation, so the island holds still while the
@@ -199,6 +199,8 @@ private struct ExpandedBody: View {
                                         removal: .opacity))
             }
         }
+        // One chat to the next: a quick crossfade, not a hard cut.
+        .animation(.easeOut(duration: 0.16), value: ui.slackTarget.map { "\($0.workspace):\($0.id)" } ?? ui.selectedID ?? "")
     }
 
     @ViewBuilder private var roster: some View {
@@ -931,8 +933,10 @@ private struct Rail: View {
             let whatsappUnread = t.workspace == WhatsAppSource.workspace
                 && WhatsAppSource.shared.chats.contains { $0.id == t.id && $0.unread > 0 && !$0.crowd }
             // Opened or written in within the last five minutes: still here for a follow-up.
-            let recent = ui.conversationTouched[key].map { now.timeIntervalSince($0) < 300 } ?? false
-            return open || recent || (ui.slackUnread[key] ?? 0) > 0 || whatsappUnread || ui.pinnedConversations.contains(key)
+            let recent = (ui.conversationTouched[key].map { now.timeIntervalSince($0) < 300 } ?? false)
+                || now.timeIntervalSince1970 - lastAt(t) < 300
+            let floating = SidePanel.shared.showing(t.workspace, t.id)
+            return open || floating || recent || (ui.slackUnread[key] ?? 0) > 0 || whatsappUnread || ui.pinnedConversations.contains(key)
         }
     }
 
@@ -2381,6 +2385,8 @@ struct ChatView: View {
     @State private var following = true
     @State private var newBelow = false
     @State private var viewHeight: CGFloat = 0
+    /// Hidden until it has come to rest on the right message, so opening never shows it jumping.
+    @State private var ready = false
     let agent: Agent
     @Environment(NotchUI.self) private var ui
     @Environment(\.sideWindow) private var sideWindow
@@ -2474,6 +2480,7 @@ struct ChatView: View {
                 // A fixed height keeps the island the same size every time it opens, so the
                 // opening animation has one target instead of jumping as the history loads.
                 .coordinateSpace(name: "chat")
+                .opacity(ready || messages.isEmpty ? 1 : 0)
                 .background(GeometryReader { g in Color.clear.onAppear { viewHeight = g.size.height }
                     .onChange(of: g.size.height) { _, h in viewHeight = h } })
                 .onPreferenceChange(LastTopKey.self) { top in
@@ -2504,7 +2511,10 @@ struct ChatView: View {
                     } else {
                         settle(proxy)
                         DispatchQueue.main.async { settle(proxy) }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { settle(proxy) }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                            settle(proxy)
+                            withAnimation(.easeOut(duration: 0.14)) { ready = true }
+                        }
                     }
                 }
                 // Something in the chat was opened up (a file to read): bring it to the top.
@@ -2517,7 +2527,10 @@ struct ChatView: View {
                     // laid out, since the first attempt can land before the content has a size.
                     settle(proxy)
                     DispatchQueue.main.async { settle(proxy) }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { settle(proxy) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                        settle(proxy)
+                        withAnimation(.easeOut(duration: 0.14)) { ready = true }
+                    }
                     // Opened before its history arrived: fetch it now, and once more shortly after
                     // in case the first try was too early.
                     if agent.thread.isEmpty {
@@ -5280,6 +5293,7 @@ private struct SlackComposer: View {
                     .padding(.horizontal, 4)
                 }
                 .coordinateSpace(name: "chat")
+                .opacity(ready || lines?.isEmpty != false ? 1 : 0)
                 .background(GeometryReader { g in Color.clear.onAppear { viewHeight = g.size.height }
                     .onChange(of: g.size.height) { _, h in viewHeight = h } })
                 .onPreferenceChange(LastTopKey.self) { top in
@@ -5471,6 +5485,8 @@ private struct SlackComposer: View {
     private var replyKey: String { "\(target.workspace):\(target.id)" }
 
     @State private var landed = false
+    /// Hidden until it has come to rest, so opening never shows it jumping.
+    @State private var ready = false
     /// The Slack thread open over the conversation, if any.
     @State private var openThread: SlackLine?
     @State private var following = true
@@ -5501,6 +5517,7 @@ private struct SlackComposer: View {
         landed = true
         landedAt = Date()
         guard let lines, let last = lines.last else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { withAnimation(.easeOut(duration: 0.14)) { ready = true } }
         if let first = newMessages, let line = lines.first(where: { $0.viewKey == first }) {
             proxy.scrollTo(line.id, anchor: UnitPoint(x: 0.5, y: 0.25))
         } else {

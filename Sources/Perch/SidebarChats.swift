@@ -50,6 +50,17 @@ extension NotchUI {
 
     func removeSidebarChat(_ chat: SidebarChat) {
         let wasPinned = sidebarPinned(chat)
+        // Swiping away the chat on screen glides back to the lead bot (Remmi), the base.
+        let wasOpen: Bool
+        switch chat {
+        case .agent(let a): wasOpen = selectedID == a.id
+        case .conversation(let t): wasOpen = slackTarget?.workspace == t.workspace && slackTarget?.id == t.id
+        }
+        defer {
+            if wasOpen, let base = AgentStore.shared.grokBots.first(where: { pinned.contains($0.name) && $0.id != chat.id }) {
+                withAnimation(.easeOut(duration: 0.2)) { select(base.id) }
+            }
+        }
         switch chat {
         case .agent(let a):
             let kept = a.kept, oldDismissal = dismissed[a.id], oldRemoval = sidebarRemovals[a.id]
