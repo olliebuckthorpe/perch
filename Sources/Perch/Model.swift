@@ -117,8 +117,8 @@ final class Agent: Identifiable {
     @discardableResult
     func addLocal(_ text: String) -> String {
         let id = "local-\(UUID().uuidString)"
-        // Rises into place from the reply box, with a soft spring.
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+        // Rises into place from the reply box, on the same spring as the chat scrolling to it.
+        withAnimation(.sendSpring) {
             thread.append(ChatMessage(id: id, fromUser: true, text: text))
         }
         return id
@@ -278,6 +278,15 @@ enum Settings {
     }
 
     /// Played at half volume: it is a nudge, not an alarm.
+    /// The feel of a message going: a light tap on the trackpad, and a soft sound when
+    /// sounds are on. The same everywhere a message is sent from.
+    static func sentFeel() {
+        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+        guard sounds, let sound = NSSound(named: "Pop")?.copy() as? NSSound else { return }
+        sound.volume = 0.18
+        sound.play()
+    }
+
     static func playSound() {
         guard let sound = NSSound(named: soundName)?.copy() as? NSSound else { return }
         sound.volume = 0.5

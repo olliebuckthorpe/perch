@@ -124,7 +124,7 @@ final class SlackConversations {
     func showSent(_ key: String, text: String, whatsapp: Bool, quote: SlackQuote? = nil) {
         let id = "local-\(UUID().uuidString)"
         let line = SlackLine(id: id, viewID: id, sender: "You", mine: true, text: text, time: Date(), ticks: whatsapp ? 0 : nil, quote: quote)
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+        withAnimation(.sendSpring) {
             if lines[key] == nil { lines[key] = [] }
             lines[key]?.append(line)
         }
@@ -190,6 +190,9 @@ final class SlackSource {
     private let dir = "\(Shell.home)/.perch/slack"
     private var links: [String: Workspace] = [:]
     private var timer: Timer?
+
+    /// The user's name in a workspace, for picking out mentions of them.
+    func myName(in workspace: String) -> String? { links.values.first { $0.name == workspace }?.myName }
 
     /// Sends a reply as the user: in a thread, into that thread; to a mention in a channel, as a
     /// reply in a thread under it; to a direct message, straight into the conversation.
@@ -264,6 +267,8 @@ private final class Workspace {
     private let appToken: String
     private let userToken: String
     private var me = ""
+    /// The user's own name here, once known.
+    var myName: String? { names[me] }
     private var team = ""
     private var socket: URLSessionWebSocketTask?
     private var names: [String: String] = [:]
@@ -418,7 +423,8 @@ private final class Workspace {
                                          sender: bot ?? self.names[user] ?? (user == self.me ? "You" : ""),
                                          mine: user == self.me,
                                          text: self.tidy(m["text"] as? String ?? "", event: m, full: true),
-                                         picture: self.pictures[user], files: SlackFile.list(m, workspace: self.name))
+                                         picture: self.pictures[user], files: SlackFile.list(m, workspace: self.name),
+                                         time: (m["ts"] as? String).flatMap(Double.init).map { Date(timeIntervalSince1970: $0) })
                     }
                 }
                 // Shown straight away; names Perch doesn't know yet fill in as they arrive.
@@ -470,7 +476,8 @@ private final class Workspace {
               store.lines[key]?.contains(where: { $0.id == ts }) != true else { return }
         store.lines[key]?.append(SlackLine(id: ts, sender: who, mine: sender == me,
                                            text: tidy(event["text"] as? String ?? "", event: event, full: true), picture: pictures[sender],
-                                           files: SlackFile.list(event, workspace: name)))
+                                           files: SlackFile.list(event, workspace: name),
+                                           time: Double(ts).map { Date(timeIntervalSince1970: $0) }))
     }
 
     /// Loads the people and channels in this workspace for search.
@@ -544,6 +551,8 @@ private final class Workspace {
             api("auth.test", token: userToken) { [weak self] o in
                 guard let self else { return }
                 self.me = o?["user_id"] as? String ?? ""
+                // Your own name and picture, for your messages and for mentions of you.
+                if !self.me.isEmpty { self.resolve(sender: self.me, botName: nil, channel: "", direct: true) { _, _ in } }
                 self.team = o?["team_id"] as? String ?? ""
                 if self.me.isEmpty { self.later() } else {
                     self.api("team.info", token: self.userToken) { [weak self] o in
@@ -746,7 +755,7 @@ private final class Workspace {
         // Mentions read as the person's name, and as "you" only when they are.
         for match in s.matches(of: #/<@([A-Z0-9]+)(?:\|([^>]*))?>/#).reversed() {
             let id = String(match.1)
-            let who = id == me ? "you" : names[id] ?? match.2.map(String.init) ?? "someone"
+            let who = names[id] ?? match.2.map(String.init) ?? (id == me ? "you" : "someone")
             s.replaceSubrange(match.range, with: "@" + who)
         }
         if s.isEmpty, let blocks = event["attachments"] as? [[String: Any]] {

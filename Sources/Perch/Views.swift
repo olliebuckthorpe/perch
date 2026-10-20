@@ -256,7 +256,7 @@ private struct SearchBar: View {
         @Bindable var ui = ui
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
-            TextField("Search every chat, bot and Slack thread", text: $ui.query)
+            TextField("Find someone. Start with a space to search messages", text: $ui.query)
                 .textFieldStyle(.plain).font(.system(size: 12.5)).focused($focused)
                 .onKeyPress(.downArrow) {
                     ui.searchIndex = min(ui.searchIndex + 1, max(0, SearchItem.all(store, ui).count - 1))
@@ -267,8 +267,8 @@ private struct SearchBar: View {
                     return .handled
                 }
                 .onSubmit {
-                    // Return straight after typing: search now rather than wait for the pause.
-                    if SearchItem.all(store, ui).isEmpty { ui.searchResults = SearchItem.compute(store, ui) }
+                    // Return straight after typing acts on what is typed now, not the last pause.
+                    ui.searchResults = SearchItem.compute(store, ui)
                     let items = SearchItem.all(store, ui)
                     if items.indices.contains(ui.searchIndex) { items[ui.searchIndex].open(ui) }
                 }
@@ -302,7 +302,10 @@ private struct SearchBar: View {
             SessionIndex.shared.refresh()
             ThreadSearch.shared.refresh()
             DispatchQueue.main.async { ThreadSearch.shared.prepare(live: store.sessions + store.grokBots) }
-            DispatchQueue.main.async { focused = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+        }
+        .onChange(of: ui.searchFocus) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
         }
     }
 }
@@ -346,10 +349,15 @@ enum SearchItem: Identifiable {
         return ui.searchResults
     }
 
+    /// Searching inside chats: the query starts with a space. Otherwise search finds people,
+    /// bots and chats by name.
+    static func inMessages(_ ui: NotchUI) -> Bool { ui.query.hasPrefix(" ") }
+
     static func compute(_ store: AgentStore, _ ui: NotchUI) -> [SearchItem] {
         let q = ui.query.trimmingCharacters(in: .whitespaces).lowercased()
         let everyone = store.sessions + store.grokBots
         guard !q.isEmpty else { return [] }
+        if !inMessages(ui) { return byName(q, store, ui) }
         let search = ThreadSearch.shared
         // Slack conversations Perch has loaded, so what was said there can be found too.
         let conversations = SlackConversations.shared
@@ -420,7 +428,72 @@ enum SearchItem: Identifiable {
         let byName = (items.filter(named) + found)
         people = Set(byName.map(\.id))
         let rest = items.filter { !people.contains($0.id) }
-        return byName + rest + [.newChat(ui.query)]
+        return byName + rest + [.newChat(ui.query.trimmingCharacters(in: .whitespaces))]
+    }
+
+    /// How well a name answers what was typed: 2 when every word typed starts a word of the
+    /// name, 1 when it does allowing one slip ("olie" for Ollie), nil when it does not.
+    static func nameScore(_ query: String, _ name: String) -> Int? {
+        let terms = ThreadSearch.terms(query), words = ThreadSearch.terms(name)
+        guard !terms.isEmpty, !words.isEmpty else { return nil }
+        var exact = true
+        for t in terms {
+            if words.contains(where: { $0.hasPrefix(t) }) { continue }
+            // A slip is allowed once a few letters are in, and never in the first one.
+            guard t.count >= 4, words.contains(where: { w in w.first == t.first &&
+                    [t.count - 1, t.count, t.count + 1].contains { n in n > 0 && n <= w.count && slips(t, String(w.prefix(n))) <= 1 }
+            }) else { return nil }
+            exact = false
+        }
+        return exact ? 2 : 1
+    }
+
+    private static func slips(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        var row = Array(0...b.count)
+        for i in 1...max(1, a.count) where !a.isEmpty {
+            var prev = row[0]; row[0] = i
+            for j in stride(from: 1, through: b.count, by: 1) {
+                let keep = row[j]
+                row[j] = min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] == b[j - 1] ? 0 : 1))
+                prev = keep
+            }
+        }
+        return row[b.count]
+    }
+
+    /// Search by name: people first (WhatsApp and Slack), most recently messaged first, then
+    /// bots and chats, then Slack channels. Return opens the top one.
+    private static func byName(_ q: String, _ store: AgentStore, _ ui: NotchUI) -> [SearchItem] {
+        snippets = [:]; related = []; matches = [:]; times = [:]; people = []; places = [:]
+        struct Found { let item: SearchItem; let score: Int; let at: Double; let tier: Int }
+        var found: [Found] = []
+        var seen = Set<String>()
+        func add(_ item: SearchItem, _ name: String, tier: Int, at: Double, place: String? = nil) {
+            guard let score = nameScore(q, name), seen.insert(item.id).inserted else { return }
+            found.append(Found(item: item, score: score, at: at, tier: tier))
+            if let place { places[item.id] = place }
+            if at > 0 { times[item.id] = Date(timeIntervalSince1970: at) }
+        }
+        let wa = WhatsAppSource.shared
+        for t in wa.matching(where: { nameScore(q, $0) != nil }) {
+            let at = wa.chats.first { $0.id == t.id }?.ts.timeIntervalSince1970 ?? 0
+            add(.slack(t), liveName(t), tier: t.id.hasSuffix("@g.us") ? 2 : 0, at: at, place: "WhatsApp")
+        }
+        for t in SlackDirectory.shared.targets {
+            add(.slack(t), t.name, tier: t.channel ? 3 : 0, at: ui.slackLastAt["\(t.workspace):\(t.id)"] ?? 0,
+                place: "Slack · \(t.workspace.capitalized)")
+        }
+        for a in store.grokBots + store.sessions {
+            add(.agent(a), a.name, tier: 1, at: (a.lastTurnAt ?? a.lastActivity).timeIntervalSince1970)
+        }
+        let ranked = found.sorted {
+            if $0.tier != $1.tier { return $0.tier < $1.tier }
+            if $0.score != $1.score { return $0.score > $1.score }
+            return $0.at > $1.at
+        }.prefix(12).map(\.item)
+        people = Set(ranked.map(\.id))
+        return ranked + [.newChat(ui.query.trimmingCharacters(in: .whitespaces))]
     }
 
     func open(_ ui: NotchUI) {
@@ -478,6 +551,11 @@ private struct SearchResults: View {
             if items.isEmpty && typed {
                 Text("Nothing matches.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
                     .padding(.horizontal, 8).padding(.vertical, 6)
+            }
+            if typed && !SearchItem.inMessages(ui) {
+                Text("Looking for something said in a chat? Start with a space.")
+                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.3))
+                    .padding(.horizontal, 8).padding(.top, 6)
             }
         }
         .onAppear { arrived = true }
@@ -870,9 +948,13 @@ private struct Rail: View {
         var seen = Set<String>()
         let sessions = store.sessions.filter { !ui.isDismissed($0) }
         let active = sessions.filter { $0.status != .idle }
-        // Chats the user added on purpose always show; other quiet ones only fill spare room.
+        // Chats the user added on purpose always show, and quiet ones that did something in the
+        // last few hours. Nothing older is pulled in to fill the space, so a chat swiped away
+        // is not replaced by another.
         let kept = sessions.filter { $0.status == .idle && $0.kept }
-        let quiet = kept + sessions.filter { $0.status == .idle && !$0.kept }.prefix(max(0, 5 - active.count - kept.count))
+        let lately = sessions.filter { $0.status == .idle && !$0.kept
+            && Date().timeIntervalSince($0.lastTurnAt ?? $0.lastActivity) < 6 * 3600 }
+        let quiet = kept + lately
         // Remmi leads, then any other bot with something to say, then pinned chats, then the rest.
         let lead = store.grokBots.filter { ui.pinned.contains($0.name) }
         let bots = store.grokBots.filter { ui.inPill($0) && !ui.pinned.contains($0.name) }
@@ -2302,7 +2384,21 @@ struct ChatView: View {
     /// Rests the view on the newest message, by its top edge: a long reply is read from its
     /// first line, and anything shorter simply sits at the bottom of the chat.
     private func settle(_ proxy: ScrollViewProxy) {
+        if let first = firstUnread { return proxy.scrollTo(first, anchor: .top) }
         if let target = Self.restingID(messages) { proxy.scrollTo(target, anchor: .top) }
+    }
+
+    /// Opened with several of its messages unread: the first of them, so reading starts there.
+    /// Once the user writes, the chat follows the newest again.
+    private var firstUnread: String? {
+        let count = ui.openedUnread[agent.id] ?? 0
+        guard count > 1, messages.last?.fromUser != true else { return nil }
+        var left = count
+        for message in messages.reversed() where !message.fromUser {
+            left -= 1
+            if left == 0 { return message.id }
+        }
+        return nil
     }
 
     /// The id of the last thing drawn: the last message, or the first of a trailing run of
@@ -2363,6 +2459,8 @@ struct ChatView: View {
                                     .animation(.easeOut(duration: 0.25), value: agent.activity)
                             }
                             .padding(.top, 2)
+                            // Comes in once the message just sent has landed, not on top of it.
+                            .transition(.opacity.animation(.easeOut(duration: 0.25).delay(0.3)))
                         }
                     }
                     .padding(.horizontal, 6)
@@ -2375,7 +2473,7 @@ struct ChatView: View {
                     // A new message glides into view. A whole history arriving at once (opening
                     // a chat, or after a relaunch) jumps straight to the end instead of racing past.
                     if let before, messages.contains(where: { $0.id == before }) {
-                        withAnimation(.easeOut(duration: 0.22)) { settle(proxy) }
+                        withAnimation(.sendSpring) { settle(proxy) }
                     } else {
                         settle(proxy)
                         DispatchQueue.main.async { settle(proxy) }
@@ -2997,6 +3095,8 @@ private struct ReplyField: View {
         let files = ui.attachments[agent.id] ?? []
         guard !(text.isEmpty && files.isEmpty), !busy else { return }
         Dictation.shared.stop()
+        Settings.sentFeel()
+        ui.openedUnread[agent.id] = nil
         sent += 1
         ui.drafts[agent.id] = nil
         ui.attachments[agent.id] = nil
@@ -5041,8 +5141,10 @@ private struct SlackComposer: View {
                 }
                 SlackAvatar(url: livePicture(target), channel: target.channel, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace)
                 Text(liveName(target)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-                Text(target.workspace == WhatsAppSource.workspace ? "WhatsApp" : "Slack · \(target.workspace.capitalized)")
-                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4)).lineLimit(1)
+                if target.workspace != WhatsAppSource.workspace {
+                    Text("Slack · \(target.workspace.capitalized)")
+                        .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4)).lineLimit(1)
+                }
                 Spacer()
                 if sideWindow != nil {
                     // Back into the notch, on this same conversation.
@@ -5087,6 +5189,17 @@ private struct SlackComposer: View {
                                         .background(Color(white: 0.14), in: Capsule())
                                         .frame(maxWidth: .infinity).padding(.vertical, 2)
                                 }
+                                if newMessages == line.viewKey {
+                                    NewMessagesMark(whatsapp: target.workspace == WhatsAppSource.workspace, count: unreadAtOpen)
+                                }
+                                if target.workspace != WhatsAppSource.workspace {
+                                    // Slack looks like Slack: flat rows, a square picture, name and
+                                    // time, and follow-ups from the same person tucked under.
+                                    SlackRow(line: line, workspace: target.workspace,
+                                             continued: Self.continues(line, after: lines.prevLine(line)))
+                                        .id(line.id)
+                                        .transition(line.mine ? .sent : .opacity)
+                                } else {
                                 HStack(alignment: .top, spacing: 8) {
                                     if line.mine { Spacer(minLength: 50) }
                                     if !line.mine && !(target.workspace == WhatsAppSource.workspace && !target.id.hasSuffix("@g.us")) { SlackAvatar(url: line.picture, channel: false, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace) }
@@ -5128,6 +5241,7 @@ private struct SlackComposer: View {
                                 }
                                 .id(line.id)
                                 .transition(line.mine ? .sent : .opacity)
+                                }
                             }
                         } else {
                             ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(.top, 30)
@@ -5136,9 +5250,12 @@ private struct SlackComposer: View {
                     .padding(.horizontal, 4)
                 }
                 .onChange(of: lines?.last?.id) { _, id in
-                    if let id { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) } }
+                    guard let id else { return }
+                    // The first load lands on the first unread message; later ones follow the newest.
+                    if !landed { return land(proxy) }
+                    withAnimation(.sendSpring) { proxy.scrollTo(id, anchor: .bottom) }
                 }
-                .onAppear { if let id = lines?.last?.id { proxy.scrollTo(id, anchor: .bottom) } }
+                .onAppear { if lines?.isEmpty == false { land(proxy) } }
             }
             if let problem = voice.problem {
                 Text(problem).font(.system(size: 11)).foregroundStyle(Palette.red)
@@ -5245,6 +5362,14 @@ private struct SlackComposer: View {
             ui.pastedFiles[replyKey] = nil
         }
         .onDisappear { voice.cancel(); ui.hoveredLine = nil }
+        // Slack's live feed can drop quietly; an open conversation checks itself now and then.
+        .task(id: target.id) {
+            guard target.workspace != WhatsAppSource.workspace else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(20))
+                SlackSource.shared.history(for: target)
+            }
+        }
         .onAppear {
             SlackSource.shared.history(for: target)
             // In the notch the keyboard comes straight here; a floating window waits for a click.
@@ -5273,6 +5398,38 @@ private struct SlackComposer: View {
 
     private var replyKey: String { "\(target.workspace):\(target.id)" }
 
+    @State private var landed = false
+    /// How many were unread when this opened, and the first of them (where it opens).
+    private var unreadAtOpen: Int { ui.openedUnread[replyKey] ?? 0 }
+    private var newMessages: String? {
+        guard unreadAtOpen > 0, let lines else { return nil }
+        var left = unreadAtOpen
+        for line in lines.reversed() where !line.mine {
+            left -= 1
+            if left == 0 { return line.viewKey }
+        }
+        return lines.first { !$0.mine }?.viewKey
+    }
+
+    /// Opens at the first unread message, with the ones before it just above; otherwise at
+    /// the newest.
+    private func land(_ proxy: ScrollViewProxy) {
+        landed = true
+        guard let lines, let last = lines.last else { return }
+        if let first = newMessages, let line = lines.first(where: { $0.viewKey == first }) {
+            proxy.scrollTo(line.id, anchor: UnitPoint(x: 0.5, y: 0.25))
+        } else {
+            proxy.scrollTo(last.id, anchor: .bottom)
+        }
+    }
+
+    /// A follow-up from the same person within a few minutes, shown without their name again.
+    static func continues(_ line: SlackLine, after prev: SlackLine?) -> Bool {
+        guard let prev, prev.mine == line.mine, prev.sender == line.sender,
+              let a = prev.time, let b = line.time, Calendar.current.isDate(a, inSameDayAs: b) else { return false }
+        return b.timeIntervalSince(a) < 300
+    }
+
     /// The messages that are the first of their day.
     static func dayStarts(_ lines: [SlackLine]) -> Set<String> {
         var seen: Date?
@@ -5298,6 +5455,7 @@ private struct SlackComposer: View {
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty || !files.isEmpty, state != "sending", !voice.recording, !voice.preparing else { return }
         state = "sending"
+        Settings.sentFeel()
         let sending = files
         // A reply only goes with words; files go as they are.
         let replying = files.isEmpty ? ui.lineReply[replyKey] : nil
@@ -5323,6 +5481,118 @@ private struct SlackComposer: View {
                 ui.drafts[draftKey] = message
                 if let replying { ui.lineReply[replyKey] = replying }
             }
+        }
+    }
+}
+
+private extension Array where Element == SlackLine {
+    func prevLine(_ line: SlackLine) -> SlackLine? {
+        guard let i = firstIndex(where: { $0.viewKey == line.viewKey }), i > 0 else { return nil }
+        return self[i - 1]
+    }
+}
+
+/// Where the unread messages start: Slack's red "New" line, or WhatsApp's unread pill.
+private struct NewMessagesMark: View {
+    let whatsapp: Bool
+    let count: Int
+
+    var body: some View {
+        if whatsapp {
+            Text(count == 1 ? "1 unread message" : "\(count) unread messages")
+                .font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.75))
+                .padding(.horizontal, 10).padding(.vertical, 3)
+                .background(Color(white: 0.16), in: Capsule())
+                .frame(maxWidth: .infinity).padding(.vertical, 3)
+        } else {
+            HStack(spacing: 6) {
+                Rectangle().fill(Palette.red.opacity(0.7)).frame(height: 1)
+                Text("New").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Palette.red)
+            }
+            .padding(.vertical, 2)
+        }
+    }
+}
+
+/// One Slack message the way Slack shows it: picture, name and time on top, then the text.
+private struct SlackRow: View {
+    let line: SlackLine
+    let workspace: String
+    let continued: Bool
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            if continued {
+                // Slack shows the time in the gutter on hover for a follow-up.
+                Text(hovered ? (line.time?.formatted(.dateTime.hour().minute()) ?? "") : "")
+                    .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.35))
+                    .frame(width: 30, alignment: .trailing).padding(.top, 2)
+            } else {
+                SquareFace(url: line.picture, name: line.sender)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                if !continued {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(line.sender.isEmpty ? "Someone" : line.sender)
+                            .font(.system(size: 12.5, weight: .bold)).foregroundStyle(.white)
+                        if let time = line.time {
+                            Text(time.formatted(.dateTime.hour().minute())).font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+                        }
+                    }
+                }
+                if !line.text.isEmpty {
+                    Text(Self.styled(line.text, me: SlackSource.shared.myName(in: workspace), workspace: workspace))
+                        .font(.system(size: 12.5)).lineSpacing(2).foregroundStyle(.white.opacity(0.9))
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach(line.files) { SlackFileView(file: $0) }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 6).padding(.vertical, continued ? 1 : 4)
+        .padding(.top, continued ? 0 : 2)
+        .background(.white.opacity(hovered ? 0.04 : 0), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .onHover { hovered = $0 }
+    }
+
+    /// Mentions picked out as Slack does: of you on yellow, of anyone else in blue.
+    static func styled(_ text: String, me: String?, workspace: String) -> AttributedString {
+        var out = AttributedString(text)
+        let names = Set(SlackDirectory.shared.targets.filter { $0.workspace == workspace && !$0.channel }.map(\.name))
+            .union(me.map { [$0] } ?? [])
+        for name in names.sorted(by: { $0.count > $1.count }) where !name.isEmpty {
+            var from = out.startIndex
+            while let r = out[from...].range(of: "@" + name) {
+                let mine = name == me
+                out[r].foregroundColor = mine ? Color(red: 0.98, green: 0.84, blue: 0.45) : Color(red: 0.45, green: 0.7, blue: 1)
+                out[r].backgroundColor = mine ? Color(red: 0.98, green: 0.84, blue: 0.45).opacity(0.18) : Color(red: 0.3, green: 0.55, blue: 1).opacity(0.15)
+                from = r.upperBound
+            }
+        }
+        return out
+    }
+}
+
+/// A person's picture as Slack draws it: a rounded square.
+private struct SquareFace: View {
+    let url: URL?
+    let name: String
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image { Image(nsImage: image).resizable().aspectRatio(contentMode: .fill) }
+            else {
+                Color(white: 0.2).overlay(Text(String(name.prefix(1)).uppercased())
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.7)))
+            }
+        }
+        .frame(width: 30, height: 30)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .task(id: url) {
+            guard let url, image == nil, let (data, _) = try? await URLSession.shared.data(from: url) else { return }
+            image = NSImage(data: data)
         }
     }
 }
@@ -5442,12 +5712,18 @@ private struct WhatsAppLinkView: View {
 struct SendRise: ViewModifier {
     let away: Bool
     func body(content: Content) -> some View {
+        // Up out of the reply box, growing from its corner: no blur, so it stays crisp in flight.
         content
-            .scaleEffect(away ? 0.86 : 1, anchor: .bottomTrailing)
-            .offset(y: away ? 28 : 0)
+            .scaleEffect(away ? 0.9 : 1, anchor: .bottomTrailing)
+            .offset(y: away ? 36 : 0)
             .opacity(away ? 0 : 1)
-            .blur(radius: away ? 2 : 0)
     }
+}
+
+extension Animation {
+    /// One spring for a message going out: it carries the bubble up and the chat along with it,
+    /// so the two move as one.
+    static let sendSpring = Animation.spring(response: 0.4, dampingFraction: 0.8)
 }
 
 extension AnyTransition {
@@ -5998,6 +6274,7 @@ private struct SlackBanner: View {
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, state != "sending" else { return }
         state = "sending"
+        Settings.sentFeel()
         ui.touch(alert.target)
         SlackSource.shared.reply(to: alert, text: text) { ok in
             state = ok ? "sent" : "failed"

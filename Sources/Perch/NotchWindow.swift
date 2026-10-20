@@ -68,6 +68,7 @@ final class NotchUI {
     /// A Slack message came in: its conversation goes to the top of the sidebar, marked unread.
     func noteSlack(_ alert: SlackAlert) {
         slackLastAt["\(alert.target.workspace):\(alert.target.id)"] = Date().timeIntervalSince1970
+        touch(alert.target)
         // Something new: a cleared conversation may come back.
         slackDismissed["\(alert.target.workspace):\(alert.target.id)"] = nil
         let t = alert.target
@@ -82,8 +83,14 @@ final class NotchUI {
     /// Reading a conversation somewhere other than the notch (a floating window).
     func read(_ t: SlackTarget) { keepSlack(t) }
 
+    /// How many messages were waiting when each conversation was last opened, so it can open
+    /// at the first of them.
+    var openedUnread: [String: Int] = [:]
+
     private func keepSlack(_ t: SlackTarget) {
-        touch(t)
+        let key = "\(t.workspace):\(t.id)"
+        let whatsapp = t.workspace == WhatsAppSource.workspace ? (WhatsAppSource.shared.chats.first { $0.id == t.id }?.unread ?? 0) : 0
+        openedUnread[key] = max(slackUnread[key] ?? 0, whatsapp)
         // Opening a WhatsApp chat is reading it: the phone shows it read too.
         if t.workspace == WhatsAppSource.workspace, (slackUnread["\(t.workspace):\(t.id)"] ?? 0) > 0 || WhatsAppSource.shared.chats.contains(where: { $0.id == t.id && $0.unread > 0 }) {
             WhatsAppSource.shared.markRead(t.id)
@@ -302,6 +309,9 @@ final class NotchUI {
 
     /// Searches a moment after the last key, so the list changes once per pause rather than
     /// jumping on every letter.
+    /// Bumped to put the cursor in the search box, wherever the click to search came from.
+    var searchFocus = 0
+
     func searchSoon(immediately: Bool = false) {
         searchWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -519,8 +529,8 @@ final class NotchUI {
         return true
     }
 
-    /// Conversations the user just opened or wrote in, and when: they stay in the sidebar for
-    /// a few minutes after, for a quick follow-up.
+    /// Conversations the user just wrote in, or that just had a message, and when: they stay in
+    /// the sidebar for a few minutes after, for a quick follow-up. Only opening one does not count.
     var conversationTouched: [String: Date] = [:]
     func touch(_ t: SlackTarget) { conversationTouched["\(t.workspace):\(t.id)"] = Date() }
 
@@ -653,6 +663,7 @@ final class NotchUI {
         searchIndex = 0
         // Straight into typing: the search field takes the keyboard.
         controller?.panel.makeKey()
+        searchFocus += 1
     }
 
     /// Reopening with a reply half written puts the cursor straight back in it.
@@ -703,6 +714,8 @@ final class NotchUI {
         focusReply = true
         UserDefaults.standard.set(id, forKey: "lastChat")
         controller?.panel.makeKey()
+        // How much was waiting, so the chat opens at the first of it.
+        openedUnread[id] = AgentStore.shared.find(id)?.unread ?? 0
         markSeen(id)
     }
 

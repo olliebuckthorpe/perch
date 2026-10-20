@@ -410,13 +410,17 @@ final class WhatsAppSource {
     func matching(_ query: String) -> [SlackTarget] {
         let terms = ThreadSearch.terms(query)
         guard !terms.isEmpty else { return [] }
-        func matches(_ name: String) -> Bool {
+        return matching { name in
             let words = ThreadSearch.terms(name)
             return terms.allSatisfy { t in words.contains { $0.hasPrefix(t) } }
         }
+    }
+
+    /// Chats and contacts whose name passes the test, one per person. Big groups are left out.
+    func matching(where matches: (String) -> Bool) -> [SlackTarget] {
         var out: [SlackTarget] = []
         var seen = Set<String>()
-        for chat in chats where matches(chat.name) && seen.insert(chat.id).inserted { out.append(chat.target) }
+        for chat in chats where !chat.crowd && matches(chat.name) && seen.insert(chat.id).inserted { out.append(chat.target) }
         for c in contacts where matches(c.name) {
             if let chat = chats.first(where: { $0.id == c.id || (!c.lid.isEmpty && $0.id == c.lid) }) {
                 if seen.insert(chat.id).inserted { out.append(chat.target) }

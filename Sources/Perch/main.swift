@@ -158,6 +158,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? (rows + [String(format: "median %.3f of %d", median, all.count)]).joined(separator: "\n")
                     .write(toFile: bits[1], atomically: true, encoding: .utf8)
             }
+        case "names" where parts.count > 1:
+            // names:<query>|<file>: the search box's results for a query, as titles only.
+            let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
+            DispatchQueue.main.async {
+                let before = ui.query
+                ui.query = bits[0]
+                let rows = SearchItem.compute(AgentStore.shared, ui).map { item -> String in
+                    switch item {
+                    case .agent(let a): return "bot/chat  " + a.name
+                    case .older(let e): return "older     " + e.title
+                    case .newChat: return "new chat"
+                    case .slack(let t): return (t.workspace == WhatsAppSource.workspace ? "whatsapp  " : "slack     ") + t.label
+                    }
+                }
+                ui.query = before
+                try? rows.joined(separator: "\n").write(toFile: bits[1], atomically: true, encoding: .utf8)
+            }
         case "search" where parts.count > 1:
             // search:<query>|<file>: writes the results as text, without touching the island.
             let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
