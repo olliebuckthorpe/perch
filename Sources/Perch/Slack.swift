@@ -49,10 +49,21 @@ struct SlackLine: Identifiable, Equatable {
     var reactions: [String: String] = [:]
     /// WhatsApp only: the message this one replies to.
     var quote: SlackQuote?
+    /// Slack only: reactions, as Slack counts them.
+    var slackReactions: [SlackReaction] = []
     /// Slack only: the thread under this message, as Slack summarises it.
     var replyCount = 0
     var replyAt: Date?
     var repliers: [URL] = []
+}
+
+/// One reaction on a Slack message: the emoji, Slack's name for it, how many, and whether the
+/// user is one of them.
+struct SlackReaction: Equatable, Hashable {
+    let name: String
+    let emoji: String
+    var count: Int
+    var mine: Bool
 }
 
 /// The message a reply quotes: who sent it and a line of what it said.
@@ -206,6 +217,11 @@ final class SlackSource {
         if alert.workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.send(to: alert.target, text: text, files: [], done: done) }
         guard let link = links.values.first(where: { $0.name == alert.workspace }) else { return done(false) }
         link.post(channel: alert.channel, text: text, thread: alert.thread ?? (alert.direct ? nil : alert.ts), done: done)
+    }
+
+    /// Adds or takes away the user's reaction on a Slack message.
+    func react(_ target: SlackTarget, ts: String, name: String, add: Bool) {
+        links.values.first(where: { $0.name == target.workspace })?.react(target, ts: ts, name: name, add: add)
     }
 
     /// Slack threads: load one, reply in one, and where its lines are kept.
@@ -512,6 +528,11 @@ private final class Workspace {
                              text: tidy(m["text"] as? String ?? "", event: m, full: true),
                              picture: pictures[user], files: SlackFile.list(m, workspace: name),
                              time: (m["ts"] as? String).flatMap(Double.init).map { Date(timeIntervalSince1970: $0) })
+        line.slackReactions = (m["reactions"] as? [[String: Any]] ?? []).compactMap { r in
+            guard let name = r["name"] as? String else { return nil }
+            return SlackReaction(name: name, emoji: emoji(for: name), count: r["count"] as? Int ?? 1,
+                                 mine: (r["users"] as? [String])?.contains(me) == true)
+        }
         if (m["thread_ts"] as? String) == (m["ts"] as? String) {
             line.replyCount = m["reply_count"] as? Int ?? 0
             line.replyAt = (m["latest_reply"] as? String).flatMap(Double.init).map { Date(timeIntervalSince1970: $0) }
@@ -549,6 +570,64 @@ private final class Workspace {
                 done(ok)
                 if ok { self.thread(target, ts: ts) }
             }
+        }
+    }
+
+    /// A Slack emoji name as the character, or the workspace's own name for a custom one.
+    func emoji(for name: String) -> String {
+        let shown = tidy(":\(name):", event: [:], full: true)
+        return shown == ":\(name):" ? ":\(name):" : shown
+    }
+
+    func react(_ target: SlackTarget, ts: String, name: String, add: Bool) {
+        channel(for: target) { [weak self] channel in
+            guard let self, let channel else { return }
+            // Shown at once; Slack's own record follows.
+            self.adjust(channel: channel, ts: ts, name: name, by: self.me, add: add)
+            self.api(add ? "reactions.add" : "reactions.remove", token: self.userToken,
+                     ["channel": channel, "timestamp": ts, "name": name]) { _ in }
+        }
+    }
+
+    /// A reaction changed on a message: its line, wherever it is shown, counts it.
+    private func adjust(channel: String, ts: String, name: String, by user: String, add: Bool) {
+        let store = SlackConversations.shared
+        let key = store.key(self.name, channel)
+        func change(_ line: inout SlackLine) {
+            if let i = line.slackReactions.firstIndex(where: { $0.name == name }) {
+                if user == me && line.slackReactions[i].mine == add { return }
+                line.slackReactions[i].count += add ? 1 : -1
+                if user == me { line.slackReactions[i].mine = add }
+                if line.slackReactions[i].count <= 0 { line.slackReactions.remove(at: i) }
+            } else if add {
+                line.slackReactions.append(SlackReaction(name: name, emoji: emoji(for: name), count: 1, mine: user == me))
+            }
+        }
+        if let i = store.lines[key]?.firstIndex(where: { $0.id == ts }) { change(&store.lines[key]![i]) }
+        for (k, lines) in store.threads where k.hasPrefix(key + ":") {
+            if let i = lines.firstIndex(where: { $0.id == ts }) { change(&store.threads[k]![i]) }
+        }
+    }
+
+    /// Someone reacting live. Reactions to the user's own messages get a banner, as WhatsApp's do.
+    private func reacted(_ event: [String: Any], add: Bool) {
+        guard let item = event["item"] as? [String: Any], let channel = item["channel"] as? String,
+              let ts = item["ts"] as? String, let name = event["reaction"] as? String,
+              let user = event["user"] as? String else { return }
+        adjust(channel: channel, ts: ts, name: name, by: user, add: add)
+        guard add, user != me, event["item_user"] as? String == me else { return }
+        resolve(sender: user, botName: nil, channel: channel, direct: true) { [weak self] who, _ in
+            guard let self else { return }
+            let store = SlackConversations.shared
+            let original = store.lines[store.key(self.name, channel)]?.first { $0.id == ts }?.text ?? ""
+            let quote = original.isEmpty ? "your message" : "“\(oneLine(original, max: 120))”"
+            var alert = SlackAlert(id: "\(self.name)-reaction-\(ts)-\(name)-\(user)", workspace: self.name, priority: self.priority,
+                                   team: self.team, channel: channel, place: "Reaction", sender: who,
+                                   text: "Reacted \(self.emoji(for: name)) to \(quote)", ts: ts)
+            alert.direct = channel.hasPrefix("D")
+            alert.senderID = user
+            alert.picture = self.pictures[user]
+            NotchUI.shared.slack(alert)
         }
     }
 
@@ -795,8 +874,10 @@ private final class Workspace {
         }
         if let type = o["type"] as? String { SlackSource.status[name + " last"] = type }
         guard o["type"] as? String == "events_api",
-              let event = (o["payload"] as? [String: Any])?["event"] as? [String: Any],
-              event["type"] as? String == "message" else { return }
+              let event = (o["payload"] as? [String: Any])?["event"] as? [String: Any] else { return }
+        if event["type"] as? String == "reaction_added" { return reacted(event, add: true) }
+        if event["type"] as? String == "reaction_removed" { return reacted(event, add: false) }
+        guard event["type"] as? String == "message" else { return }
         let subtype = event["subtype"] as? String
         guard subtype == nil || subtype == "bot_message" || subtype == "thread_broadcast" || subtype == "file_share" else { return }
         let sender = event["user"] as? String ?? ""

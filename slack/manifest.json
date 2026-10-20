@@ -29,7 +29,9 @@
         "im:write",
         "mpim:write",
         "files:write",
-        "files:read"
+        "files:read",
+        "reactions:read",
+        "reactions:write"
       ],
       "bot": [
         "users:read"
@@ -42,7 +44,9 @@
         "message.channels",
         "message.groups",
         "message.im",
-        "message.mpim"
+        "message.mpim",
+        "reaction_added",
+        "reaction_removed"
       ]
     },
     "interactivity": {

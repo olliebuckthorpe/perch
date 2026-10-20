@@ -3041,6 +3041,7 @@ private struct ReplyField: View {
                             .lineLimit(1).allowsHitTesting(false)
                     }
                 }
+            EmojiButton { ui.drafts[agent.id, default: ""] += $0 }
             Button(action: chooseFiles) {
                 Image(systemName: "paperclip").font(.system(size: 13)).foregroundStyle(.white.opacity(0.45))
                     .frame(width: 18, height: 18).contentShape(Rectangle())
@@ -5237,7 +5238,8 @@ private struct SlackComposer: View {
                                     // time, and follow-ups from the same person tucked under.
                                     SlackRow(line: line, workspace: target.workspace,
                                              continued: Self.continues(line, after: lines.prevLine(line)),
-                                             onThread: { withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) { openThread = line } })
+                                             onThread: { withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) { openThread = line } },
+                                             react: { name, add in SlackSource.shared.react(target, ts: line.id, name: name, add: add) })
                                         .id(line.id)
                                         .transition(line.mine ? .sent : .opacity)
                                         .reportsTop(line.viewKey == lines.last?.viewKey)
@@ -5385,6 +5387,7 @@ private struct SlackComposer: View {
                                     .allowsHitTesting(false)
                             }
                         }
+                    EmojiButton { ui.drafts[draftKey, default: ""] += $0 }
                     Button(action: choose) {
                         Image(systemName: "paperclip").font(.system(size: 13)).foregroundStyle(.white.opacity(0.45))
                     }
@@ -5665,6 +5668,8 @@ private struct SlackRow: View {
     let continued: Bool
     /// Opens this message's thread; nil inside a thread itself.
     var onThread: (() -> Void)?
+    /// Adds or takes away the user's reaction, by Slack's emoji name.
+    var react: ((String, Bool) -> Void)?
     @State private var hovered = false
 
     var body: some View {
@@ -5693,6 +5698,25 @@ private struct SlackRow: View {
                         .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
                 ForEach(line.files) { SlackFileView(file: $0) }
+                if !line.slackReactions.isEmpty {
+                    // Reactions as Slack shows them: a chip each, yours outlined in blue.
+                    HStack(spacing: 4) {
+                        ForEach(line.slackReactions, id: \.self) { r in
+                            Button { react?(r.name, !r.mine) } label: {
+                                HStack(spacing: 3) {
+                                    Text(r.emoji).font(.system(size: 12))
+                                    Text("\(r.count)").font(.system(size: 10.5, weight: .semibold))
+                                        .foregroundStyle(r.mine ? Color(red: 0.45, green: 0.7, blue: 1) : .white.opacity(0.7))
+                                }
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(r.mine ? Color(red: 0.3, green: 0.55, blue: 1).opacity(0.18) : .white.opacity(0.07), in: Capsule())
+                                .overlay(Capsule().stroke(r.mine ? Color(red: 0.45, green: 0.7, blue: 1).opacity(0.6) : .clear, lineWidth: 1))
+                            }
+                            .buttonStyle(Press())
+                        }
+                    }
+                    .padding(.top, 2)
+                }
                 if line.replyCount > 0, let onThread {
                     // Slack's thread summary: who replied, how many, and when last.
                     Button(action: onThread) {
@@ -5715,14 +5739,20 @@ private struct SlackRow: View {
             Spacer(minLength: 0)
         }
         .overlay(alignment: .topTrailing) {
-            if hovered, let onThread, !line.id.hasPrefix("local-") {
+            if hovered, !line.id.hasPrefix("local-") {
+              HStack(spacing: 4) {
+                if let react { SlackQuickReactions { name in react(name, !line.slackReactions.contains { $0.name == name && $0.mine }) } }
+                if let onThread {
                 Button(action: onThread) {
                     Image(systemName: "bubble.left.and.text.bubble.right").font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.75)).frame(width: 26, height: 22)
                         .background(Color(white: 0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
                 }
-                .buttonStyle(Press()).help("Reply in thread").offset(y: -6)
+                .buttonStyle(Press()).help("Reply in thread")
+                }
+              }
+              .offset(y: -6)
             }
         }
         .padding(.horizontal, 6).padding(.vertical, continued ? 1 : 4)
@@ -5789,7 +5819,10 @@ private struct SlackThreadView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
                         let all = lines ?? [parent]
-                        if let first = all.first { SlackRow(line: first, workspace: target.workspace, continued: false) }
+                        if let first = all.first {
+                            SlackRow(line: first, workspace: target.workspace, continued: false,
+                                     react: { name, add in SlackSource.shared.react(target, ts: first.id, name: name, add: add) })
+                        }
                         let replies = Array(all.dropFirst())
                         HStack(spacing: 6) {
                             Text(replies.isEmpty ? "No replies yet" : replies.count == 1 ? "1 reply" : "\(replies.count) replies")
@@ -5799,7 +5832,8 @@ private struct SlackThreadView: View {
                         .padding(.vertical, 4).padding(.horizontal, 6)
                         ForEach(replies, id: \.viewKey) { line in
                             SlackRow(line: line, workspace: target.workspace,
-                                     continued: SlackComposer.continues(line, after: replies.prevLine(line)))
+                                     continued: SlackComposer.continues(line, after: replies.prevLine(line)),
+                                     react: { name, add in SlackSource.shared.react(target, ts: line.id, name: name, add: add) })
                                 .id(line.id)
                                 .transition(line.mine ? .sent : .opacity)
                         }
@@ -5826,6 +5860,7 @@ private struct SlackThreadView: View {
                         .foregroundStyle((ui.drafts[draftKey] ?? "").isEmpty ? .white.opacity(0.2) : .white)
                 }
                 .buttonStyle(Press()).disabled((ui.drafts[draftKey] ?? "").isEmpty || state == "sending")
+                EmojiButton { ui.drafts[draftKey, default: ""] += $0 }
             }
             .padding(.horizontal, 11).padding(.vertical, 8)
             .background(Color(white: 0.15), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
@@ -5864,6 +5899,53 @@ private struct SlackThreadView: View {
             state = ok ? nil : "failed"
             if !ok { ui.drafts[draftKey] = text }
         }
+    }
+}
+
+/// A small emoji picker for any reply box: tap one and it goes in where you are writing.
+struct EmojiButton: View {
+    let insert: (String) -> Void
+    @State private var open = false
+    static let common = ["😀", "😂", "🙂", "😉", "😍", "🥲", "😅", "🤔", "😎", "🙃", "😬", "😴",
+                         "👍", "👎", "👏", "🙌", "🙏", "💪", "👀", "🤝", "👋", "✌️", "🤞", "🫡",
+                         "❤️", "🔥", "🎉", "✅", "❌", "⚠️", "💯", "🚀", "⭐️", "💡", "📌", "⏰",
+                         "😢", "😮", "😡", "🤯", "🥳", "🤣", "😇", "🤷", "🤦", "💀", "☕️", "🍻"]
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            Image(systemName: "face.smiling").font(.system(size: 13)).foregroundStyle(.white.opacity(open ? 0.85 : 0.45))
+                .frame(width: 18, height: 18).contentShape(Rectangle())
+        }
+        .buttonStyle(Press()).help("Emoji")
+        .popover(isPresented: $open, arrowEdge: .top) {
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(30), spacing: 2), count: 8), spacing: 2) {
+                ForEach(Self.common, id: \.self) { e in
+                    Button { insert(e) } label: {
+                        Text(e).font(.system(size: 19)).frame(width: 30, height: 30).contentShape(Rectangle())
+                    }
+                    .buttonStyle(Press())
+                }
+            }
+            .padding(8)
+        }
+    }
+}
+
+/// Quick reactions on a Slack message, by Slack's names for them.
+struct SlackQuickReactions: View {
+    let react: (String) -> Void
+    static let quick: [(name: String, emoji: String)] = [("+1", "👍"), ("heart", "❤️"), ("joy", "😂"), ("eyes", "👀"),
+                                                        ("pray", "🙏"), ("white_check_mark", "✅")]
+    var body: some View {
+        HStack(spacing: 1) {
+            ForEach(Self.quick, id: \.name) { q in
+                Button { react(q.name) } label: { Text(q.emoji).font(.system(size: 13)).frame(width: 24, height: 22) }
+                    .buttonStyle(Press(reach: 1))
+            }
+        }
+        .padding(.horizontal, 3).padding(.vertical, 1)
+        .background(Color(white: 0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
     }
 }
 
@@ -6524,6 +6606,7 @@ private struct SlackBanner: View {
                     TextField(state == "failed" ? "Did not send. Try again, or open Slack" : "Reply to \(alert.sender)", text: $reply)
                         .textFieldStyle(.plain).font(.system(size: 12)).focused($focused)
                         .onSubmit(send)
+                    EmojiButton { reply += $0 }
                     Button(action: send) {
                         Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
                             .foregroundStyle(reply.isEmpty ? .white.opacity(0.25) : .white)
