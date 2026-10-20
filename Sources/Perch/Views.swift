@@ -2156,7 +2156,23 @@ private struct NewChatView: View {
     @Environment(AgentStore.self) private var store
     @Environment(NotchUI.self) private var ui
     @State private var folder = UserDefaults.standard.string(forKey: "newChatFolder") ?? ""
+    /// Which app the new chat runs in, remembered for next time.
+    @State private var engine = UserDefaults.standard.string(forKey: "newChatEngine") ?? "claude"
     @FocusState private var focused: Bool
+
+    private func engineChip(_ id: String, _ title: String) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { engine = id }
+            UserDefaults.standard.set(id, forKey: "newChatEngine")
+        } label: {
+            Text(title).font(.system(size: 11.5, weight: engine == id ? .semibold : .regular))
+                .foregroundStyle(engine == id ? Color.black : .white.opacity(0.7))
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(engine == id ? Color.white.opacity(0.92) : .clear, in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(Press())
+    }
 
     /// Folders to offer: the one used last time, ones picked by hand, then wherever recent
     /// sessions were working. Throwaway and hidden locations are left out.
@@ -2234,8 +2250,14 @@ private struct NewChatView: View {
                         .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
                 }
                 .buttonStyle(Press())
-                Text("New Claude Code chat").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                Text("New chat").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
                 Spacer()
+                HStack(spacing: 2) {
+                    engineChip("claude", "Claude Code")
+                    engineChip("codex", "Codex")
+                }
+                .padding(2)
+                .background(.white.opacity(0.08), in: Capsule())
             }
             VStack(alignment: .leading, spacing: 6) {
                 Text("Work in").font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.4))
@@ -2263,7 +2285,9 @@ private struct NewChatView: View {
             // The same size as a conversation, with the message box at the bottom where it is
             // in every other chat, so starting one does not make the island shrink.
             Spacer(minLength: 0)
-            Text("Starts in the background in auto mode and shows up in the Claude app once it has replied.")
+            Text(engine == "codex"
+                 ? "Starts in the background, able to edit files in this folder, and shows up in the Codex app."
+                 : "Starts in the background in auto mode and shows up in the Claude app once it has replied.")
                 .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.3))
                 .fixedSize(horizontal: false, vertical: true)
             // Pictures and files pasted (Cmd+V) or dropped in go with the first message.
@@ -2338,7 +2362,9 @@ private struct NewChatView: View {
     private func start(_ folder: String) {
         let files = ui.attachments["new"] ?? []
         let prompt = ([ui.drafts["new"] ?? ""] + files.map(\.note)).filter { !$0.isEmpty }.joined(separator: "\n\n")
-        guard !prompt.isEmpty, let agent = CodingSessions.shared.startChat(prompt: prompt, folder: folder) else { return }
+        let started = engine == "codex" ? CodingSessions.shared.startCodexChat(prompt: prompt, folder: folder)
+                                        : CodingSessions.shared.startChat(prompt: prompt, folder: folder)
+        guard !prompt.isEmpty, let agent = started else { return }
         Dictation.shared.stop()
         ui.drafts["new"] = nil
         ui.attachments["new"] = nil

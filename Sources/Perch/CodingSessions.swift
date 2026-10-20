@@ -566,6 +566,56 @@ final class CodingSessions {
         return first.uppercased() + words.dropFirst()
     }
 
+    /// Starts a new Codex chat from the notch, in the background, able to edit files in its folder.
+    /// It shows straight away; once Codex has given the chat its id, it becomes the same chat the
+    /// rollout watcher follows, so it also appears in the Codex app's list.
+    @discardableResult
+    func startCodexChat(prompt: String, folder: String) -> Agent? {
+        let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { return nil }
+        let starting = store.upsert(source: .codex, sessionID: "starting-\(UUID().uuidString.lowercased())", name: Self.quickTitle(prompt))
+        starting.cwd = folder
+        starting.kept = true
+        starting.hostBundleID = Self.codexBundleID
+        starting.addLocal(prompt)
+        starting.status = .working
+        starting.detail = "Starting in Codex…"
+        guard let exe = Shell.find("codex") else {
+            starting.status = .done
+            starting.detail = "Could not find the codex command"
+            return starting
+        }
+        var chat: Agent?
+        starting.runner = Shell.run(exe, ["exec", "--json", "-C", folder, "-s", "workspace-write", "--skip-git-repo-check", prompt],
+                                    cwd: folder, env: ["PERCH_HEADLESS": "1"], captureErrors: true, onOutput: { [weak self, weak starting] chunk in
+            guard let self, let starting, chat == nil,
+                  let match = chunk.firstMatch(of: #/"thread_id"\s*:\s*"([^"]+)"/#) else { return }
+            let real = self.store.upsert(source: .codex, sessionID: String(match.1), name: starting.name)
+            real.name = starting.name
+            real.cwd = folder
+            real.kept = true
+            real.hostBundleID = Self.codexBundleID
+            real.thread = starting.thread
+            real.status = .working
+            real.detail = oneLine(prompt)
+            chat = real
+            if NotchUI.shared.selectedID == starting.id { NotchUI.shared.selectedID = real.id }
+            self.store.remove(starting)
+            self.store.save()
+        }) { [weak starting] code, output in
+            if let chat {
+                // The rollout watcher has the reply; this only settles the status.
+                if chat.status == .working { chat.status = .done }
+                Threads.load(chat)
+            } else if let starting {
+                starting.status = .done
+                let line = output.components(separatedBy: .newlines).last { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? ""
+                starting.detail = code == 0 ? "Finished" : oneLine(line.isEmpty ? "Codex did not start (exit \(code))" : line, max: 300)
+            }
+        }
+        return starting
+    }
+
     /// Asks a small, fast model for a short title for a chat that opens with `prompt`. Started
     /// without MCP servers, skills or settings, which it has no use for.
     private func makeTitle(for prompt: String, exe: String, completion: @escaping (String?) -> Void) {
