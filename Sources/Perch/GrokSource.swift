@@ -408,7 +408,8 @@ final class GrokSource {
                         return m
                     }
                     if let text = message["content"] as? String, !text.isEmpty {
-                        var m = ChatMessage(id: id, fromUser: false, text: text, reactions: reactions)
+                        var m = ChatMessage(id: id, fromUser: false, text: text, reactions: reactions,
+                                            email: EmailDraft.written(in: text))
                         m.boxImages = (message["images"] as? [[String: Any]] ?? []).compactMap { img in
                             (img["url"] as? String).map { $0.hasPrefix("file://") ? String($0.dropFirst(7)) : $0 }
                         }

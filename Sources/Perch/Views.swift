@@ -2711,7 +2711,7 @@ struct ChatView: View {
     }
 
     /// Bold, code and links render; line breaks and lists stay as written.
-    private static func markdown(_ s: String) -> AttributedString {
+    static func markdown(_ s: String) -> AttributedString {
         if let done = styled[s] { return done }
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         let result = (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
@@ -4017,7 +4017,6 @@ private struct EmailCard: View {
     let agent: Agent
     @Environment(NotchUI.self) private var ui
     @State private var copied = false
-
     @State private var expanded = false
 
     private var sent: Bool { draft.sendState == "sent" }
@@ -4029,68 +4028,107 @@ private struct EmailCard: View {
         if sent { return "\(noun) sent" }
         if draft.superseded { return "Earlier draft, replaced" }
         if let state = draft.sendState { return "\(noun) \(state)" }
-        return "Draft \(draft.noun)"
+        return "Draft \(draft.noun), not sent"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 5) {
-                Image(systemName: sent ? "checkmark.circle.fill" : draft.noun == "email" ? "envelope.fill" : "bubble.left.fill").font(.system(size: 10))
-                    .foregroundStyle(sent ? Palette.green : .white.opacity(0.55))
-                Text(label).font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(sent ? Palette.green : .white.opacity(0.55))
-                Spacer()
-                if settled {
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.4))
-                }
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                if !draft.to.isEmpty { field("To", draft.to.joined(separator: ", ")) }
-                if !settled || expanded {
-                    if !draft.cc.isEmpty { field("Cc", draft.cc.joined(separator: ", ")) }
-                    if !draft.from.isEmpty { field("From", draft.from) }
-                }
-            }
-            if !draft.subject.isEmpty {
-                Text(draft.subject).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white.opacity(settled ? 0.7 : 1))
+        VStack(alignment: .leading, spacing: 8) {
+            // What the bot said about it, as an ordinary message above the email.
+            if !draft.intro.isEmpty {
+                Text(ChatView.markdown(draft.intro)).font(.system(size: 12.5)).lineSpacing(2)
+                    .foregroundStyle(.white.opacity(0.9)).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if !settled || expanded {
-                Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
-                Text(draft.body).font(.system(size: 12.5)).lineSpacing(2).foregroundStyle(.white.opacity(0.9))
-                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 6) {
-                    Button(copied ? "Copied" : "Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(draft.body, forType: .string)
-                        copied = true
+            card
+        }
+    }
+
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header: the state, then who it goes to and the subject, as an email client shows them.
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 5) {
+                    Image(systemName: sent ? "checkmark.circle.fill" : draft.noun == "email" ? "envelope.fill" : "bubble.left.fill")
+                        .font(.system(size: 10))
+                    Text(label).font(.system(size: 10.5, weight: .semibold))
+                    Spacer()
+                    if settled {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.4))
                     }
-                    .buttonStyle(ChipButton())
-                    if !settled {
+                }
+                .foregroundStyle(sent ? Palette.green : .white.opacity(0.5))
+                if !draft.to.isEmpty { recipients("To", draft.to) }
+                if !draft.cc.isEmpty && (!settled || expanded) { recipients("Cc", draft.cc) }
+                if !draft.subject.isEmpty {
+                    Text(draft.subject).font(.system(size: 13.5, weight: .semibold)).foregroundStyle(.white.opacity(settled ? 0.7 : 1))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(12)
+            if !settled || expanded {
+                Rectangle().fill(.white.opacity(0.08)).frame(height: 1)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(draft.body).font(.system(size: 12.5)).lineSpacing(3).foregroundStyle(.white.opacity(0.88))
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    if !draft.attachments.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(draft.attachments, id: \.self) { name in
+                                HStack(spacing: 5) {
+                                    Image(systemName: "paperclip").font(.system(size: 10, weight: .semibold))
+                                    Text(name).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                                }
+                                .foregroundStyle(.white.opacity(0.75))
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .background(.white.opacity(0.08), in: Capsule())
+                            }
+                        }
+                    }
+                }
+                .padding(12)
+                Rectangle().fill(.white.opacity(0.08)).frame(height: 1)
+                HStack(spacing: 6) {
+                    if let link = draft.link, !settled {
+                        Button {
+                            NSWorkspace.shared.open(link)
+                            ui.collapse()
+                        } label: {
+                            Label(draft.linkTitle.isEmpty ? "Open the draft" : draft.linkTitle, systemImage: "arrow.up.forward")
+                                .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.black)
+                                .padding(.horizontal, 11).padding(.vertical, 6)
+                                .background(.white, in: Capsule())
+                        }
+                        .buttonStyle(Press())
+                    } else if !settled {
                         Button("Send in Grok Bot") {
                             GrokSource.shared.open(agent)
                             ui.collapse()
                         }
                         .buttonStyle(ChipButton())
                     }
+                    Button(copied ? "Copied" : "Copy text") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(draft.body, forType: .string)
+                        copied = true
+                    }
+                    .buttonStyle(ChipButton())
                     Spacer()
                 }
-                .padding(.top, 2)
+                .padding(.horizontal, 12).padding(.vertical, 9)
             }
         }
-        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(settled ? 0.04 : 0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
+        .background(Color(white: settled ? 0.1 : 0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.1), lineWidth: 1))
         .contentShape(Rectangle())
         .onTapGesture { if settled { expanded.toggle() } }
     }
 
-    private func field(_ label: String, _ value: String) -> some View {
+    private func recipients(_ label: String, _ people: [String]) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(label).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4)).frame(width: 30, alignment: .leading)
-            Text(value).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.8)).lineLimit(2)
+            Text(label).font(.system(size: 11)).foregroundStyle(.white.opacity(0.4)).frame(width: 22, alignment: .leading)
+            Text(people.joined(separator: ", ")).font(.system(size: 11.5, weight: .medium)).foregroundStyle(.white.opacity(0.85))
+                .lineLimit(2)
         }
     }
 }

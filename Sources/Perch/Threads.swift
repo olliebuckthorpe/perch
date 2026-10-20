@@ -13,6 +13,59 @@ struct EmailDraft: Equatable {
     var sendState: String?
     /// A later draft replaced this one before it was sent.
     var superseded = false
+    /// Written out by the bot as text: what it said before the draft, the files it says are
+    /// attached, and where to open the draft (Gmail, say).
+    var intro = ""
+    var attachments: [String] = []
+    var link: URL?
+    var linkTitle = ""
+
+    /// A draft a bot wrote out in its message ("To: …", "Subject: …", then the email), so it can
+    /// be shown as an email rather than a wall of text. Nil when the message is not one.
+    static func written(in text: String) -> EmailDraft? {
+        let lines = text.components(separatedBy: "\n")
+        func field(_ name: String, _ line: String) -> String? {
+            let plain = line.replacingOccurrences(of: "*", with: "").trimmingCharacters(in: .whitespaces)
+            guard plain.lowercased().hasPrefix(name.lowercased() + ":") else { return nil }
+            return unlink(String(plain.dropFirst(name.count + 1))).trimmingCharacters(in: .whitespaces)
+        }
+        guard let toAt = lines.firstIndex(where: { field("To", $0) != nil }),
+              let subjectAt = lines[toAt...].prefix(4).firstIndex(where: { field("Subject", $0) != nil }) else { return nil }
+        var draft = EmailDraft()
+        draft.to = (field("To", lines[toAt]) ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        if let cc = lines[toAt..<subjectAt].first(where: { field("Cc", $0) != nil }) {
+            draft.cc = (field("Cc", cc) ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        }
+        draft.subject = field("Subject", lines[subjectAt]) ?? ""
+        var body = Array(lines[(subjectAt + 1)...])
+        // A closing link on its own line ("Open the draft in Gmail") becomes the card's button.
+        while let last = body.last, last.trimmingCharacters(in: .whitespaces).isEmpty { body.removeLast() }
+        if let last = body.last, let m = Self.groups(#"^\[([^\]]+)\]\((https?:[^)]+)\)$"#, last.trimmingCharacters(in: .whitespaces)).first,
+           m.count == 2 {
+            draft.linkTitle = m[0]
+            draft.link = URL(string: m[1])
+            body.removeLast()
+        }
+        draft.body = body.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.intro = lines[..<toAt].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.attachments = Self.groups(#"`([^`\n]+\.[A-Za-z0-9]{1,5})`"#, draft.intro).compactMap(\.first)
+        guard !draft.body.isEmpty, !draft.to.isEmpty else { return nil }
+        return draft
+    }
+
+    /// "[name](mailto:…)" to just "name".
+    private static func unlink(_ s: String) -> String {
+        s.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+    }
+
+    /// Every match of a pattern, as its captured groups.
+    private static func groups(_ pattern: String, _ text: String) -> [[String]] {
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let ns = text as NSString
+        return re.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { m in
+            (1..<m.numberOfRanges).compactMap { m.range(at: $0).location == NSNotFound ? nil : ns.substring(with: m.range(at: $0)) }
+        }
+    }
 }
 
 /// A question an agent put to the user as a set of options to pick from.
