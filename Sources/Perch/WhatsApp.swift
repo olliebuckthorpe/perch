@@ -217,7 +217,7 @@ final class WhatsAppSource {
         let store = SlackConversations.shared
         let key = store.key(Self.workspace, chat)
         if store.lines[key] != nil, store.lines[key]?.contains(where: { $0.id == line.id }) != true {
-            store.lines[key]?.append(line)
+            store.arrive(key, line)
         }
         let group = o["group"] as? Bool ?? false
         let name = o["chatName"] as? String ?? "WhatsApp"

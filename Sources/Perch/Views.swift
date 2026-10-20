@@ -1152,6 +1152,21 @@ private struct SidebarActionButtons: View {
     }
 }
 
+/// Whether a chat is waiting on the user: orange when it needs an answer, blue when there is
+/// something new to read (a reply that came in, a turn that finished).
+private struct WaitingDot: View {
+    let agent: Agent
+    var body: some View {
+        let needs = agent.status == .needsYou
+        let fresh = agent.unread > 0 || agent.status == .unread || agent.status == .done
+        if needs || fresh {
+            Circle().fill(needs ? Palette.amber : Palette.blue).frame(width: 8, height: 8)
+                .transition(.scale.combined(with: .opacity))
+                .help(needs ? "Waiting for your answer" : "New since you last looked")
+        }
+    }
+}
+
 private struct SidebarActions: View {
     let chat: SidebarChat
     var body: some View {
@@ -1221,6 +1236,7 @@ private struct RailRow: View {
                 .foregroundStyle(.white.opacity(agent.status == .idle && !selected ? 0.6 : 0.95))
                 .lineLimit(1).truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            WaitingDot(agent: agent)
             SidebarActions(chat: .agent(agent))
         }
         .frame(height: SidebarStyle.rowHeight)
@@ -2558,7 +2574,7 @@ struct ChatView: View {
                 CodexQueueCard(agent: agent).frame(height: queueHeight)
             }
             if !agent.queued.isEmpty {
-                Text("Waiting for this turn to finish, then it goes in.").font(.system(size: 10.5))
+                Text(agent.queued.count == 1 ? "1 message waiting for this turn to finish." : "\(agent.queued.count) messages waiting for this turn to finish.").font(.system(size: 10.5))
                     .foregroundStyle(.white.opacity(0.4)).padding(.horizontal, 6)
             }
             if let pending = agent.pending {
@@ -2814,6 +2830,17 @@ struct ChatView: View {
                             .overlay(alignment: .topLeading) { ReactionBadge(emojis: message.reactions).offset(x: -16, y: -14) }
                     }
                     .padding(.top, message.reactions.isEmpty ? 0 : 12)
+                }
+                if message.fromUser, message.id.hasPrefix("local-"), agent.queued.contains(where: { Threads.said($0) == Threads.said(message.text) }) {
+                    // Not in yet: it goes in when the current turn finishes.
+                    HStack(spacing: 6) {
+                        Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+                        Text("Waiting to send").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                        if CodingSessions.shared.canSendNow(agent) {
+                            Button("Send now") { CodingSessions.shared.sendNow(agent) }.buttonStyle(LinkButton())
+                                .help("Interrupt the current turn with it. It arrives as a relayed message, so the chat may ask you to confirm spending or sending")
+                        }
+                    }
                 }
                 if let retry = agent.unsent[message.id] {
                     // It did not get through: say so on the message, never silently.
@@ -5240,7 +5267,7 @@ private struct SlackComposer: View {
                                              continued: Self.continues(line, after: lines.prevLine(line)),
                                              onThread: { withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) { openThread = line } },
                                              react: { name, add in SlackSource.shared.react(target, ts: line.id, name: name, add: add) })
-                                        .id(line.id)
+                                        .id(line.viewKey)
                                         .transition(line.mine ? .sent : .opacity)
                                         .reportsTop(line.viewKey == lines.last?.viewKey)
                                 } else {
@@ -5283,7 +5310,7 @@ private struct SlackComposer: View {
                                         Button("Reply") { ui.lineReply[replyKey] = line }
                                     }
                                 }
-                                .id(line.id)
+                                .id(line.viewKey)
                                 .transition(line.mine ? .sent : .opacity)
                                 .reportsTop(line.viewKey == lines.last?.viewKey)
                                 }
@@ -5305,12 +5332,12 @@ private struct SlackComposer: View {
                 .overlay(alignment: .bottom) {
                     if newBelow, let last = lines?.last {
                         NewBelowButton {
-                            withAnimation(.sendSpring) { proxy.scrollTo(last.id, anchor: .bottom) }
+                            withAnimation(.sendSpring) { proxy.scrollTo(last.viewKey, anchor: .bottom) }
                             newBelow = false
                         }
                     }
                 }
-                .onChange(of: lines?.last?.id) { _, id in
+                .onChange(of: lines?.last?.viewKey) { _, id in
                     guard let id else { return }
                     // The first load lands on the first unread message; later ones follow the newest,
                     // unless the user is reading further up: then a button says something came.
@@ -5332,7 +5359,7 @@ private struct SlackComposer: View {
                     }
                 }
                 // Seen here means read there too, including messages that arrive while it is open.
-                .onChange(of: lines?.last?.id) { _, id in
+                .onChange(of: lines?.last?.viewKey) { _, id in
                     guard id != nil, target.workspace != WhatsAppSource.workspace else { return }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1) { SlackSource.shared.markRead(target) }
                 }
@@ -5522,13 +5549,13 @@ private struct SlackComposer: View {
         guard let lines, let last = lines.last else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { withAnimation(.easeOut(duration: 0.14)) { ready = true } }
         if let first = newMessages, let line = lines.first(where: { $0.viewKey == first }) {
-            proxy.scrollTo(line.id, anchor: UnitPoint(x: 0.5, y: 0.25))
+            proxy.scrollTo(line.viewKey, anchor: UnitPoint(x: 0.5, y: 0.25))
         } else {
-            proxy.scrollTo(last.id, anchor: .bottom)
+            proxy.scrollTo(last.viewKey, anchor: .bottom)
             // Pictures take their size once loaded, which pushes the end down: settle again.
             for delay in [0.15, 0.45, 1.0] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    guard let id = self.lines?.last?.id else { return }
+                    guard let id = self.lines?.last?.viewKey else { return }
                     proxy.scrollTo(id, anchor: .bottom)
                 }
             }
@@ -5578,7 +5605,9 @@ private struct SlackComposer: View {
         let store = SlackConversations.shared
         let whatsapp = target.workspace == WhatsAppSource.workspace
         let channel = target.channel || whatsapp ? target.id : store.dmChannel["\(target.workspace):\(target.id)"]
-        if !message.isEmpty, let channel { store.showSent(store.key(target.workspace, channel), text: message, whatsapp: whatsapp, quote: quote) }
+        if !message.isEmpty, let channel { store.showSent(store.key(target.workspace, channel), text: message, whatsapp: whatsapp, quote: quote,
+                                                                 sender: whatsapp ? "You" : (SlackSource.shared.myName(in: target.workspace) ?? "You"),
+                                                                 picture: whatsapp ? nil : SlackSource.shared.myPicture(in: target.workspace)) }
         Dictation.shared.stop()
         ui.drafts[draftKey] = nil
         sent += 1
@@ -5834,13 +5863,13 @@ private struct SlackThreadView: View {
                             SlackRow(line: line, workspace: target.workspace,
                                      continued: SlackComposer.continues(line, after: replies.prevLine(line)),
                                      react: { name, add in SlackSource.shared.react(target, ts: line.id, name: name, add: add) })
-                                .id(line.id)
+                                .id(line.viewKey)
                                 .transition(line.mine ? .sent : .opacity)
                         }
                     }
                     .padding(.horizontal, 4)
                 }
-                .onChange(of: lines?.last?.id) { _, id in
+                .onChange(of: lines?.last?.viewKey) { _, id in
                     if let id { withAnimation(.sendSpring) { proxy.scrollTo(id, anchor: .bottom) } }
                 }
             }
@@ -5892,7 +5921,8 @@ private struct SlackThreadView: View {
             let id = "local-\(UUID().uuidString)"
             withAnimation(.sendSpring) {
                 SlackConversations.shared.threads[key, default: [parent]].append(
-                    SlackLine(id: id, viewID: id, sender: SlackSource.shared.myName(in: target.workspace) ?? "You", mine: true, text: text, time: Date()))
+                    SlackLine(id: id, viewID: id, sender: SlackSource.shared.myName(in: target.workspace) ?? "You", mine: true, text: text,
+                              picture: SlackSource.shared.myPicture(in: target.workspace), time: Date()))
             }
         }
         SlackSource.shared.replyInThread(target, ts: parent.id, text: text) { ok in
@@ -6091,8 +6121,8 @@ struct SendRise: ViewModifier {
     func body(content: Content) -> some View {
         // Up out of the reply box, growing from its corner: no blur, so it stays crisp in flight.
         content
-            .scaleEffect(away ? 0.9 : 1, anchor: .bottomTrailing)
-            .offset(y: away ? 36 : 0)
+            .scaleEffect(away ? 0.95 : 1, anchor: .bottomTrailing)
+            .offset(y: away ? 22 : 0)
             .opacity(away ? 0 : 1)
     }
 }
@@ -6100,7 +6130,7 @@ struct SendRise: ViewModifier {
 extension Animation {
     /// One spring for a message going out: it carries the bubble up and the chat along with it,
     /// so the two move as one.
-    static let sendSpring = Animation.spring(response: 0.4, dampingFraction: 0.8)
+    static let sendSpring = Animation.spring(response: 0.3, dampingFraction: 0.86)
 }
 
 extension AnyTransition {

@@ -478,6 +478,21 @@ final class CodingSessions {
         resume(agent, text: (earlier + [text]).joined(separator: Threads.queueSeparator))
     }
 
+    /// Whether replies waiting for a turn to end could go in right now instead, mid-turn.
+    func canSendNow(_ agent: Agent) -> Bool { agent.source == .claude && agent.waiter != nil && !agent.queued.isEmpty }
+
+    /// Sends waiting replies into the running turn at once, through the session's hook. The
+    /// session sees them as relayed rather than typed, so it may ask before doing anything that
+    /// spends money or reaches other people; waiting for the turn to end avoids that.
+    func sendNow(_ agent: Agent) {
+        guard let waiter = agent.waiter, !agent.queued.isEmpty else { return }
+        let text = agent.queued.joined(separator: Threads.queueSeparator)
+        agent.queued = []
+        store.save()
+        agent.waiter = nil
+        waiter.respond(Data("The user replied from Perch, their notch app. Treat this as their next message:\n\n\(text)".utf8))
+    }
+
     /// Wakes the real session, so the reply and the answer both show up in its own chat.
     static let skillNote = "\n\n(Sent from the notch"
 

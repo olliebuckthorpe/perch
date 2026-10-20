@@ -128,7 +128,7 @@ final class SlackConversations {
         for i in fresh.indices { if let v = known[fresh[i].id], !v.isEmpty { fresh[i].viewID = v } }
         var waiting: [SlackLine] = []
         for local in old where local.id.hasPrefix("local-") {
-            if let i = fresh.lastIndex(where: { $0.mine && $0.text == local.text && $0.viewKey == $0.id }) {
+            if let i = Self.copy(of: local, in: fresh) {
                 fresh[i].viewID = local.viewID
             } else if Date().timeIntervalSince(local.time ?? .distantPast) < 60 {
                 waiting.append(local)
@@ -137,10 +137,38 @@ final class SlackConversations {
         lines[key] = fresh + waiting
     }
 
+    /// The real copy of a message shown the moment it was sent: the user's own, with the same
+    /// words once Slack's formatting is set aside, or else their first one from just after it.
+    /// Never one that already stands for another line on screen.
+    static func copy(of local: SlackLine, in lines: [SlackLine]) -> Int? {
+        func plain(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
+        let words = plain(local.text)
+        let free = lines.indices.filter { lines[$0].mine && lines[$0].viewKey == lines[$0].id && !lines[$0].id.hasPrefix("local-") }
+        if let i = free.last(where: { plain(lines[$0].text) == words }) { return i }
+        let sent = local.time ?? .distantPast
+        return free.first { (lines[$0].time ?? .distantPast) >= sent.addingTimeInterval(-5) }
+    }
+
+    /// A message arriving live: if it is the real copy of one just sent, it takes that one's
+    /// place on screen instead of appearing twice.
+    func arrive(_ key: String, _ line: SlackLine) {
+        guard lines[key]?.contains(where: { $0.id == line.id }) != true else { return }
+        if line.mine, let locals = lines[key]?.indices.filter({ lines[key]![$0].id.hasPrefix("local-") }), let first = locals.first {
+            var real = line
+            real.viewID = lines[key]![first].viewID
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { lines[key]![first] = real }
+            return
+        }
+        lines[key]?.append(line)
+    }
+
     /// A message the user just sent, shown at once while it goes.
-    func showSent(_ key: String, text: String, whatsapp: Bool, quote: SlackQuote? = nil) {
+    func showSent(_ key: String, text: String, whatsapp: Bool, quote: SlackQuote? = nil, sender: String = "You", picture: URL? = nil) {
         let id = "local-\(UUID().uuidString)"
-        let line = SlackLine(id: id, viewID: id, sender: "You", mine: true, text: text, time: Date(), ticks: whatsapp ? 0 : nil, quote: quote)
+        let line = SlackLine(id: id, viewID: id, sender: sender, mine: true, text: text, picture: picture,
+                             time: Date(), ticks: whatsapp ? 0 : nil, quote: quote)
         withAnimation(.sendSpring) {
             if lines[key] == nil { lines[key] = [] }
             lines[key]?.append(line)
@@ -210,6 +238,7 @@ final class SlackSource {
 
     /// The user's name in a workspace, for picking out mentions of them.
     func myName(in workspace: String) -> String? { links.values.first { $0.name == workspace }?.myName }
+    func myPicture(in workspace: String) -> URL? { links.values.first { $0.name == workspace }?.myPicture }
 
     /// Sends a reply as the user: in a thread, into that thread; to a mention in a channel, as a
     /// reply in a thread under it; to a direct message, straight into the conversation.
@@ -313,8 +342,9 @@ private final class Workspace {
     private let appToken: String
     private let userToken: String
     private var me = ""
-    /// The user's own name here, once known.
+    /// The user's own name and picture here, once known.
     var myName: String? { names[me] }
+    var myPicture: URL? { pictures[me] }
     private var team = ""
     private var socket: URLSessionWebSocketTask?
     private var names: [String: String] = [:]
@@ -658,12 +688,12 @@ private final class Workspace {
             }
             return
         }
-        guard store.lines[key] != nil, let ts = event["ts"] as? String,
-              store.lines[key]?.contains(where: { $0.id == ts }) != true else { return }
-        store.lines[key]?.append(SlackLine(id: ts, sender: who, mine: sender == me,
-                                           text: tidy(event["text"] as? String ?? "", event: event, full: true), picture: pictures[sender],
-                                           files: SlackFile.list(event, workspace: name),
-                                           time: Double(ts).map { Date(timeIntervalSince1970: $0) }))
+        guard store.lines[key] != nil, let ts = event["ts"] as? String else { return }
+        var m = event
+        m["user"] = sender
+        var line = line(m)
+        if !who.isEmpty && sender != me { line.sender = who }
+        store.arrive(key, line)
     }
 
     /// Loads the people and channels in this workspace for search.
