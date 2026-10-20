@@ -2524,6 +2524,8 @@ struct ChatView: View {
                             return
                         }
                         withAnimation(.sendSpring) { settle(proxy) }
+                        DispatchQueue.main.async { withAnimation(.sendSpring) { settle(proxy) } }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { withAnimation(.sendSpring) { settle(proxy) } }
                     } else {
                         settle(proxy)
                         DispatchQueue.main.async { settle(proxy) }
@@ -5346,7 +5348,7 @@ private struct SlackComposer: View {
                         withAnimation(.easeOut(duration: 0.2)) { newBelow = true }
                         return
                     }
-                    withAnimation(.sendSpring) { proxy.scrollTo(id, anchor: .bottom) }
+                    follow(proxy, to: id)
                 }
                 .onAppear {
                     if lines?.isEmpty == false { land(proxy) }
@@ -5389,18 +5391,33 @@ private struct SlackComposer: View {
                 if !files.isEmpty {
                     HStack(spacing: 6) {
                         ForEach(files, id: \.self) { file in
-                            HStack(spacing: 4) {
-                                Image(nsImage: NSWorkspace.shared.icon(forFile: file.path)).resizable().frame(width: 16, height: 16)
-                                Text(file.lastPathComponent).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
-                                Button { files.removeAll { $0 == file } } label: {
-                                    Image(systemName: "xmark").font(.system(size: 7.5, weight: .bold))
+                            if let thumb = NSImage(contentsOf: file), SlackFile.sending(file, workspace: "").image {
+                                // A picture waiting to go shows as itself, as in WhatsApp.
+                                Image(nsImage: thumb).resizable().aspectRatio(contentMode: .fill)
+                                    .frame(width: 56, height: 56)
+                                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                                    .overlay(alignment: .topTrailing) {
+                                        Button { withAnimation(.easeOut(duration: 0.15)) { files.removeAll { $0 == file } } } label: {
+                                            Image(systemName: "xmark").font(.system(size: 7.5, weight: .bold)).foregroundStyle(.white)
+                                                .frame(width: 16, height: 16).background(.black.opacity(0.6), in: Circle())
+                                        }
+                                        .buttonStyle(Press()).padding(3)
+                                    }
+                                    .transition(.scale(scale: 0.8).combined(with: .opacity))
+                            } else {
+                                HStack(spacing: 4) {
+                                    Image(nsImage: NSWorkspace.shared.icon(forFile: file.path)).resizable().frame(width: 16, height: 16)
+                                    Text(file.lastPathComponent).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                                    Button { files.removeAll { $0 == file } } label: {
+                                        Image(systemName: "xmark").font(.system(size: 7.5, weight: .bold))
+                                    }
+                                    .buttonStyle(Press())
                                 }
-                                .buttonStyle(Press())
+                                .foregroundStyle(.white.opacity(0.8))
+                                .padding(.horizontal, 7).padding(.vertical, 4)
+                                .background(.white.opacity(0.1), in: Capsule())
+                                .frame(maxWidth: 170)
                             }
-                            .foregroundStyle(.white.opacity(0.8))
-                            .padding(.horizontal, 7).padding(.vertical, 4)
-                            .background(.white.opacity(0.1), in: Capsule())
-                            .frame(maxWidth: 170)
                         }
                     }
                 }
@@ -5605,9 +5622,20 @@ private struct SlackComposer: View {
         let store = SlackConversations.shared
         let whatsapp = target.workspace == WhatsAppSource.workspace
         let channel = target.channel || whatsapp ? target.id : store.dmChannel["\(target.workspace):\(target.id)"]
-        if !message.isEmpty, let channel { store.showSent(store.key(target.workspace, channel), text: message, whatsapp: whatsapp, quote: quote,
-                                                                 sender: whatsapp ? "You" : (SlackSource.shared.myName(in: target.workspace) ?? "You"),
-                                                                 picture: whatsapp ? nil : SlackSource.shared.myPicture(in: target.workspace)) }
+        if let channel {
+            let key = store.key(target.workspace, channel)
+            let me = whatsapp ? "You" : (SlackSource.shared.myName(in: target.workspace) ?? "You")
+            let face = whatsapp ? nil : SlackSource.shared.myPicture(in: target.workspace)
+            let sending = sending.map { SlackFile.sending($0, workspace: target.workspace) }
+            if whatsapp && !sending.isEmpty {
+                // WhatsApp sends each file as its own message, the words going with the first.
+                for (i, file) in sending.enumerated() {
+                    store.showSent(key, text: i == 0 ? message : "", whatsapp: true, files: [file])
+                }
+            } else if !message.isEmpty || !sending.isEmpty {
+                store.showSent(key, text: message, whatsapp: whatsapp, quote: quote, sender: me, picture: face, files: sending)
+            }
+        }
         Dictation.shared.stop()
         ui.drafts[draftKey] = nil
         sent += 1
@@ -5870,7 +5898,7 @@ private struct SlackThreadView: View {
                     .padding(.horizontal, 4)
                 }
                 .onChange(of: lines?.last?.viewKey) { _, id in
-                    if let id { withAnimation(.sendSpring) { proxy.scrollTo(id, anchor: .bottom) } }
+                    if let id { follow(proxy, to: id) }
                 }
             }
             if state == "failed" {
@@ -6127,6 +6155,15 @@ struct SendRise: ViewModifier {
     }
 }
 
+/// Takes a chat to its newest message and keeps it there while that message lands: straight
+/// away, once it has been laid out, and again after the reply box has shrunk back, all on the
+/// send spring. A single scroll at the moment of sending lands short, under the typing bar.
+func follow(_ proxy: ScrollViewProxy, to id: String, anchor: UnitPoint = .bottom) {
+    withAnimation(.sendSpring) { proxy.scrollTo(id, anchor: anchor) }
+    DispatchQueue.main.async { withAnimation(.sendSpring) { proxy.scrollTo(id, anchor: anchor) } }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { withAnimation(.sendSpring) { proxy.scrollTo(id, anchor: anchor) } }
+}
+
 extension Animation {
     /// One spring for a message going out: it carries the bubble up and the chat along with it,
     /// so the two move as one.
@@ -6271,7 +6308,10 @@ struct WhatsAppQuote: View {
         }
         .background(.black.opacity(0.22))
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .frame(maxWidth: 260, alignment: .leading)
+        // Only as tall as its lines (the coloured edge would otherwise stretch to fill), and as
+        // wide as a bubble, or the whole reply box when it is the reply being written.
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: closable == nil ? 260 : .infinity, alignment: .leading)
     }
 
     static let accent = Color(red: 0.33, green: 0.85, blue: 0.62)

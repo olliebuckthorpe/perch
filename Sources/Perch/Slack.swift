@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import SwiftUI
 import Observation
 
@@ -143,10 +144,16 @@ final class SlackConversations {
     static func copy(of local: SlackLine, in lines: [SlackLine]) -> Int? {
         func plain(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
         let words = plain(local.text)
-        let free = lines.indices.filter { lines[$0].mine && lines[$0].viewKey == lines[$0].id && !lines[$0].id.hasPrefix("local-") }
-        if let i = free.last(where: { plain(lines[$0].text) == words }) { return i }
         let sent = local.time ?? .distantPast
-        return free.first { (lines[$0].time ?? .distantPast) >= sent.addingTimeInterval(-5) }
+        // Only the user's own lines not already standing for another, and a picture only for a
+        // picture: a photo with no caption must never be taken for an older one.
+        let free = lines.indices.filter { lines[$0].mine && lines[$0].viewKey == lines[$0].id && !lines[$0].id.hasPrefix("local-")
+            && lines[$0].files.isEmpty == local.files.isEmpty }
+        let recent = free.filter { (lines[$0].time ?? .distantPast) >= sent.addingTimeInterval(-5) }
+        if !words.isEmpty, let i = recent.last(where: { plain(lines[$0].text) == words }) ?? free.last(where: { plain(lines[$0].text) == words }) {
+            return i
+        }
+        return recent.first
     }
 
     /// A message arriving live: if it is the real copy of one just sent, it takes that one's
@@ -165,14 +172,38 @@ final class SlackConversations {
     }
 
     /// A message the user just sent, shown at once while it goes.
-    func showSent(_ key: String, text: String, whatsapp: Bool, quote: SlackQuote? = nil, sender: String = "You", picture: URL? = nil) {
+    func showSent(_ key: String, text: String, whatsapp: Bool, quote: SlackQuote? = nil, sender: String = "You", picture: URL? = nil,
+                  files: [SlackFile] = []) {
         let id = "local-\(UUID().uuidString)"
-        let line = SlackLine(id: id, viewID: id, sender: sender, mine: true, text: text, picture: picture,
+        let line = SlackLine(id: id, viewID: id, sender: sender, mine: true, text: text, picture: picture, files: files,
                              time: Date(), ticks: whatsapp ? 0 : nil, quote: quote)
         withAnimation(.sendSpring) {
             if lines[key] == nil { lines[key] = [] }
             lines[key]?.append(line)
         }
+    }
+}
+
+extension SlackFile {
+    /// A file just attached and being sent, shown in the chat at once: a picture shows from a
+    /// small copy made here, until the real one comes back.
+    static func sending(_ url: URL, workspace: String) -> SlackFile {
+        let ext = url.pathExtension.lowercased()
+        let image = ["jpg", "jpeg", "png", "heic", "gif", "webp", "tiff", "bmp"].contains(ext)
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        return SlackFile(id: "local-\(UUID().uuidString)", workspace: workspace, name: url.lastPathComponent, image: image,
+                         thumb: nil, url: url, link: nil, kind: ext, size: size, preview: image ? smallCopy(url) : nil)
+    }
+
+    /// The picture scaled down to a sensible size and saved as JPEG data.
+    static func smallCopy(_ url: URL, longest: Int = 900) -> Data? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: longest,
+              ] as CFDictionary) else { return nil }
+        return NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.82])
     }
 }
 

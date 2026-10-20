@@ -153,6 +153,34 @@ func setup() {
 	db.Exec(`ALTER TABLE messages ADD COLUMN reactions TEXT NOT NULL DEFAULT '{}'`)
 	// The message this one replies to, as JSON: its id, who sent it and a line of it.
 	db.Exec(`ALTER TABLE messages ADD COLUMN quote TEXT NOT NULL DEFAULT ''`)
+	// In a group, each member's receipt for each of the user's messages: 2 delivered, 3 read.
+	// A group message only goes blue once everyone has read it, as in WhatsApp.
+	var had string
+	db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'receipts'`).Scan(&had)
+	db.Exec(`CREATE TABLE IF NOT EXISTS receipts (chat TEXT NOT NULL, id TEXT NOT NULL, who TEXT NOT NULL,
+		level INTEGER NOT NULL, PRIMARY KEY (chat, id, who))`)
+	if had == "" {
+		// Group messages turned blue by the first reader before this was counted properly.
+		db.Exec(`UPDATE messages SET status = 2 WHERE status = 3 AND from_me = 1 AND chat LIKE '%@g.us'`)
+	}
+}
+
+// groupTick is where a group message's ticks stand from its members' receipts: blue once all of
+// them have read it, two grey once all have it, one grey before that.
+func groupTick(chat, id string, others int) int {
+	if others <= 0 {
+		return 1
+	}
+	var read, got int
+	db.QueryRow(`SELECT COUNT(*) FROM receipts WHERE chat = ? AND id = ? AND level >= 3`, chat, id).Scan(&read)
+	db.QueryRow(`SELECT COUNT(*) FROM receipts WHERE chat = ? AND id = ? AND level >= 2`, chat, id).Scan(&got)
+	switch {
+	case read >= others:
+		return 3
+	case got >= others:
+		return 2
+	}
+	return 1
 }
 
 // MARK: Events
@@ -249,7 +277,18 @@ func handle(evt any) {
 			case types.ReceiptTypeRead, types.ReceiptTypePlayed:
 				tick = 3
 			}
-			if tick > 0 && len(e.MessageIDs) > 0 {
+			if tick > 0 && len(e.MessageIDs) > 0 && e.Chat.Server == types.GroupServer {
+				// In a group each member's receipt counts on its own.
+				chat, who := key(e.Chat), key(e.Sender)
+				size, _ := groupShape(e.Chat)
+				for _, id := range e.MessageIDs {
+					db.Exec(`INSERT INTO receipts (chat, id, who, level) VALUES (?, ?, ?, ?)
+						ON CONFLICT(chat, id, who) DO UPDATE SET level = MAX(level, excluded.level)`, chat, id, who, tick)
+					status := groupTick(chat, id, size-1)
+					db.Exec(`UPDATE messages SET status = MAX(status, ?) WHERE chat = ? AND id = ? AND from_me = 1`, status, chat, id)
+					emit("status", map[string]any{"chat": chat, "ids": []string{id}, "status": status})
+				}
+			} else if tick > 0 && len(e.MessageIDs) > 0 {
 				chat := key(e.Chat)
 				for _, id := range e.MessageIDs {
 					db.Exec(`UPDATE messages SET status = MAX(status, ?) WHERE chat = ? AND id = ? AND from_me = 1`, tick, chat, id)
