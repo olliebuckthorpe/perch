@@ -155,10 +155,21 @@ enum Threads {
     /// A message sent from the notch is shown at once, then the agent's own record of it arrives
     /// under a different id. Keeping the original id means the bubble stays where it is instead
     /// of being removed and re-added, which is what made sending look jumpy.
+    /// A message as said, for matching what was typed in the notch with how the agent's record
+    /// keeps it: without the relay wording in front, attached-picture lines, or spacing.
+    static func said(_ text: String) -> String {
+        var t = text
+        if let r = t.range(of: replyMarker) { t = String(t[r.upperBound...]) }
+        t = t.components(separatedBy: "\n").filter { !$0.hasPrefix("[Image attached") && !$0.hasPrefix("[Image #") }
+            .joined(separator: " ")
+        return String(t.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased().prefix(300))
+    }
+
     static func keepingLocalIDs(_ loaded: [ChatMessage], from current: [ChatMessage]) -> [ChatMessage] {
         var loaded = loaded
         for local in current where local.id.hasPrefix("local-") {
-            if let i = loaded.lastIndex(where: { $0.fromUser && $0.text == local.text && !$0.id.hasPrefix("local-") }) {
+            let words = said(local.text)
+            if let i = loaded.lastIndex(where: { $0.fromUser && !$0.id.hasPrefix("local-") && ($0.text == local.text || (!words.isEmpty && said($0.text) == words)) }) {
                 loaded[i].id = local.id
                 matched.insert(local.id)
             }
@@ -175,11 +186,11 @@ enum Threads {
     /// every refresh.
     static func unsent(in current: [ChatMessage], loaded: [ChatMessage]) -> [ChatMessage] {
         let ids = Set(loaded.map(\.id))
-        let texts = Set(loaded.filter(\.fromUser).map(\.text))
+        let texts = Set(loaded.filter(\.fromUser).map { said($0.text) })
         var seen = Set<String>()
         return current.filter {
             $0.id.hasPrefix("local-") && !ids.contains($0.id) && !matched.contains($0.id)
-                && !texts.contains($0.text) && seen.insert($0.id).inserted
+                && !texts.contains(said($0.text)) && seen.insert($0.id).inserted
         }
     }
 

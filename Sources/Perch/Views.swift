@@ -2376,6 +2376,11 @@ private struct CodexQueueCard: View {
 
 /// One agent's conversation: recent messages in full, and a reply box.
 struct ChatView: View {
+    /// Whether the newest message is in view (the user is following along), and whether
+    /// something arrived while they were reading further up.
+    @State private var following = true
+    @State private var newBelow = false
+    @State private var viewHeight: CGFloat = 0
     let agent: Agent
     @Environment(NotchUI.self) private var ui
     @Environment(\.sideWindow) private var sideWindow
@@ -2448,6 +2453,7 @@ struct ChatView: View {
                             }
                             .id(item.id)
                             .transition(item.message?.fromUser == true ? .sent : .opacity)
+                            .reportsTop(item.id == items.last?.id)
                         }
                         if agent.status == .working {
                             // Its face, busy at work, as in Grok Bot's own chat.
@@ -2467,12 +2473,33 @@ struct ChatView: View {
                 }
                 // A fixed height keeps the island the same size every time it opens, so the
                 // opening animation has one target instead of jumping as the history loads.
+                .coordinateSpace(name: "chat")
+                .background(GeometryReader { g in Color.clear.onAppear { viewHeight = g.size.height }
+                    .onChange(of: g.size.height) { _, h in viewHeight = h } })
+                .onPreferenceChange(LastTopKey.self) { top in
+                    following = top < viewHeight + 24
+                    if following, newBelow { withAnimation(.easeOut(duration: 0.2)) { newBelow = false } }
+                }
+                .overlay(alignment: .bottom) {
+                    if newBelow {
+                        NewBelowButton {
+                            withAnimation(.sendSpring) { settle(proxy) }
+                            newBelow = false
+                        }
+                    }
+                }
                 .frame(height: sideWindow == nil ? historyHeight : nil)
                 .frame(maxHeight: sideWindow == nil ? historyHeight : .infinity)
                 .onChange(of: messages.last?.id) { before, _ in
                     // A new message glides into view. A whole history arriving at once (opening
                     // a chat, or after a relaunch) jumps straight to the end instead of racing past.
                     if let before, messages.contains(where: { $0.id == before }) {
+                        // Reading further up: say something came, do not pull the view down.
+                        // Your own message always goes to the bottom.
+                        if messages.last?.fromUser != true && !following {
+                            withAnimation(.easeOut(duration: 0.2)) { newBelow = true }
+                            return
+                        }
                         withAnimation(.sendSpring) { settle(proxy) }
                     } else {
                         settle(proxy)
@@ -5199,6 +5226,7 @@ private struct SlackComposer: View {
                                              continued: Self.continues(line, after: lines.prevLine(line)))
                                         .id(line.id)
                                         .transition(line.mine ? .sent : .opacity)
+                                        .reportsTop(line.viewKey == lines.last?.viewKey)
                                 } else {
                                 HStack(alignment: .top, spacing: 8) {
                                     if line.mine { Spacer(minLength: 50) }
@@ -5241,6 +5269,7 @@ private struct SlackComposer: View {
                                 }
                                 .id(line.id)
                                 .transition(line.mine ? .sent : .opacity)
+                                .reportsTop(line.viewKey == lines.last?.viewKey)
                                 }
                             }
                         } else {
@@ -5249,10 +5278,30 @@ private struct SlackComposer: View {
                     }
                     .padding(.horizontal, 4)
                 }
+                .coordinateSpace(name: "chat")
+                .background(GeometryReader { g in Color.clear.onAppear { viewHeight = g.size.height }
+                    .onChange(of: g.size.height) { _, h in viewHeight = h } })
+                .onPreferenceChange(LastTopKey.self) { top in
+                    following = top < viewHeight + 24
+                    if following, newBelow { withAnimation(.easeOut(duration: 0.2)) { newBelow = false } }
+                }
+                .overlay(alignment: .bottom) {
+                    if newBelow, let last = lines?.last {
+                        NewBelowButton {
+                            withAnimation(.sendSpring) { proxy.scrollTo(last.id, anchor: .bottom) }
+                            newBelow = false
+                        }
+                    }
+                }
                 .onChange(of: lines?.last?.id) { _, id in
                     guard let id else { return }
-                    // The first load lands on the first unread message; later ones follow the newest.
+                    // The first load lands on the first unread message; later ones follow the newest,
+                    // unless the user is reading further up: then a button says something came.
                     if !landed { return land(proxy) }
+                    if lines?.last?.mine != true && !following {
+                        withAnimation(.easeOut(duration: 0.2)) { newBelow = true }
+                        return
+                    }
                     withAnimation(.sendSpring) { proxy.scrollTo(id, anchor: .bottom) }
                 }
                 .onAppear { if lines?.isEmpty == false { land(proxy) } }
@@ -5399,6 +5448,9 @@ private struct SlackComposer: View {
     private var replyKey: String { "\(target.workspace):\(target.id)" }
 
     @State private var landed = false
+    @State private var following = true
+    @State private var newBelow = false
+    @State private var viewHeight: CGFloat = 0
     /// How many were unread when this opened, and the first of them (where it opens).
     private var unreadAtOpen: Int { ui.openedUnread[replyKey] ?? 0 }
     private var newMessages: String? {
@@ -5482,6 +5534,41 @@ private struct SlackComposer: View {
                 if let replying { ui.lineReply[replyKey] = replying }
             }
         }
+    }
+}
+
+/// Where the newest message starts, relative to the top of the chat's visible area, so the chat
+/// knows whether the user is following along or has scrolled up to read something.
+struct LastTopKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+extension View {
+    /// Marks this as the newest message, for `LastTopKey`.
+    func reportsTop(_ on: Bool) -> some View {
+        background {
+            if on {
+                GeometryReader { g in Color.clear.preference(key: LastTopKey.self, value: g.frame(in: .named("chat")).minY) }
+            }
+        }
+    }
+}
+
+/// Something new arrived while the user was reading further up: a small button to go to it,
+/// instead of the chat pulling them down.
+struct NewBelowButton: View {
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Label("New messages", systemImage: "arrow.down").font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.black).padding(.horizontal, 11).padding(.vertical, 6)
+                .background(.white, in: Capsule())
+                .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+        }
+        .buttonStyle(Press())
+        .padding(.bottom, 8)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 }
 
@@ -5936,6 +6023,7 @@ private struct SlackFileView: View {
     let file: SlackFile
     /// Inside a WhatsApp bubble: tighter corners and no card of its own.
     var bare = false
+    @State private var failed = false
     @Environment(NotchUI.self) private var ui
     @State private var image: NSImage?
     @State private var hovered = false
@@ -5958,7 +6046,15 @@ private struct SlackFileView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(file.name).font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.92))
                             .lineLimit(2).truncationMode(.middle).fixedSize(horizontal: false, vertical: true)
-                        Text(details).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
+                        if failed {
+                            // Said on the card, with the way out, rather than jumping into Slack.
+                            HStack(spacing: 6) {
+                                Text("Could not download").font(.system(size: 10.5)).foregroundStyle(Palette.red)
+                                if file.link != nil { Button("Open in Slack") { openInSlack() }.buttonStyle(LinkButton()) }
+                            }
+                        } else {
+                            Text(details).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
+                        }
                     }
                     Spacer(minLength: 4)
                     Group {
@@ -6026,7 +6122,7 @@ private struct SlackFileView: View {
 
     private func open() {
         download { data in
-            guard let data else { return openInSlack() }
+            guard let data else { return failed = true }
             let dir = FileManager.default.temporaryDirectory.appendingPathComponent("perch-slack/\(file.id)")
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let target = dir.appendingPathComponent(file.name)
@@ -6037,7 +6133,7 @@ private struct SlackFileView: View {
 
     private func save() {
         download { data in
-            guard let data else { return openInSlack() }
+            guard let data else { return failed = true }
             guard (try? data.write(to: freeDownloadsURL(file.name))) != nil else { return NSSound.beep() }
         }
     }

@@ -418,7 +418,8 @@ private final class Workspace {
                     guard let self else { return [] }
                     return raw.map { m in
                         let user = m["user"] as? String ?? ""
-                        let bot = (m["bot_profile"] as? [String: Any])?["name"] as? String ?? m["username"] as? String
+                        // Your own messages sent through Perch carry Perch's app name: they are still yours.
+                        let bot = user == self.me ? nil : (m["bot_profile"] as? [String: Any])?["name"] as? String ?? m["username"] as? String
                         return SlackLine(id: m["ts"] as? String ?? UUID().uuidString,
                                          sender: bot ?? self.names[user] ?? (user == self.me ? "You" : ""),
                                          mine: user == self.me,
@@ -655,7 +656,7 @@ private final class Workspace {
         // Every message keeps an open conversation current, including your own from elsewhere.
         let loaded = SlackConversations.shared.lines[SlackConversations.shared.key(name, channel)] != nil
         if loaded {
-            let bot = (event["bot_profile"] as? [String: Any])?["name"] as? String ?? event["username"] as? String
+            let bot = sender == me ? nil : (event["bot_profile"] as? [String: Any])?["name"] as? String ?? event["username"] as? String
             resolve(sender: sender, botName: bot, channel: channel, direct: true) { [weak self] who, _ in
                 self?.record(event, channel: channel, sender: sender, who: who)
             }
