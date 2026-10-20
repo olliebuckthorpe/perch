@@ -101,6 +101,11 @@ final class Agent: Identifiable {
     @ObservationIgnored var interrupting = false
     /// Stop was pressed while a step was running in the Claude app; sent at the next chance.
     @ObservationIgnored var stopRequested: String?
+    /// When the turn Perch is running began, so a quick follow-up can join it.
+    @ObservationIgnored var turnStartedAt: Date?
+    /// Messages sent in a quick burst, gathered for a moment so they go in together.
+    @ObservationIgnored var gathering: [String] = []
+    @ObservationIgnored var gatherWork: DispatchWorkItem?
     /// Started from the notch and run in the background, not open in any app.
     var background = false
     /// Handed over to the Claude desktop app, so it shows in its sidebar too.

@@ -463,9 +463,35 @@ final class CodingSessions {
             queueCodex(agent, text: text, messageID: messageID)
             return
         }
-        // A turn Perch is running itself waits for its turn to end, like any other; sending several
-        // messages in a row must not cut its work off halfway. "Interrupt with it" is there for when
-        // that is wanted.
+        // Messages often come in a quick burst (two or three about the same thing). They are
+        // gathered for a few seconds, each one restarting the wait, and go in together as one.
+        agent.gathering.append(text)
+        agent.gatherWork?.cancel()
+        let work = DispatchWorkItem { [weak self, weak agent] in
+            guard let self, let agent, !agent.gathering.isEmpty else { return }
+            let all = agent.gathering.joined(separator: Threads.queueSeparator)
+            agent.gathering = []
+            self.deliver(agent, text: all)
+        }
+        agent.gatherWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
+    }
+
+    /// Sends what was gathered by the route this chat allows.
+    private func deliver(_ agent: Agent, text: String) {
+        // A turn Perch started moments ago on an earlier message: stop it and start again with
+        // both, so a follow-up is read with the message it follows, not as a separate job after.
+        if agent.source == .claude, let runner = agent.runner, runner.isRunning,
+           let started = agent.turnStartedAt, Date().timeIntervalSince(started) < 30 {
+            agent.queued.append(text)
+            store.save()
+            agent.interrupting = true
+            agent.detail = "Adding your follow-up…"
+            runner.interrupt()
+            return
+        }
+        // Otherwise a busy chat finishes its turn first, so long work is never cut off halfway;
+        // "Interrupt with it" is there for when that is wanted.
         if (agent.status == .working && agent.pending == nil) || agent.sending {
             // Mid-turn with no way in right now: hold it for the next opening, a moment away.
             agent.queued.append(text)
@@ -537,6 +563,8 @@ final class CodingSessions {
     /// Stops a chat's current turn. One Perch is running stops at once. One running in the Claude
     /// app is told to stop through its session as soon as its current step ends (its only way in).
     func stop(_ agent: Agent) {
+        agent.gatherWork?.cancel()
+        agent.gathering = []
         agent.queued = []
         store.save()
         if let runner = agent.runner, runner.isRunning {
@@ -853,6 +881,7 @@ final class CodingSessions {
     }
 
     private func run(_ agent: Agent, exe: String, text: String, args: [String]) {
+        agent.turnStartedAt = Date()
         agent.sending = true
         agent.status = .working
         agent.detail = oneLine(text)
