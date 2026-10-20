@@ -83,6 +83,7 @@ final class NotchUI {
     func read(_ t: SlackTarget) { keepSlack(t) }
 
     private func keepSlack(_ t: SlackTarget) {
+        touch(t)
         // Opening a WhatsApp chat is reading it: the phone shows it read too.
         if t.workspace == WhatsAppSource.workspace, (slackUnread["\(t.workspace):\(t.id)"] ?? 0) > 0 || WhatsAppSource.shared.chats.contains(where: { $0.id == t.id && $0.unread > 0 }) {
             WhatsAppSource.shared.markRead(t.id)
@@ -507,7 +508,24 @@ final class NotchUI {
         return true
     }
 
+    /// Pictures pasted into a Slack or WhatsApp conversation, by "workspace:id", waiting for its
+    /// reply box to pick them up.
+    var pastedFiles: [String: [URL]] = [:]
+
+    func pasteImages(into t: SlackTarget) -> Bool {
+        let images = Attachment.fromPasteboard()
+        guard !images.isEmpty else { return false }
+        pastedFiles["\(t.workspace):\(t.id)", default: []].append(contentsOf: images.map { URL(fileURLWithPath: $0.path) })
+        return true
+    }
+
+    /// Conversations the user just opened or wrote in, and when: they stay in the sidebar for
+    /// a few minutes after, for a quick follow-up.
+    var conversationTouched: [String: Date] = [:]
+    func touch(_ t: SlackTarget) { conversationTouched["\(t.workspace):\(t.id)"] = Date() }
+
     func pasteImages() -> Bool {
+        if expanded, !cardsOnly, !showingClips, !showingShelf, !showingTasks, let t = slackTarget { return pasteImages(into: t) }
         // The chat on screen is the one being written to. (Going by which box last had the
         // cursor could point at a chat that is no longer showing, and the picture vanished.)
         // Starting a new chat collects them under "new"; otherwise the chat on screen.
@@ -1063,6 +1081,10 @@ final class NotchController {
             if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v",
                event.window is SidePanelWindow, let id = SidePanel.shared.agentID {
                 return self?.ui.pasteImages(into: id) == true ? nil : event
+            }
+            if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v",
+               event.window is SidePanelWindow, let t = SidePanel.shared.conversation {
+                return self?.ui.pasteImages(into: t) == true ? nil : event
             }
             if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v",
                self?.ui.pasteImages() == true {

@@ -835,6 +835,8 @@ private struct Rail: View {
     /// While the pointer is over the list its order holds still, so a row never moves out from
     /// under a click. Everywhere else the list is newest first, live.
     @State private var frozen: [String]?
+    /// Ticks over every so often, so a conversation's five minutes running out is noticed.
+    @State private var now = Date()
 
     private var displayedAgents: [Agent] {
         agents.filter { agent in
@@ -850,7 +852,9 @@ private struct Rail: View {
             let open = ui.slackTarget?.workspace == t.workspace && ui.slackTarget?.id == t.id
             let whatsappUnread = t.workspace == WhatsAppSource.workspace
                 && WhatsAppSource.shared.chats.contains { $0.id == t.id && $0.unread > 0 && !$0.crowd }
-            return open || (ui.slackUnread[key] ?? 0) > 0 || whatsappUnread || ui.pinnedConversations.contains(key)
+            // Opened or written in within the last five minutes: still here for a follow-up.
+            let recent = ui.conversationTouched[key].map { now.timeIntervalSince($0) < 300 } ?? false
+            return open || recent || (ui.slackUnread[key] ?? 0) > 0 || whatsappUnread || ui.pinnedConversations.contains(key)
         }
     }
 
@@ -949,6 +953,12 @@ private struct Rail: View {
             }
         }
         .frame(width: 264, height: 452, alignment: .top)
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(20))
+                withAnimation(.spring(response: 0.36, dampingFraction: 0.86)) { now = Date() }
+            }
+        }
     }
 
     private var sidebarEntries: [SidebarChat] {
@@ -5002,7 +5012,13 @@ private struct SlackComposer: View {
     @Environment(\.sideWindow) private var sideWindow
     @State private var voice = VoiceRecording()
     @State private var sent = 0
-    @State private var text = ""
+    /// The reply being written, kept with the other drafts so it survives switching chats and
+    /// restarts, and so dictation can write into it.
+    private var draftKey: String { "conversation:\(target.workspace):\(target.id)" }
+    private var text: String { ui.drafts[draftKey] ?? "" }
+    private var draft: Binding<String> {
+        Binding(get: { ui.drafts[draftKey] ?? "" }, set: { ui.drafts[draftKey] = $0 })
+    }
     @State private var files: [URL] = []
     @State private var state: String?
     @State private var ask = 0
@@ -5165,7 +5181,7 @@ private struct SlackComposer: View {
                     }
                 }
                 HStack(alignment: .bottom, spacing: 6) {
-                    GrowingText(text: $text, placeholder: "Message \(liveName(target))", focusAsk: ask,
+                    GrowingText(text: draft, placeholder: "Message \(liveName(target))", focusAsk: ask,
                                 onFocus: { _ in }, onSubmit: send, onTab: { false })
                         .fixedSize(horizontal: false, vertical: true)
                         .overlay(alignment: .topLeading) {
@@ -5178,6 +5194,14 @@ private struct SlackComposer: View {
                         Image(systemName: "paperclip").font(.system(size: 13)).foregroundStyle(.white.opacity(0.45))
                     }
                     .buttonStyle(Press()).help("Attach files")
+                    if target.workspace != WhatsAppSource.workspace {
+                        let listening = Dictation.shared.activeAgentID == draftKey
+                        Button { Dictation.shared.toggle(for: draftKey) } label: {
+                            Image(systemName: listening ? "mic.fill" : "mic").font(.system(size: 13))
+                                .foregroundStyle(listening ? Palette.red : .white.opacity(0.45))
+                        }
+                        .buttonStyle(Press()).help(listening ? "Stop dictating" : "Dictate a reply")
+                    }
                     if target.workspace == WhatsAppSource.workspace {
                         Button {
                             if voice.recording { voice.finish { files.append($0) } }
@@ -5214,6 +5238,12 @@ private struct SlackComposer: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.86), value: ui.lineReply[replyKey]?.id)
         // Aiming a reply puts the cursor in the box, ready to type.
         .onChange(of: ui.lineReply[replyKey]?.id) { _, id in if id != nil { ask += 1 } }
+        // Pictures pasted with Cmd+V join the files waiting to go.
+        .onChange(of: ui.pastedFiles[replyKey]) { _, pasted in
+            guard let pasted, !pasted.isEmpty else { return }
+            files.append(contentsOf: pasted)
+            ui.pastedFiles[replyKey] = nil
+        }
         .onDisappear { voice.cancel(); ui.hoveredLine = nil }
         .onAppear {
             SlackSource.shared.history(for: target)
@@ -5279,8 +5309,10 @@ private struct SlackComposer: View {
         let whatsapp = target.workspace == WhatsAppSource.workspace
         let channel = target.channel || whatsapp ? target.id : store.dmChannel["\(target.workspace):\(target.id)"]
         if !message.isEmpty, let channel { store.showSent(store.key(target.workspace, channel), text: message, whatsapp: whatsapp, quote: quote) }
-        text = ""
+        Dictation.shared.stop()
+        ui.drafts[draftKey] = nil
         sent += 1
+        ui.touch(target)
         SlackSource.shared.send(to: target, text: message, files: sending, replyTo: replying?.id) { ok in
             state = ok ? nil : "failed"
             if ok {
@@ -5288,7 +5320,7 @@ private struct SlackComposer: View {
                 // The real copy, from Slack's or WhatsApp's own record.
                 DispatchQueue.main.asyncAfter(deadline: .now() + (whatsapp ? 0.1 : 0.8)) { SlackSource.shared.history(for: target) }
             } else {
-                text = message
+                ui.drafts[draftKey] = message
                 if let replying { ui.lineReply[replyKey] = replying }
             }
         }
@@ -5966,6 +5998,7 @@ private struct SlackBanner: View {
         let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, state != "sending" else { return }
         state = "sending"
+        ui.touch(alert.target)
         SlackSource.shared.reply(to: alert, text: text) { ok in
             state = ok ? "sent" : "failed"
             if ok {
