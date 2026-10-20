@@ -567,30 +567,30 @@ final class CodingSessions {
     }
 
     /// Starts a new Codex chat from the notch, in the background, able to edit files in its folder.
-    /// It shows straight away; once Codex has given the chat its id, it becomes the same chat the
-    /// rollout watcher follows, so it also appears in the Codex app's list.
+    /// It starts through Codex's app server, so it is one of the Codex app's own chats and shows in
+    /// its list, named. It shows here straight away and becomes the chat the rollout watcher
+    /// follows once Codex has given it an id.
     @discardableResult
     func startCodexChat(prompt: String, folder: String) -> Agent? {
         let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return nil }
-        let starting = store.upsert(source: .codex, sessionID: "starting-\(UUID().uuidString.lowercased())", name: Self.quickTitle(prompt))
+        let title = Self.quickTitle(prompt)
+        let starting = store.upsert(source: .codex, sessionID: "starting-\(UUID().uuidString.lowercased())", name: title)
         starting.cwd = folder
         starting.kept = true
         starting.hostBundleID = Self.codexBundleID
         starting.addLocal(prompt)
         starting.status = .working
         starting.detail = "Starting in Codex…"
-        guard let exe = Shell.find("codex") else {
+        guard let start = CodexStart(folder: folder, prompt: prompt, title: title) else {
             starting.status = .done
             starting.detail = "Could not find the codex command"
             return starting
         }
         var chat: Agent?
-        starting.runner = Shell.run(exe, ["exec", "--json", "-C", folder, "-s", "workspace-write", "--skip-git-repo-check", prompt],
-                                    cwd: folder, env: ["PERCH_HEADLESS": "1"], captureErrors: true, onOutput: { [weak self, weak starting] chunk in
-            guard let self, let starting, chat == nil,
-                  let match = chunk.firstMatch(of: #/"thread_id"\s*:\s*"([^"]+)"/#) else { return }
-            let real = self.store.upsert(source: .codex, sessionID: String(match.1), name: starting.name)
+        start.started = { [weak self, weak starting] id in
+            guard let self, let starting else { return }
+            let real = self.store.upsert(source: .codex, sessionID: id, name: starting.name)
             real.name = starting.name
             real.cwd = folder
             real.kept = true
@@ -602,15 +602,22 @@ final class CodingSessions {
             if NotchUI.shared.selectedID == starting.id { NotchUI.shared.selectedID = real.id }
             self.store.remove(starting)
             self.store.save()
-        }) { [weak starting] code, output in
+        }
+        start.finished = { [weak starting] problem in
             if let chat {
-                // The rollout watcher has the reply; this only settles the status.
                 if chat.status == .working { chat.status = .done }
                 Threads.load(chat)
             } else if let starting {
                 starting.status = .done
-                let line = output.components(separatedBy: .newlines).last { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? ""
-                starting.detail = code == 0 ? "Finished" : oneLine(line.isEmpty ? "Codex did not start (exit \(code))" : line, max: 300)
+                starting.detail = problem ?? "Codex did not start"
+            }
+        }
+        // A tidier title from the small model, given to Codex too, once it has one.
+        if let claude = Shell.find("claude") {
+            makeTitle(for: prompt, exe: claude) { made in
+                guard let made else { return }
+                (chat ?? starting).name = made
+                start.name(made)
             }
         }
         return starting
