@@ -49,6 +49,10 @@ struct SlackLine: Identifiable, Equatable {
     var reactions: [String: String] = [:]
     /// WhatsApp only: the message this one replies to.
     var quote: SlackQuote?
+    /// Slack only: the thread under this message, as Slack summarises it.
+    var replyCount = 0
+    var replyAt: Date?
+    var repliers: [URL] = []
 }
 
 /// The message a reply quotes: who sent it and a line of what it said.
@@ -99,6 +103,8 @@ final class SlackConversations {
     /// The channel a direct message to a person lives in, once known, by "workspace:user".
     var dmChannel: [String: String] = [:]
     var loading = Set<String>()
+    /// Open threads, parent first, by "workspace:channel:thread ts".
+    var threads: [String: [SlackLine]] = [:]
 
     func key(_ workspace: String, _ channel: String) -> String { "\(workspace):\(channel)" }
 
@@ -200,6 +206,18 @@ final class SlackSource {
         if alert.workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.send(to: alert.target, text: text, files: [], done: done) }
         guard let link = links.values.first(where: { $0.name == alert.workspace }) else { return done(false) }
         link.post(channel: alert.channel, text: text, thread: alert.thread ?? (alert.direct ? nil : alert.ts), done: done)
+    }
+
+    /// Slack threads: load one, reply in one, and where its lines are kept.
+    func thread(_ target: SlackTarget, ts: String) {
+        links.values.first(where: { $0.name == target.workspace })?.thread(target, ts: ts)
+    }
+    func replyInThread(_ target: SlackTarget, ts: String, text: String, done: @escaping (Bool) -> Void) {
+        guard let link = links.values.first(where: { $0.name == target.workspace }) else { return done(false) }
+        link.replyInThread(target, ts: ts, text: text, done: done)
+    }
+    func threadKey(_ target: SlackTarget, ts: String) -> String? {
+        links.values.first(where: { $0.name == target.workspace })?.threadKey(target, ts: ts)
     }
 
     /// Read in Perch is read in Slack (and on WhatsApp).
@@ -438,14 +456,7 @@ private final class Workspace {
                     guard let self else { return [] }
                     return raw.map { m in
                         let user = m["user"] as? String ?? ""
-                        // Your own messages sent through Perch carry Perch's app name: they are still yours.
-                        let bot = user == self.me ? nil : (m["bot_profile"] as? [String: Any])?["name"] as? String ?? m["username"] as? String
-                        return SlackLine(id: m["ts"] as? String ?? UUID().uuidString,
-                                         sender: bot ?? self.names[user] ?? (user == self.me ? "You" : ""),
-                                         mine: user == self.me,
-                                         text: self.tidy(m["text"] as? String ?? "", event: m, full: true),
-                                         picture: self.pictures[user], files: SlackFile.list(m, workspace: self.name),
-                                         time: (m["ts"] as? String).flatMap(Double.init).map { Date(timeIntervalSince1970: $0) })
+                        return self.line(m)
                     }
                 }
                 // Shown straight away; names Perch doesn't know yet fill in as they arrive.
@@ -490,9 +501,84 @@ private final class Workspace {
     }
 
     /// A message arriving live goes into its conversation if that conversation is loaded.
+    /// One Slack message as a line, with its thread summary.
+    private func line(_ m: [String: Any]) -> SlackLine {
+        let user = m["user"] as? String ?? ""
+        // Your own messages sent through Perch carry Perch's app name: they are still yours.
+        let bot = user == me ? nil : (m["bot_profile"] as? [String: Any])?["name"] as? String ?? m["username"] as? String
+        var line = SlackLine(id: m["ts"] as? String ?? UUID().uuidString,
+                             sender: bot ?? names[user] ?? (user == me ? "You" : ""),
+                             mine: user == me,
+                             text: tidy(m["text"] as? String ?? "", event: m, full: true),
+                             picture: pictures[user], files: SlackFile.list(m, workspace: name),
+                             time: (m["ts"] as? String).flatMap(Double.init).map { Date(timeIntervalSince1970: $0) })
+        if (m["thread_ts"] as? String) == (m["ts"] as? String) {
+            line.replyCount = m["reply_count"] as? Int ?? 0
+            line.replyAt = (m["latest_reply"] as? String).flatMap(Double.init).map { Date(timeIntervalSince1970: $0) }
+            line.repliers = (m["reply_users"] as? [String] ?? []).compactMap { pictures[$0] }
+        }
+        return line
+    }
+
+    /// A thread's messages, parent first, into `SlackConversations.threads`.
+    func thread(_ target: SlackTarget, ts: String) {
+        channel(for: target) { [weak self] channel in
+            guard let self, let channel else { return }
+            self.api("conversations.replies", token: self.userToken, ["channel": channel, "ts": ts, "limit": "100"]) { [weak self] o in
+                guard let self, let raw = o?["messages"] as? [[String: Any]] else { return }
+                let store = SlackConversations.shared
+                let key = "\(store.key(self.name, channel)):\(ts)"
+                store.threads[key] = raw.map { self.line($0) }
+                // Names not known yet fill in once looked up.
+                let unknown = Set(raw.compactMap { $0["user"] as? String }).filter { self.names[$0] == nil && !$0.isEmpty }
+                guard !unknown.isEmpty else { return }
+                let group = DispatchGroup()
+                for user in unknown {
+                    group.enter()
+                    self.resolve(sender: user, botName: nil, channel: channel, direct: true) { _, _ in group.leave() }
+                }
+                group.notify(queue: .main) { store.threads[key] = raw.map { self.line($0) } }
+            }
+        }
+    }
+
+    func replyInThread(_ target: SlackTarget, ts: String, text: String, done: @escaping (Bool) -> Void) {
+        channel(for: target) { [weak self] channel in
+            guard let self, let channel else { return done(false) }
+            self.post(channel: channel, text: text, thread: ts) { ok in
+                done(ok)
+                if ok { self.thread(target, ts: ts) }
+            }
+        }
+    }
+
+    /// The thread key for a conversation, once its channel is known.
+    func threadKey(_ target: SlackTarget, ts: String) -> String? {
+        let store = SlackConversations.shared
+        let channel = target.channel ? target.id : store.dmChannel["\(name):\(target.id)"]
+        return channel.map { "\(store.key(name, $0)):\(ts)" }
+    }
+
     private func record(_ event: [String: Any], channel: String, sender: String, who: String) {
         let store = SlackConversations.shared
         let key = store.key(name, channel)
+        // A reply in a thread stays in its thread, as in Slack: the message it hangs off counts it.
+        if let thread = event["thread_ts"] as? String, thread != event["ts"] as? String,
+           event["subtype"] as? String != "thread_broadcast" {
+            if let i = store.lines[key]?.firstIndex(where: { $0.id == thread }) {
+                store.lines[key]?[i].replyCount += 1
+                store.lines[key]?[i].replyAt = Date()
+                if let p = pictures[sender], store.lines[key]?[i].repliers.contains(p) == false { store.lines[key]?[i].repliers.append(p) }
+            }
+            let threadKey = "\(key):\(thread)"
+            if store.threads[threadKey] != nil, let ts = event["ts"] as? String,
+               store.threads[threadKey]?.contains(where: { $0.id == ts }) != true {
+                var m = event
+                m["user"] = sender
+                store.threads[threadKey]?.append(line(m))
+            }
+            return
+        }
         guard store.lines[key] != nil, let ts = event["ts"] as? String,
               store.lines[key]?.contains(where: { $0.id == ts }) != true else { return }
         store.lines[key]?.append(SlackLine(id: ts, sender: who, mine: sender == me,

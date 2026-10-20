@@ -5223,7 +5223,8 @@ private struct SlackComposer: View {
                                     // Slack looks like Slack: flat rows, a square picture, name and
                                     // time, and follow-ups from the same person tucked under.
                                     SlackRow(line: line, workspace: target.workspace,
-                                             continued: Self.continues(line, after: lines.prevLine(line)))
+                                             continued: Self.continues(line, after: lines.prevLine(line)),
+                                             onThread: { withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) { openThread = line } })
                                         .id(line.id)
                                         .transition(line.mine ? .sent : .opacity)
                                         .reportsTop(line.viewKey == lines.last?.viewKey)
@@ -5414,6 +5415,14 @@ private struct SlackComposer: View {
         }
         .frame(height: sideWindow == nil ? 452 : nil, alignment: .top)
         .frame(maxHeight: sideWindow == nil ? 452 : .infinity, alignment: .top)
+        .overlay {
+            if let parent = openThread {
+                SlackThreadView(target: target, parent: parent) {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) { openThread = nil }
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
         .overlay { Lightbox(side: sideWindow != nil) }
         .animation(.spring(response: 0.3, dampingFraction: 0.86), value: ui.lineReply[replyKey]?.id)
         // Aiming a reply puts the cursor in the box, ready to type.
@@ -5462,6 +5471,8 @@ private struct SlackComposer: View {
     private var replyKey: String { "\(target.workspace):\(target.id)" }
 
     @State private var landed = false
+    /// The Slack thread open over the conversation, if any.
+    @State private var openThread: SlackLine?
     @State private var following = true
     @State private var newBelow = false
     @State private var viewHeight: CGFloat = 0
@@ -5635,6 +5646,8 @@ private struct SlackRow: View {
     let line: SlackLine
     let workspace: String
     let continued: Bool
+    /// Opens this message's thread; nil inside a thread itself.
+    var onThread: (() -> Void)?
     @State private var hovered = false
 
     var body: some View {
@@ -5663,13 +5676,50 @@ private struct SlackRow: View {
                         .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
                 ForEach(line.files) { SlackFileView(file: $0) }
+                if line.replyCount > 0, let onThread {
+                    // Slack's thread summary: who replied, how many, and when last.
+                    Button(action: onThread) {
+                        HStack(spacing: 6) {
+                            HStack(spacing: -4) {
+                                ForEach(line.repliers.prefix(3), id: \.self) { SquareFace(url: $0, name: "", size: 18) }
+                            }
+                            Text(line.replyCount == 1 ? "1 reply" : "\(line.replyCount) replies")
+                                .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Color(red: 0.45, green: 0.7, blue: 1))
+                            if let at = line.replyAt {
+                                Text("Last reply \(Self.ago(at))").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+                            }
+                        }
+                        .padding(.horizontal, 5).padding(.vertical, 3)
+                        .background(.white.opacity(hovered ? 0.06 : 0), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                    .buttonStyle(Press()).padding(.top, 2)
+                }
             }
             Spacer(minLength: 0)
+        }
+        .overlay(alignment: .topTrailing) {
+            if hovered, let onThread, !line.id.hasPrefix("local-") {
+                Button(action: onThread) {
+                    Image(systemName: "bubble.left.and.text.bubble.right").font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.75)).frame(width: 26, height: 22)
+                        .background(Color(white: 0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
+                }
+                .buttonStyle(Press()).help("Reply in thread").offset(y: -6)
+            }
         }
         .padding(.horizontal, 6).padding(.vertical, continued ? 1 : 4)
         .padding(.top, continued ? 0 : 2)
         .background(.white.opacity(hovered ? 0.04 : 0), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .onHover { hovered = $0 }
+    }
+
+    static func ago(_ date: Date) -> String {
+        let age = Date().timeIntervalSince(date)
+        if age < 60 { return "just now" }
+        if age < 3600 { return "\(Int(age / 60))m ago" }
+        if age < 86400 { return "\(Int(age / 3600))h ago" }
+        return date.formatted(.dateTime.day().month(.abbreviated))
     }
 
     /// Mentions picked out as Slack does: of you on yellow, of anyone else in blue.
@@ -5690,10 +5740,121 @@ private struct SlackRow: View {
     }
 }
 
+/// A Slack thread over its conversation: the message it hangs off, its replies, and a box to
+/// reply in the thread.
+private struct SlackThreadView: View {
+    let target: SlackTarget
+    let parent: SlackLine
+    let close: () -> Void
+    @Environment(NotchUI.self) private var ui
+    @State private var state: String?
+    @State private var sent = 0
+
+    private var draftKey: String { "thread:\(target.workspace):\(target.id):\(parent.id)" }
+    private var draft: Binding<String> { Binding(get: { ui.drafts[draftKey] ?? "" }, set: { ui.drafts[draftKey] = $0 }) }
+    private var lines: [SlackLine]? {
+        SlackSource.shared.threadKey(target, ts: parent.id).flatMap { SlackConversations.shared.threads[$0] }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Button(action: close) {
+                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
+                }
+                .buttonStyle(Press())
+                Text("Thread").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                Text(target.label).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4)).lineLimit(1)
+                Spacer()
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        let all = lines ?? [parent]
+                        if let first = all.first { SlackRow(line: first, workspace: target.workspace, continued: false) }
+                        let replies = Array(all.dropFirst())
+                        HStack(spacing: 6) {
+                            Text(replies.isEmpty ? "No replies yet" : replies.count == 1 ? "1 reply" : "\(replies.count) replies")
+                                .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
+                            Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
+                        }
+                        .padding(.vertical, 4).padding(.horizontal, 6)
+                        ForEach(replies, id: \.viewKey) { line in
+                            SlackRow(line: line, workspace: target.workspace,
+                                     continued: SlackComposer.continues(line, after: replies.prevLine(line)))
+                                .id(line.id)
+                                .transition(line.mine ? .sent : .opacity)
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
+                .onChange(of: lines?.last?.id) { _, id in
+                    if let id { withAnimation(.sendSpring) { proxy.scrollTo(id, anchor: .bottom) } }
+                }
+            }
+            if state == "failed" {
+                Text("Did not send.").font(.system(size: 11)).foregroundStyle(Palette.red)
+            }
+            HStack(alignment: .bottom, spacing: 6) {
+                GrowingText(text: draft, placeholder: "Reply…", focusAsk: 1, onFocus: { _ in }, onSubmit: send, onTab: { false })
+                    .fixedSize(horizontal: false, vertical: true)
+                    .overlay(alignment: .topLeading) {
+                        if (ui.drafts[draftKey] ?? "").isEmpty {
+                            Text("Reply…").font(.system(size: 13)).foregroundStyle(.white.opacity(0.35)).allowsHitTesting(false)
+                        }
+                    }
+                Button(action: send) {
+                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 15)).symbolEffect(.bounce, value: sent)
+                        .foregroundStyle((ui.drafts[draftKey] ?? "").isEmpty ? .white.opacity(0.2) : .white)
+                }
+                .buttonStyle(Press()).disabled((ui.drafts[draftKey] ?? "").isEmpty || state == "sending")
+            }
+            .padding(.horizontal, 11).padding(.vertical, 8)
+            .background(Color(white: 0.15), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(.white.opacity(0.2), lineWidth: 1))
+        }
+        .padding(.top, 2)
+        .background(.black)
+        .onAppear { SlackSource.shared.thread(target, ts: parent.id) }
+        .task(id: parent.id) {
+            // Replies from others keep arriving live; this is a backstop.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                SlackSource.shared.thread(target, ts: parent.id)
+            }
+        }
+        .onExitCommand(perform: close)
+    }
+
+    private func send() {
+        let text = (ui.drafts[draftKey] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, state != "sending" else { return }
+        state = "sending"
+        Settings.sentFeel()
+        sent += 1
+        ui.drafts[draftKey] = nil
+        ui.touch(target)
+        // Shown at once, rising into place, while it goes.
+        if let key = SlackSource.shared.threadKey(target, ts: parent.id) {
+            let id = "local-\(UUID().uuidString)"
+            withAnimation(.sendSpring) {
+                SlackConversations.shared.threads[key, default: [parent]].append(
+                    SlackLine(id: id, viewID: id, sender: SlackSource.shared.myName(in: target.workspace) ?? "You", mine: true, text: text, time: Date()))
+            }
+        }
+        SlackSource.shared.replyInThread(target, ts: parent.id, text: text) { ok in
+            state = ok ? nil : "failed"
+            if !ok { ui.drafts[draftKey] = text }
+        }
+    }
+}
+
 /// A person's picture as Slack draws it: a rounded square.
 private struct SquareFace: View {
     let url: URL?
     let name: String
+    var size: CGFloat = 30
     @State private var image: NSImage?
 
     var body: some View {
@@ -5704,8 +5865,9 @@ private struct SquareFace: View {
                     .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.7)))
             }
         }
-        .frame(width: 30, height: 30)
-        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.23, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: size * 0.23, style: .continuous).stroke(.black, lineWidth: size < 24 ? 1.5 : 0))
         .task(id: url) {
             guard let url, image == nil, let (data, _) = try? await URLSession.shared.data(from: url) else { return }
             image = NSImage(data: data)
