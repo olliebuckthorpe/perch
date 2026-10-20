@@ -204,7 +204,6 @@ private struct ExpandedBody: View {
     }
 
     @ViewBuilder private var roster: some View {
-        SearchBar()
         SearchResults()
     }
 
@@ -258,8 +257,14 @@ private struct SearchBar: View {
         @Bindable var ui = ui
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
-            TextField("Find someone. Start with a space to search messages", text: $ui.query)
-                .textFieldStyle(.plain).font(.system(size: 12.5)).focused($focused)
+            TextField("Search", text: $ui.query)
+                .textFieldStyle(.plain).font(.system(size: 11.5)).focused($focused)
+                .help("Find someone or a chat. Start with a space to search what was said.")
+                .onKeyPress(.escape) {
+                    // Esc clears the search, then a second Esc leaves it.
+                    if !ui.query.isEmpty { ui.query = ""; return .handled }
+                    return .ignored
+                }
                 .onKeyPress(.downArrow) {
                     ui.searchIndex = min(ui.searchIndex + 1, max(0, SearchItem.all(store, ui).count - 1))
                     return .handled
@@ -280,22 +285,35 @@ private struct SearchBar: View {
                 }
                 .buttonStyle(Press())
             }
-            Button { ui.composing = true } label: {
-                Image(systemName: "square.and.pencil").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+            Button {
+                ui.showingProfiles = false
+                ui.composing = true
+            } label: {
+                Image(systemName: "square.and.pencil").font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(ui.composing ? 0.95 : 0.6))
+                    .frame(width: 22, height: 18).contentShape(Rectangle())
             }
-            .buttonStyle(Press()).help("New Claude Code chat")
+            .buttonStyle(Press()).help("New chat")
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .foregroundStyle(.white.opacity(focused || ui.browsing ? 0.9 : 0.5))
+        .padding(.leading, 8).padding(.trailing, 4).padding(.vertical, 5)
+        .background(.white.opacity(focused || ui.browsing ? 0.14 : 0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         // A click anywhere in the box starts typing, not only on the line of text.
         .contentShape(Rectangle())
         .simultaneousGesture(TapGesture().onEnded {
             ui.controller?.panel.makeKey()
             focused = true
         })
-        .onChange(of: focused) { _, on in if on { SessionIndex.shared.refresh(); ThreadSearch.shared.refresh() } }
+        .onChange(of: focused) { _, on in
+            guard on else { return }
+            SessionIndex.shared.refresh()
+            ThreadSearch.shared.refresh()
+            // Typing here shows the results on the right.
+            if !ui.browsing { ui.browse() }
+        }
         .onChange(of: ui.query) {
             ui.searchIndex = 0
+            if !ui.browsing && !ui.query.isEmpty { ui.browse() }
             ui.searchSoon()
         }
         // New chats read, or a Slack conversation understood: refresh what is shown, quietly.
@@ -304,7 +322,6 @@ private struct SearchBar: View {
             SessionIndex.shared.refresh()
             ThreadSearch.shared.refresh()
             DispatchQueue.main.async { ThreadSearch.shared.prepare(live: store.sessions + store.grokBots) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
         }
         .onChange(of: ui.searchFocus) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
@@ -345,10 +362,25 @@ enum SearchItem: Identifiable {
     /// message, then the option to start fresh. With nothing typed, every live one.
     static func all(_ store: AgentStore, _ ui: NotchUI) -> [SearchItem] {
         let q = ui.query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else {
-            return (store.sessions + store.grokBots.filter { !GrokSource.hidden.contains($0.sessionID) }).prefix(14).map { .agent($0) }
-        }
+        guard !q.isEmpty else { return recent(store, ui) }
         return ui.searchResults
+    }
+
+    /// Before anything is typed: whoever and whatever was talked to most recently, people and
+    /// chats together, newest first.
+    static func recent(_ store: AgentStore, _ ui: NotchUI) -> [SearchItem] {
+        var found: [(SearchItem, Double)] = []
+        for chat in WhatsAppSource.shared.chats where !chat.crowd {
+            found.append((.slack(chat.target), chat.ts.timeIntervalSince1970))
+        }
+        for t in ui.slackRecent where t.workspace != WhatsAppSource.workspace {
+            found.append((.slack(t), ui.slackLastAt["\(t.workspace):\(t.id)"] ?? 0))
+        }
+        for a in store.sessions + store.grokBots.filter({ !GrokSource.hidden.contains($0.sessionID) }) {
+            found.append((.agent(a), (a.lastTurnAt ?? a.lastActivity).timeIntervalSince1970))
+        }
+        var seen = Set<String>()
+        return found.sorted { $0.1 > $1.1 }.map(\.0).filter { seen.insert($0.id).inserted }.prefix(14).map { $0 }
     }
 
     /// Searching inside chats: the query starts with a space. Otherwise search finds people,
@@ -983,27 +1015,8 @@ private struct Rail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            // Search, with the new chat button on the same line.
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 10.5))
-                Text("Search").font(.system(size: 11.5))
-                Spacer(minLength: 0)
-                Button {
-                    ui.showingProfiles = false
-                    ui.composing = true
-                } label: {
-                    Image(systemName: "square.and.pencil").font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(ui.composing ? 0.95 : 0.6))
-                        .frame(width: 22, height: 18).contentShape(Rectangle())
-                }
-                .buttonStyle(Press()).help("New Claude Code chat")
-            }
-            .foregroundStyle(.white.opacity(ui.browsing ? 0.9 : 0.5))
-            .padding(.leading, 8).padding(.trailing, 4).padding(.vertical, 5)
-            .background(.white.opacity(ui.browsing ? 0.14 : 0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .contentShape(Rectangle())
-            .onTapGesture { ui.browse() }
-            .padding(.bottom, 5)
+            // Search, typed right here, with the new chat button on the same line.
+            SearchBar().padding(.bottom, 5)
             let entries = sidebarEntries
             let pinned = entries.filter(ui.sidebarPinned)
             // Messages from people (Slack, WhatsApp) apart from the AI chats.
