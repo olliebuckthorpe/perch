@@ -165,11 +165,8 @@ final class CodingSessions {
             // After a tool call the waiter doubles as the progress report.
             if event == "PostToolUse" { info(event: event, agent: agent, json: j, tool: tool, input: input, headless: headless) }
             agent.waiter?.respond()
-            if !agent.queued.isEmpty {
-                deliver(agent.queued.joined(separator: Threads.queueSeparator), to: agent, through: req)
-                agent.queued = []
-                return
-            }
+            // Replies typed mid-turn wait for the turn to end and then go in as real prompts
+            // (see Stop below); they are not slipped in through this hook.
             agent.waiter = req
             req.onCancel = { [weak agent, weak req] in
                 if agent?.waiter === req { agent?.waiter = nil }
@@ -211,12 +208,18 @@ final class CodingSessions {
             let last = j["last_assistant_message"] as? String ?? ""
             if !last.isEmpty { agent.lastMessage = last }
             if !agent.queued.isEmpty {
-                // Something was sent from the notch mid-turn: it becomes the next prompt straight away.
+                // Something was sent from the notch mid-turn: the turn ends as normal, then it goes in
+                // as the next prompt, a real one, so the session treats it as the user's own words.
                 let text = agent.queued.joined(separator: Threads.queueSeparator)
                 agent.queued = []
-                agent.status = .working
-                agent.detail = oneLine(text)
-                req.respond((try? JSONSerialization.data(withJSONObject: ["decision": "block", "reason": text])) ?? Data())
+                store.save()
+                req.respond()
+                agent.waiter?.respond()
+                agent.waiter = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self, weak agent] in
+                    guard let self, let agent else { return }
+                    self.resume(agent, text: text)
+                }
                 return
             }
             agent.status = .done
@@ -444,12 +447,7 @@ final class CodingSessions {
             queueCodex(agent, text: text, messageID: messageID)
             return
         }
-        // While a background run is going, a second turn through the desktop app would collide with it.
-        if let waiter = agent.waiter, !agent.sending {
-            deliver(text, to: agent, through: waiter)
-            return
-        }
-        if agent.status == .working, agent.pending == nil {
+        if (agent.status == .working && agent.pending == nil) || agent.sending {
             // Mid-turn with no way in right now: hold it for the next opening, a moment away.
             agent.queued.append(text)
             // Written down at once: a message waiting for its turn must survive Perch restarting.
@@ -464,27 +462,20 @@ final class CodingSessions {
             agent.detail = oneLine(text)
             return
         }
+        // Idle: the reply goes in as a real prompt, so the session treats it as the user's own
+        // words rather than a message relayed by a hook. A hook Perch is holding for this chat is
+        // let go first, quietly, so the session is not woken twice.
+        if let pending = agent.pending, case .followUp = pending.kind {
+            pending.finish()
+            agent.pending = nil
+        }
+        agent.waiter?.respond()
+        agent.waiter = nil
         resume(agent, text: text)
     }
 
     /// Wakes the real session, so the reply and the answer both show up in its own chat.
     static let skillNote = "\n\n(Sent from the notch"
-
-    private func deliver(_ text: String, to agent: Agent, through waiter: HookRequest) {
-        // A relayed reply is not parsed for slash commands, so a `/skill` is spelled out as the
-        // tool call it stands for. The original line stays first, so the chat shows what was typed.
-        var text = text
-        if let cmd = SkillIndex.shared.command(in: text) {
-            text += "\(Self.skillNote), where slash commands cannot run directly. Invoke the Skill tool with skill \"\(cmd.name)\""
-                + (cmd.arguments.isEmpty ? "" : " and args \"\(cmd.arguments)\"") + ", exactly as if this slash command had been typed.)"
-        }
-        waiter.respond(Data("The user replied from Perch, their notch app. Treat this as their next message:\n\n\(text)".utf8))
-        if agent.waiter === waiter { agent.waiter = nil }
-        clearPending(agent)
-        agent.status = .working
-        agent.detail = oneLine(text)
-        agent.lastActivity = Date()
-    }
 
     /// Starts a new Claude Code session from the notch.
     ///
