@@ -72,6 +72,8 @@ else
   codesign --force --sign - "$APP" >/dev/null 2>&1
   echo "Signed ad hoc"
 fi
+# The WhatsApp command line (perch-wa), kept current next to the hook script.
+mkdir -p "$HOME/.perch" && install -m 755 "$(dirname "$0")/../hooks/perch-wa" "$HOME/.perch/perch-wa"
 echo "Built $APP"
 
 if [ "$1" = "--run" ]; then

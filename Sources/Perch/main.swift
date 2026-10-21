@@ -40,7 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                  attributes: [.posixPermissions: 0o700])
         let server = HookServer(path: "\(dir)/perch.sock")
         server.handler = { [weak self] req in
-            if let command = req.headers["x-perch-debug"] {
+            if let command = req.headers["x-perch-whatsapp"] {
+                // `perch-wa`: WhatsApp from the command line (Remmi uses it to send through Perch).
+                DispatchQueue.main.async { WhatsAppSource.shared.command(command, json: req.json) { reply in
+                    req.respond((try? JSONSerialization.data(withJSONObject: reply)) ?? Data())
+                } }
+            } else if let command = req.headers["x-perch-debug"] {
                 self?.debug(command, json: req.json)
                 req.respond()
             } else {

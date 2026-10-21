@@ -468,6 +468,29 @@ final class WhatsAppSource {
         return out
     }
 
+    /// `perch-wa status` and `perch-wa send`, over Perch's owner-only socket. A send goes out
+    /// as typed, straight away, just as one sent from Perch's own chat would.
+    func command(_ name: String, json: [String: Any], reply: @escaping ([String: Any]) -> Void) {
+        switch name {
+        case "status":
+            let ready = state == .ready
+            reply(["ok": true, "connected": ready, "linked": linked, "state": "\(state)"])
+        case "send":
+            guard state == .ready else { return reply(["ok": false, "error": "WhatsApp is not connected in Perch"]) }
+            guard let chat = json["chat"] as? String, !chat.isEmpty,
+                  let text = json["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return reply(["ok": false, "error": "Needs a chat id and some text"])
+            }
+            let name = chats.first { $0.id == chat }?.name ?? ""
+            let target = SlackTarget(workspace: Self.workspace, id: chat, name: name, channel: false)
+            send(to: target, text: text, files: [], replyTo: json["replyTo"] as? String) { ok in
+                reply(ok ? ["ok": true, "chat": chat, "name": name] : ["ok": false, "error": "WhatsApp did not accept the message"])
+            }
+        default:
+            reply(["ok": false, "error": "Unknown command \(name)"])
+        }
+    }
+
     /// The profile picture for a chat or person, fetched when first wanted.
     func picture(for id: String) -> URL? {
         if avatars[id] == nil { avatar(id) }

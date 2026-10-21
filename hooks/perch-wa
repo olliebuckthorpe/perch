@@ -1,0 +1,49 @@
+#!/bin/sh
+# WhatsApp through Perch, from the command line. Prints one line of JSON; exits 1 on failure.
+#
+#   perch-wa status
+#       {"ok":true,"connected":true,...}  connected false (or Perch not running): use another route.
+#   perch-wa send --chat <jid> --text-file <path> [--reply-to <message id>]
+#       Sends the file's text, as written, to that chat (ids as in ~/.perch/whatsapp/messages.db).
+
+SOCK="$HOME/.perch/perch.sock"
+
+call() {
+  out=$(curl -s --unix-socket "$SOCK" --max-time 30 -X POST -H "Content-Type: application/json" -H "Expect:" \
+    -H "X-Perch-WhatsApp: $1" --data-binary @- http://perch/whatsapp 2>/dev/null)
+  if [ -z "$out" ]; then
+    echo '{"ok":false,"connected":false,"error":"Perch is not running"}'
+    exit 1
+  fi
+  echo "$out"
+  case "$out" in *'"ok":true'*|*'"ok" : true'*) exit 0 ;; *) exit 1 ;; esac
+}
+
+case "$1" in
+  status)
+    echo '{}' | call status
+    ;;
+  send)
+    shift
+    CHAT=""; FILE=""; REPLY=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --chat) CHAT="$2"; shift 2 ;;
+        --text-file) FILE="$2"; shift 2 ;;
+        --reply-to) REPLY="$2"; shift 2 ;;
+        *) echo "{\"ok\":false,\"error\":\"Unknown option $1\"}"; exit 1 ;;
+      esac
+    done
+    if [ -z "$CHAT" ] || [ ! -f "$FILE" ]; then
+      echo '{"ok":false,"error":"Needs --chat <jid> and --text-file <path>"}'
+      exit 1
+    fi
+    # The text is read from the file and put into JSON safely, apostrophes and emoji included.
+    /usr/bin/python3 -I -c 'import json,sys; print(json.dumps({"chat": sys.argv[1], "text": open(sys.argv[2], encoding="utf-8").read().rstrip("\n"), "replyTo": sys.argv[3] or None}))' \
+      "$CHAT" "$FILE" "$REPLY" | call send
+    ;;
+  *)
+    echo 'usage: perch-wa status | perch-wa send --chat <jid> --text-file <path> [--reply-to <id>]'
+    exit 1
+    ;;
+esac
