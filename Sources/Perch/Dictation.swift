@@ -11,7 +11,7 @@ final class Dictation {
     private(set) var activeAgentID: String?
     var problem: String?
 
-    @ObservationIgnored private let engine = AVAudioEngine()
+    @ObservationIgnored private var engine = AVAudioEngine()
     @ObservationIgnored private let recognizer = SFSpeechRecognizer(locale: Locale.current) ?? SFSpeechRecognizer()
     @ObservationIgnored private var request: SFSpeechAudioBufferRecognitionRequest?
     @ObservationIgnored private var task: SFSpeechRecognitionTask?
@@ -56,10 +56,23 @@ final class Dictation {
         committed = ""
         current = ""
 
+        // After the sound device changes (headphones connecting, say) the old engine can report
+        // a microphone with no format, and starting it then would bring Perch down. A fresh
+        // engine picks up the current device; if there is still no microphone, say so instead.
+        var format = engine.inputNode.outputFormat(forBus: 0)
+        if format.sampleRate == 0 || format.channelCount == 0 {
+            engine.stop()
+            engine = AVAudioEngine()
+            format = engine.inputNode.outputFormat(forBus: 0)
+        }
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            problem = "No microphone is available right now"
+            return
+        }
         let input = engine.inputNode
         input.removeTap(onBus: 0)
         // The microphone feeds whichever request is current, so listening carries on across pauses.
-        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.request?.append(buffer)
         }
         engine.prepare()
