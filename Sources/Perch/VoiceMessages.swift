@@ -85,7 +85,12 @@ struct VoiceMessageView: View {
 
 @Observable
 final class VoiceRecording {
-    var recording = false
+    /// Any voice message being recorded right now, so the microphone in use is not taken for a call.
+    static var active: Bool { live > 0 }
+    @ObservationIgnored private static var live = 0
+    var recording = false {
+        didSet { if recording != oldValue { Self.live += recording ? 1 : -1 } }
+    }
     var preparing = false
     var problem: String?
     @ObservationIgnored private var recorder: AVAudioRecorder?

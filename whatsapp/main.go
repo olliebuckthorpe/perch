@@ -13,6 +13,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"go.mau.fi/whatsmeow/appstate"
+	waCommon "go.mau.fi/whatsmeow/proto/waCommon"
 	"mime"
 	"net/http"
 	"os"
@@ -1024,6 +1026,20 @@ func markRead(chat string) error {
 	}
 	db.Exec(`UPDATE messages SET read = 1 WHERE chat = ?`, chat)
 	db.Exec(`UPDATE chats SET unread = 0 WHERE jid = ?`, chat)
+	// Read receipts tick the messages, but the chat's own unread marker (the green dot on the
+	// phone and in WhatsApp's desktop app) is synced separately. Clear that too, every time.
+	var id, sender string
+	var fromMe, ts int64
+	if db.QueryRow(`SELECT id, sender, from_me, ts FROM messages WHERE chat = ? ORDER BY ts DESC LIMIT 1`, chat).
+		Scan(&id, &sender, &fromMe, &ts) == nil {
+		msgKey := &waCommon.MessageKey{RemoteJID: proto.String(j.String()), FromMe: proto.Bool(fromMe == 1), ID: proto.String(id)}
+		if j.Server == types.GroupServer && fromMe == 0 && sender != "" {
+			msgKey.Participant = proto.String(sender)
+		}
+		if err := client.SendAppState(ctx, appstate.BuildMarkChatAsRead(j, true, time.Unix(ts, 0), msgKey)); err != nil {
+			note("chat read marker failed: %v", err)
+		}
+	}
 	return nil
 }
 

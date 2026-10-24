@@ -220,6 +220,9 @@ struct SlackAlert: Identifiable, Equatable {
     let ts: String
     /// The thread it belongs to, if any. A reply goes into the same thread.
     var thread: String?
+    /// Earlier messages from the same conversation that arrived while this banner was up,
+    /// oldest first, so a burst of messages reads as one banner.
+    var earlier: [String] = []
     var direct = false
     /// Who sent it, by Slack id, for finding the conversation with them.
     var senderID = ""
@@ -296,10 +299,11 @@ final class SlackSource {
         links.values.first(where: { $0.name == target.workspace })?.threadKey(target, ts: ts)
     }
 
-    /// Read in Perch is read in Slack (and on WhatsApp).
-    func markRead(_ target: SlackTarget) {
+    /// Read in Perch is read in Slack (and on WhatsApp). `upTo` is a message to mark up to when
+    /// the conversation itself is not loaded (a banner answered).
+    func markRead(_ target: SlackTarget, upTo: String? = nil) {
         if target.workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.markRead(target.id) }
-        links.values.first(where: { $0.name == target.workspace })?.markRead(target)
+        links.values.first(where: { $0.name == target.workspace })?.markRead(target, upTo: upTo)
     }
 
     /// How far the user had read in Slack itself, as a message time.
@@ -781,11 +785,12 @@ private final class Workspace {
     }
 
     /// Tells Slack the conversation is read up to its newest message, as opening it in Slack does.
-    func markRead(_ target: SlackTarget) {
+    func markRead(_ target: SlackTarget, upTo: String? = nil) {
         channel(for: target) { [weak self] channel in
             guard let self, let channel else { return }
             let key = SlackConversations.shared.key(self.name, channel)
-            guard let ts = SlackConversations.shared.lines[key]?.last(where: { !$0.id.hasPrefix("local-") })?.id else { return }
+            let newest = SlackConversations.shared.lines[key]?.last(where: { !$0.id.hasPrefix("local-") })?.id
+            guard let ts = [newest, upTo].compactMap({ $0 }).max(by: { (Double($0) ?? 0) < (Double($1) ?? 0) }) else { return }
             self.api("conversations.mark", token: self.userToken, ["channel": channel, "ts": ts]) { _ in }
         }
     }

@@ -65,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CodingSessions.shared.start()
         Headphones.shared.keepMacMicrophone()
         SlackSource.shared.start()
+        CallWatch.shared.start()
         WhatsAppSource.shared.start()
         SidePanel.shared.restore()
         // Search reads every chat; that happens quietly after launch, so it is ready when needed.

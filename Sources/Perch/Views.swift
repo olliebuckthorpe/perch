@@ -6835,12 +6835,19 @@ private struct ToastBanner: View {
 }
 
 /// A Slack message in the notch: who, where, and what they said. Click to open it in Slack.
+/// The reactions offered on a banner, with Slack's name for each.
+enum BannerReactions {
+    static let quick: [(emoji: String, slack: String)] = [("👍", "+1"), ("❤️", "heart"), ("😂", "joy"), ("😮", "open_mouth"),
+                                                         ("🙏", "pray")]
+}
+
 private struct SlackBanner: View {
     let alert: SlackAlert
     @Environment(NotchUI.self) private var ui
     @State private var hovered = false
     @State private var reply = ""
     @State private var state: String?
+    @State private var reacted: String?
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -6848,6 +6855,19 @@ private struct SlackBanner: View {
             card
             waitingList
         }
+    }
+
+    private func react(_ q: (emoji: String, slack: String)) {
+        reacted = q.emoji
+        Settings.sentFeel()
+        if alert.workspace == WhatsAppSource.workspace {
+            WhatsAppSource.shared.react(chat: alert.channel, id: alert.ts, emoji: q.emoji)
+        } else {
+            SlackSource.shared.react(alert.target, ts: alert.ts, name: q.slack, add: true)
+        }
+        SlackSource.shared.markRead(alert.target, upTo: alert.ts)
+        ui.slackUnread["\(alert.target.workspace):\(alert.target.id)"] = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { ui.nextBanner() }
     }
 
     private var card: some View {
@@ -6873,10 +6893,16 @@ private struct SlackBanner: View {
                         }
                         .buttonStyle(Press()).help(alert.workspace == WhatsAppSource.workspace ? "Open the chat" : "Open in Slack")
                     }
-                    NotificationMessagePreview(alert: alert, expanded: hovered)
-                    if alert.workspace == WhatsAppSource.workspace && hovered {
-                        WhatsAppReactions(chat: alert.channel, id: alert.ts, mine: nil).padding(.top, 2)
+                    // A burst from the same person: the earlier ones first, then the newest.
+                    if !alert.earlier.isEmpty {
+                        VStack(alignment: .leading, spacing: 3) {
+                            ForEach(Array(alert.earlier.enumerated()), id: \.offset) { _, text in
+                                Text(WhatsAppText.styled(oneLine(text, max: 200))).font(.system(size: 12))
+                                    .foregroundStyle(.white.opacity(0.6)).lineLimit(hovered ? 4 : 1)
+                            }
+                        }
                     }
+                    NotificationMessagePreview(alert: alert, expanded: hovered)
                 }
             }
             // A click anywhere but the reply box opens the chat, in Perch.
@@ -6885,7 +6911,23 @@ private struct SlackBanner: View {
             // Reply straight from here; it posts as you, in the same conversation or thread.
             if state == "sent" {
                 Label("Sent", systemImage: "checkmark").font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.green)
+            } else if let reacted {
+                Text("Reacted \(reacted)").font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.green)
             } else {
+                // One tap reacts to the newest message, then on to the next banner.
+                HStack(spacing: 4) {
+                    ForEach(BannerReactions.quick, id: \.emoji) { q in
+                        Button { react(q) } label: {
+                            Text(q.emoji).font(.system(size: 15)).frame(width: 32, height: 26)
+                                .background(.white.opacity(0.08), in: Capsule())
+                        }
+                        .buttonStyle(Press())
+                    }
+                    Spacer(minLength: 0)
+                    if !alert.earlier.isEmpty {
+                        Text("\(alert.earlier.count + 1) messages").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+                    }
+                }
                 HStack(spacing: 6) {
                     TextField(state == "failed" ? "Did not send. Try again, or open Slack" : "Reply to \(alert.sender)", text: $reply)
                         .textFieldStyle(.plain).font(.system(size: 12)).focused($focused)
@@ -6951,8 +6993,9 @@ private struct SlackBanner: View {
             state = ok ? "sent" : "failed"
             if ok {
                 reply = ""
-                // Answered, so it no longer waits in the sidebar.
+                // Answered, so it no longer waits in the sidebar, nor shows unread in Slack or WhatsApp.
                 ui.slackUnread["\(alert.target.workspace):\(alert.target.id)"] = nil
+                SlackSource.shared.markRead(alert.target, upTo: alert.ts)
                 // On to the next one waiting, if any; otherwise the island tucks away.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { ui.nextBanner() }
             }

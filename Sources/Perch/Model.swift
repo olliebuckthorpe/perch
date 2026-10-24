@@ -299,6 +299,7 @@ enum Settings {
     }
 
     static func playSound() {
+        guard !CallWatch.shared.onCall else { return }
         guard let sound = NSSound(named: soundName)?.copy() as? NSSound else { return }
         sound.volume = 0.5
         sound.play()

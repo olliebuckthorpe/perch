@@ -861,6 +861,8 @@ final class NotchUI {
     @ObservationIgnored private var toastWork: DispatchWorkItem?
 
     func showToast(_ toast: Toast) {
+        // On a call: nothing pops up. It is all waiting in the sidebar afterwards.
+        guard !CallWatch.shared.onCall else { return }
         withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) { self.toast = toast }
         hideToastSoon()
     }
@@ -881,6 +883,8 @@ final class NotchUI {
         noteSlack(alert)
         // Open in a floating window already: it shows up there.
         if SidePanel.shared.showing(alert.workspace, alert.channel) { return }
+        // On a call (or sharing the screen in one): into the sidebar quietly, no banner, no sound.
+        if CallWatch.shared.onCall { return }
         guard pendingLinks.isEmpty else { return }
         if expanded && !autoOpened {
             // Already reading that very conversation: it shows up there by itself.
@@ -894,28 +898,42 @@ final class NotchUI {
         }
         if let showing = slackAlert, expanded, cardsOnly, showing.priority < alert.priority { return }
         if Settings.sounds { Settings.playSound() }
-        // Busy with the banner on screen: the new one waits underneath it instead of taking over.
-        if let showing = slackAlert, expanded, cardsOnly, hovering || typing {
+        var alert = alert
+        if let showing = slackAlert, expanded, cardsOnly {
             if Self.same(showing.target, alert.target) {
+                // More from the same person: one banner, every message in it.
+                alert.earlier = Array((showing.earlier + [showing.text]).suffix(5))
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { slackAlert = alert }
-            } else {
-                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { queue(alert) }
+                collapseWork?.cancel()
+                if !(hovering || typing) { scheduleCollapse(for: alert) }
+                return
             }
-            return
+            // Someone else: while the user is busy with this banner it waits underneath;
+            // otherwise the new one comes to the front and this one joins the list below.
+            if hovering || typing {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { queue(alert) }
+                return
+            }
+            queue(showing)
         }
-        slackQueue = []
         autoOpened = true
         cardsOnly = true
         noticeID = nil
         slackAlert = alert
         expanded = true
         collapseWork?.cancel()
+        scheduleCollapse(for: alert)
+    }
+
+    /// A banner nobody touches tucks away after a while; one with others waiting under it stays
+    /// a little longer.
+    private func scheduleCollapse(for alert: SlackAlert) {
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.slackAlert?.id == alert.id, !self.hovering, !self.typing else { return }
             self.collapse()
         }
         collapseWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (slackQueue.isEmpty ? 8 : 12), execute: work)
     }
 
     /// The agent a self-opened summary banner is about.
@@ -928,6 +946,8 @@ final class NotchUI {
     /// full chat. The face in the notch keeps signalling until it is dealt with.
     func attention(_ store: AgentStore) {
         guard let id = store.attentionAgentID, store.find(id) != nil else { return }
+        // On a call: the face in the notch still shows it, but nothing opens or sounds.
+        guard !CallWatch.shared.onCall else { return }
         // A link picker is waiting on an answer; do not replace it with a notification.
         guard pendingLinks.isEmpty else { return }
         // Already open and in use: do not pull the view out from under the user. Unless it is the
