@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// An email an agent has drafted for the user to check before it goes out.
 struct EmailDraft: Equatable {
@@ -244,42 +245,74 @@ enum Threads {
         }
     }
 
-    private static func parse(_ path: String, codex: Bool) -> ([ChatMessage], (used: Int, model: String?)?) {
+    // Match raw UTF-8 before decoding: tool output is often much larger than messages.
+    private static let messageContentKey = Data("\"content\"".utf8)
+    private static let questionToolKey = Data("request_user_input_async".utf8)
+    private static let imageGenerationKey = Data("image_gen.generation".utf8)
+    private static let imageCompletedKey = Data("item_completed".utf8)
+
+    static func parse(_ path: String, codex: Bool) -> ([ChatMessage], (used: Int, model: String?)?) {
         guard let h = FileHandle(forReadingAtPath: path) else { return ([], nil) }
         defer { try? h.close() }
         let size = (try? h.seekToEnd()) ?? 0
         // Codex writes generated pictures into its file in full, a few megabytes each, so read
         // further back for it or a single picture pushes the conversation out of reach.
         let span: UInt64 = codex ? 12 << 20 : 1 << 20
-        try? h.seek(toOffset: size > span ? size - span : 0)
-        guard let data = try? h.readToEnd() else { return ([], nil) }
+        var start = size > span ? size - span : 0
+        var startsAtBoundary = true
+        if start > 0 {
+            try? h.seek(toOffset: start - 1)
+            startsAtBoundary = (try? h.read(upToCount: 1))?.first == 0x0A
+        }
+        try? h.seek(toOffset: start)
+        guard var data = try? h.readToEnd() else { return ([], nil) }
+        if !startsAtBoundary, let newline = data.firstIndex(of: 0x0A) {
+            let skipped = data.distance(from: data.startIndex, to: newline) + 1
+            data = data.subdata(in: skipped..<data.count)
+            start += UInt64(skipped)
+        }
         var out: [ChatMessage] = []
         var context: (used: Int, model: String?)?
-        for (i, line) in String(decoding: data, as: UTF8.self).split(separator: "\n").enumerated() {
-            // A picture Codex made: too big to read whole, so just find where it was saved.
-            if codex, line.contains("image_gen.generation"), line.contains("item_completed"),
-               let r = line.range(of: #""savedPath":"([^"]+)""#, options: .regularExpression) {
-                let path = String(line[r].dropFirst(13).dropLast())
-                out.append(ChatMessage(id: "img-\(path)", fromUser: false, text: "[Image attached, saved at \(path)]"))
-                continue
-            }
-            guard line.count < 400_000,
-                  let o = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
-            let id = o["uuid"] as? String ?? "line-\(i)"
-            // Each main-thread reply records what it was sent: that total is the context in use.
-            if !codex, o["type"] as? String == "assistant", o["isSidechain"] as? Bool != true,
-               let message = o["message"] as? [String: Any], let usage = message["usage"] as? [String: Any] {
-                let parts = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
-                let used = parts.compactMap { (usage[$0] as? NSNumber)?.intValue }.reduce(0, +)
-                if used > 0 { context = (used, message["model"] as? String) }
-            }
-            if let m = codex ? codexMessage(o) : claudeMessage(o, raw: line) {
-                // One message can be logged twice; show it once.
-                if m.user, out.suffix(4).contains(where: { $0.fromUser && $0.text == m.text }) { continue }
-                let pieces = m.user ? m.text.components(separatedBy: queueSeparator.trimmingCharacters(in: .newlines))
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } : [m.text]
-                for (n, piece) in pieces.enumerated() {
-                    out.append(ChatMessage(id: pieces.count > 1 ? "\(id)-\(n)" : id, fromUser: m.user, text: piece))
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var cursor = 0
+            while cursor < data.count {
+                let rowStart = cursor
+                let end = memchr(base.advanced(by: cursor), 0x0A, data.count - cursor)
+                    .map { base.distance(to: UnsafeRawPointer($0)) } ?? data.count
+                cursor = end + 1
+                let recordOffset = start + UInt64(rowStart)
+                let bytes = data[rowStart..<end]
+                let generatedImage = codex && bytes.range(of: imageGenerationKey) != nil
+                    && bytes.range(of: imageCompletedKey) != nil
+                if codex, !generatedImage, bytes.range(of: messageContentKey) == nil,
+                   bytes.range(of: questionToolKey) == nil { continue }
+                let line = String(decoding: bytes, as: UTF8.self)[...]
+                // A picture Codex made: too big to read whole, so just find where it was saved.
+                if generatedImage,
+                   let r = line.range(of: #""savedPath":"([^"]+)""#, options: .regularExpression) {
+                    let path = String(line[r].dropFirst(13).dropLast())
+                    out.append(ChatMessage(id: "img-\(path)", fromUser: false, text: "[Image attached, saved at \(path)]"))
+                    continue
+                }
+                guard line.count < 400_000,
+                      let o = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { continue }
+                let id = o["uuid"] as? String ?? "byte-\(recordOffset)"
+                // Each main-thread reply records what it was sent: that total is the context in use.
+                if !codex, o["type"] as? String == "assistant", o["isSidechain"] as? Bool != true,
+                   let message = o["message"] as? [String: Any], let usage = message["usage"] as? [String: Any] {
+                    let parts = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
+                    let used = parts.compactMap { (usage[$0] as? NSNumber)?.intValue }.reduce(0, +)
+                    if used > 0 { context = (used, message["model"] as? String) }
+                }
+                if let m = codex ? codexMessage(o) : claudeMessage(o, raw: line) {
+                    // One message can be logged twice; show it once.
+                    if m.user, out.suffix(4).contains(where: { $0.fromUser && $0.text == m.text }) { continue }
+                    let pieces = m.user ? m.text.components(separatedBy: queueSeparator.trimmingCharacters(in: .newlines))
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty } : [m.text]
+                    for (n, piece) in pieces.enumerated() {
+                        out.append(ChatMessage(id: pieces.count > 1 ? "\(id)-\(n)" : id, fromUser: m.user, text: piece))
+                    }
                 }
             }
         }

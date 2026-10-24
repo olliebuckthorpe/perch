@@ -1980,7 +1980,11 @@ private struct ProfileAvatar: View {
     let profile: ChromeProfile
     let size: CGFloat
 
-    private static let pictures = NSCache<NSString, NSImage>()
+    private static let pictures: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 32
+        return cache
+    }()
 
     private var tint: Color {
         guard let argb = profile.argb else { return Palette.blue }
@@ -2352,9 +2356,9 @@ private struct NewChatView: View {
                 .buttonStyle(Press())
                 Button { start(chosen) } label: {
                     Image(systemName: "arrow.up.circle.fill").font(.system(size: 16))
-                        .foregroundStyle(draft.wrappedValue.isEmpty && (ui.attachments["new"] ?? []).isEmpty ? .white.opacity(0.2) : tint)
+                        .foregroundStyle(!ui.drafts.hasText("new") && (ui.attachments["new"] ?? []).isEmpty ? .white.opacity(0.2) : tint)
                 }
-                .buttonStyle(Press()).disabled(draft.wrappedValue.isEmpty && (ui.attachments["new"] ?? []).isEmpty)
+                .buttonStyle(Press()).disabled(!ui.drafts.hasText("new") && (ui.attachments["new"] ?? []).isEmpty)
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -2510,6 +2514,8 @@ struct ChatView: View {
     private var historyHeight: CGFloat { max(100, (agent.codexQuestion == nil ? 380 : 160) - queueHeight) }
 
     var body: some View {
+        let visibleItems = items
+        let lastItemID = visibleItems.last?.id
         VStack(alignment: .leading, spacing: 8) {
             header
             ScrollViewReader { proxy in
@@ -2521,7 +2527,7 @@ struct ChatView: View {
                             Button("Show earlier messages") { shown += 20 }
                                 .buttonStyle(LinkButton()).frame(maxWidth: .infinity)
                         }
-                        ForEach(items) { item in
+                        ForEach(visibleItems) { item in
                             Group {
                                 if item.peers.isEmpty, let message = item.message {
                                     if agent.source == .grok, !message.id.hasPrefix("local-"), message.id != "latest" {
@@ -2535,7 +2541,7 @@ struct ChatView: View {
                             }
                             .id(item.id)
                             .transition(item.message?.fromUser == true ? .sent : .opacity)
-                            .reportsTop(item.id == items.last?.id)
+                            .reportsTop(item.id == lastItemID)
                         }
                         if agent.status == .working {
                             // Its face, busy at work, as in Grok Bot's own chat.
@@ -2769,7 +2775,12 @@ struct ChatView: View {
     }
 
     private static let imageNote = try! NSRegularExpression(pattern: #"\[(?:Image|File) attached, saved at ([^\]]+)\]"#)
-    private static let thumbnails = NSCache<NSString, NSImage>()
+    private static let thumbnails: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 64
+        cache.totalCostLimit = 24 << 20
+        return cache
+    }()
 
     /// Pulls the "image attached" notes out of a message, so the pictures can be shown instead.
     private static var split: [String: (text: String, paths: [String])] = [:]
@@ -2807,7 +2818,10 @@ struct ChatView: View {
                 image = NSImage(cgImage: small, size: NSSize(width: small.width, height: small.height))
             }
             DispatchQueue.main.async {
-                if let image { thumbnails.setObject(image, forKey: path as NSString) }
+                if let image {
+                    thumbnails.setObject(image, forKey: path as NSString,
+                                         cost: Int(image.size.width * image.size.height) * 4)
+                }
                 done(image)
             }
         }
@@ -3074,12 +3088,11 @@ private struct ReplyField: View {
     }
 
     var body: some View {
-        let draft = Binding(get: { ui.drafts[agent.id] ?? "" }, set: { ui.drafts[agent.id] = $0 })
         let files = ui.attachments[agent.id] ?? []
-        let empty = draft.wrappedValue.isEmpty && files.isEmpty
+        let empty = !ui.drafts.hasText(agent.id) && files.isEmpty
         let listening = Dictation.shared.activeAgentID == agent.id
         // Typing "/" offers your skills; click one, or press Tab for the first.
-        let typed = draft.wrappedValue
+        let typed = ui.drafts.command(agent.id) ?? ""
         let offers = agent.source != .grok && typed.hasPrefix("/") && !typed.contains(" ")
             ? Array(SkillIndex.shared.matching(typed).prefix(6)) : []
         VStack(alignment: .leading, spacing: 6) {
@@ -3138,7 +3151,7 @@ private struct ReplyField: View {
         HStack(alignment: .bottom, spacing: 6) {
             // A real text view: it grows with what is written, up to about eight lines, then
             // scrolls smoothly. Return sends; Shift+Return starts a new line.
-            GrowingText(text: draft, placeholder: placeholder, focusAsk: focusAsk,
+            DraftText(store: ui.drafts, id: agent.id, placeholder: placeholder, focusAsk: focusAsk,
                         onFocus: { focused = $0 }, onSubmit: send, onTab: {
                             guard let first = offers.first else { return false }
                             ui.drafts[agent.id] = "/\(first.id) "
@@ -3146,7 +3159,7 @@ private struct ReplyField: View {
                         })
                 .fixedSize(horizontal: false, vertical: true)
                 .overlay(alignment: .topLeading) {
-                    if draft.wrappedValue.isEmpty {
+                    if !ui.drafts.hasText(agent.id) {
                         Text(placeholder).font(.system(size: 13)).foregroundStyle(.white.opacity(0.35))
                             .lineLimit(1).allowsHitTesting(false)
                     }
@@ -4633,13 +4646,23 @@ private struct PendingCard: View {
 
 // MARK: Chrome
 
+private final class FooterPreferences: ObservableObject {
+    @Published var sounds = Settings.sounds
+    @Published var soundName = Settings.soundName
+    @Published var replyWindow = Settings.replyWindow
+    @Published var loginItem = false
+    @Published var routesLinks = false
+
+    func refreshSystemStatus() {
+        loginItem = SMAppService.mainApp.status == .enabled
+        routesLinks = LinkRouter.isDefault
+    }
+}
+
 private struct Footer: View {
     @Environment(AgentStore.self) private var store
     @Environment(NotchUI.self) private var ui
-    @State private var sounds = Settings.sounds
-    @State private var soundName = Settings.soundName
-    @State private var replyWindow = Settings.replyWindow
-    @State private var loginItem = SMAppService.mainApp.status == .enabled
+    @StateObject private var preferences = FooterPreferences()
 
     var body: some View {
         HStack {
@@ -4651,7 +4674,7 @@ private struct Footer: View {
                             set: { on in if on { ui.pinned.insert(bot.name) } else { ui.pinned.remove(bot.name) } }))
                     }
                 }
-                Toggle("Launch at login", isOn: $loginItem)
+                Toggle("Launch at login", isOn: Binding(get: { preferences.loginItem }, set: setLoginItem))
                 Divider()
                 switch WhatsAppSource.shared.state {
                 case .ready:
@@ -4663,17 +4686,17 @@ private struct Footer: View {
                     }
                 }
                 Divider()
-                Button(LinkRouter.isDefault ? "Perch is choosing where links open" : "Let Perch choose where links open…") {
+                Button(preferences.routesLinks ? "Perch is choosing where links open" : "Let Perch choose where links open…") {
                     LinkRouter.makeDefault()
                 }
-                .disabled(LinkRouter.isDefault)
+                .disabled(preferences.routesLinks)
                 Button("Forget learned link choices (\(LinkRouter.shared.settledCount))") { LinkRouter.shared.forgetEverything() }
                 Divider()
-                Toggle("Sounds", isOn: $sounds)
-                Picker("Notification sound", selection: $soundName) {
+                Toggle("Sounds", isOn: $preferences.sounds)
+                Picker("Notification sound", selection: $preferences.soundName) {
                     ForEach(Settings.soundChoices, id: \.self) { Text($0).tag($0) }
                 }
-                Picker("Wait for a reply when a session finishes", selection: $replyWindow) {
+                Picker("Wait for a reply when a session finishes", selection: $preferences.replyWindow) {
                     Text("Off").tag(0)
                     Text("30 seconds").tag(30)
                     Text("1 minute").tag(60)
@@ -4687,20 +4710,29 @@ private struct Footer: View {
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         }
-        .onChange(of: sounds) { _, on in Settings.sounds = on }
-        .onChange(of: soundName) { _, name in
+        .onChange(of: preferences.sounds) { _, on in Settings.sounds = on }
+        .onChange(of: preferences.soundName) { _, name in
             Settings.soundName = name
             // Hear it as you pick it.
             Settings.playSound()
         }
-        .onChange(of: replyWindow) { _, seconds in Settings.replyWindow = seconds }
-        .onChange(of: loginItem) { _, on in
-            do {
-                if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-            } catch {
-                NSLog("Perch: login item change failed: \(error)")
-                loginItem = SMAppService.mainApp.status == .enabled
-            }
+        .onChange(of: preferences.replyWindow) { _, seconds in Settings.replyWindow = seconds }
+        // ServiceManagement is a synchronous cross-process query. Read it when this
+        // view appears, not each time SwiftUI recreates Footer during an update.
+        .onAppear { preferences.refreshSystemStatus() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didActivateApplicationNotification)) { _ in
+            // Settings changed elsewhere become visible on the next visit to Perch.
+            if NSApp.isActive { preferences.refreshSystemStatus() }
+        }
+    }
+
+    private func setLoginItem(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            preferences.loginItem = on
+        } catch {
+            NSLog("Perch: login item change failed: \(error)")
+            preferences.loginItem = SMAppService.mainApp.status == .enabled
         }
     }
 }
@@ -5281,7 +5313,11 @@ private struct SlackAvatar: View {
     var sidebar = false
     @State private var image: NSImage?
 
-    private static let cache = NSCache<NSURL, NSImage>()
+    private static let cache: NSCache<NSURL, NSImage> = {
+        let cache = NSCache<NSURL, NSImage>()
+        cache.countLimit = 128
+        return cache
+    }()
     static let slackLogo = NSWorkspace.shared.icon(forFile: "/Applications/Slack.app")
     static let whatsappLogo: NSImage = {
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "net.whatsapp.WhatsApp") {
@@ -5595,11 +5631,11 @@ private struct SlackComposer: View {
                     }
                 }
                 HStack(alignment: .bottom, spacing: 6) {
-                    GrowingText(text: draft, placeholder: "Message \(liveName(target))", focusAsk: ask,
+                    DraftText(store: ui.drafts, id: draftKey, placeholder: "Message \(liveName(target))", focusAsk: ask,
                                 onFocus: { _ in }, onSubmit: send, onTab: { false })
                         .fixedSize(horizontal: false, vertical: true)
                         .overlay(alignment: .topLeading) {
-                            if text.isEmpty {
+                            if !ui.drafts.hasText(draftKey) {
                                 Text("Message \(liveName(target))").font(.system(size: 13)).foregroundStyle(.white.opacity(0.35))
                                     .allowsHitTesting(false)
                             }
@@ -5630,9 +5666,9 @@ private struct SlackComposer: View {
                     }
                     Button(action: send) {
                         Image(systemName: "arrow.up.circle.fill").font(.system(size: 15)).symbolEffect(.bounce, value: sent)
-                            .foregroundStyle(text.isEmpty && files.isEmpty ? .white.opacity(0.2) : .white)
+                            .foregroundStyle(!ui.drafts.hasText(draftKey) && files.isEmpty ? .white.opacity(0.2) : .white)
                     }
-                    .buttonStyle(Press()).disabled((text.isEmpty && files.isEmpty) || state == "sending" || voice.recording || voice.preparing)
+                    .buttonStyle(Press()).disabled((!ui.drafts.hasText(draftKey) && files.isEmpty) || state == "sending" || voice.recording || voice.preparing)
                 }
             }
             .padding(.horizontal, 11).padding(.vertical, 8)
@@ -6088,18 +6124,18 @@ private struct SlackThreadView: View {
                 Text("Did not send.").font(.system(size: 11)).foregroundStyle(Palette.red)
             }
             HStack(alignment: .bottom, spacing: 6) {
-                GrowingText(text: draft, placeholder: "Reply…", focusAsk: 1, onFocus: { _ in }, onSubmit: send, onTab: { false })
+                DraftText(store: ui.drafts, id: draftKey, placeholder: "Reply…", focusAsk: 1, onFocus: { _ in }, onSubmit: send, onTab: { false })
                     .fixedSize(horizontal: false, vertical: true)
                     .overlay(alignment: .topLeading) {
-                        if (ui.drafts[draftKey] ?? "").isEmpty {
+                        if !ui.drafts.hasText(draftKey) {
                             Text("Reply…").font(.system(size: 13)).foregroundStyle(.white.opacity(0.35)).allowsHitTesting(false)
                         }
                     }
                 Button(action: send) {
                     Image(systemName: "arrow.up.circle.fill").font(.system(size: 15)).symbolEffect(.bounce, value: sent)
-                        .foregroundStyle((ui.drafts[draftKey] ?? "").isEmpty ? .white.opacity(0.2) : .white)
+                        .foregroundStyle(!ui.drafts.hasText(draftKey) ? .white.opacity(0.2) : .white)
                 }
-                .buttonStyle(Press()).disabled((ui.drafts[draftKey] ?? "").isEmpty || state == "sending")
+                .buttonStyle(Press()).disabled(!ui.drafts.hasText(draftKey) || state == "sending")
                 EmojiButton { ui.drafts[draftKey, default: ""] += $0 }
             }
             .padding(.horizontal, 11).padding(.vertical, 8)
@@ -6925,116 +6961,6 @@ private struct SlackBanner: View {
 }
 
 // MARK: Growing text box
-
-/// A multi-line text box built on AppKit's own text view, so long messages type and scroll the
-/// way they do in any Mac app. It grows to fit, up to `maxHeight`, then scrolls.
-struct GrowingText: NSViewRepresentable {
-    @Binding var text: String
-    var placeholder: String
-    var focusAsk: Int
-    var onFocus: (Bool) -> Void
-    var onSubmit: () -> Void
-    var onTab: () -> Bool
-    var maxHeight: CGFloat = 150
-
-    final class Coordinator: NSObject, NSTextViewDelegate {
-        var parent: GrowingText
-        var asked = 0
-        weak var view: NSTextView?
-        init(_ parent: GrowingText) { self.parent = parent }
-
-        func textDidChange(_ note: Notification) {
-            guard let view else { return }
-            parent.text = view.string
-            view.invalidateIntrinsicContentSize()
-        }
-        func textDidBeginEditing(_ note: Notification) { parent.onFocus(true) }
-        func textDidEndEditing(_ note: Notification) { parent.onFocus(false) }
-
-        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-            if selector == #selector(NSResponder.insertNewline(_:)) {
-                if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
-                    textView.insertNewlineIgnoringFieldEditor(nil)
-                } else {
-                    parent.onSubmit()
-                }
-                return true
-            }
-            if selector == #selector(NSResponder.insertTab(_:)) { return parent.onTab() }
-            return false
-        }
-    }
-
-    final class Box: NSScrollView {
-        var maxHeight: CGFloat = 150
-        override var intrinsicContentSize: NSSize {
-            guard let view = documentView as? NSTextView, let layout = view.layoutManager, let container = view.textContainer else {
-                return NSSize(width: NSView.noIntrinsicMetric, height: 18)
-            }
-            layout.ensureLayout(for: container)
-            let h = layout.usedRect(for: container).height
-            return NSSize(width: NSView.noIntrinsicMetric, height: min(max(h, 17), maxHeight))
-        }
-    }
-
-    final class Field: NSTextView {
-        override func didChangeText() {
-            super.didChangeText()
-            enclosingScrollView?.invalidateIntrinsicContentSize()
-        }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    func makeNSView(context: Context) -> Box {
-        let box = Box()
-        box.maxHeight = maxHeight
-        box.drawsBackground = false
-        box.hasVerticalScroller = true
-        box.autohidesScrollers = true
-        box.borderType = .noBorder
-        box.verticalScrollElasticity = .allowed
-
-        let view = Field()
-        view.delegate = context.coordinator
-        view.drawsBackground = false
-        view.isRichText = false
-        view.allowsUndo = true
-        view.font = .systemFont(ofSize: 13)
-        view.textColor = .white
-        view.insertionPointColor = .white
-        view.textContainerInset = .zero
-        view.textContainer?.lineFragmentPadding = 0
-        view.textContainer?.widthTracksTextView = true
-        view.isVerticallyResizable = true
-        view.isHorizontallyResizable = false
-        view.autoresizingMask = [.width]
-        // Plain typing: no curly quotes or dashes swapped in behind your back.
-        view.isAutomaticQuoteSubstitutionEnabled = false
-        view.isAutomaticDashSubstitutionEnabled = false
-        view.isAutomaticTextReplacementEnabled = false
-        view.string = text
-        box.documentView = view
-        context.coordinator.view = view
-        return box
-    }
-
-    func updateNSView(_ box: Box, context: Context) {
-        context.coordinator.parent = self
-        guard let view = context.coordinator.view else { return }
-        if view.string != text {
-            // Changed from outside (dictation, a suggestion, sending): keep the cursor at the end.
-            view.string = text
-            view.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
-            view.scrollToEndOfDocument(nil)
-            box.invalidateIntrinsicContentSize()
-        }
-        if context.coordinator.asked != focusAsk {
-            context.coordinator.asked = focusAsk
-            DispatchQueue.main.async { view.window?.makeFirstResponder(view) }
-        }
-    }
-}
 
 // MARK: Side panel
 

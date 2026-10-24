@@ -13,12 +13,12 @@ struct GrokBall: View {
     var shape: GrokShapes.Shape? = nil
     @State private var hovered = false
     @State private var hoverAt = Date.distantPast
+    @State private var easing = false
     private var clock: EyeClock { EyeClock.shared }
 
     var body: some View {
         // Only ticks while something is moving: a working bot, a glance, or easing to the pointer.
         let glancing = clock.calmPlaying
-        let easing = Date().timeIntervalSince(hoverAt) < 0.35
         TimelineView(.animation(minimumInterval: 1 / 30, paused: !(working || glancing || easing))) { context in
             Canvas { g, canvas in
                 draw(&g, canvas, pose(at: context.date))
@@ -29,6 +29,14 @@ struct GrokBall: View {
         .onHover { over in
             hovered = over
             hoverAt = Date()
+            easing = true
+        }
+        .task(id: hoverAt) {
+            guard hoverAt != .distantPast else { return }
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            // A computed Date comparison alone never changed the timeline's paused state.
+            // Explicitly finish the ease, even if nothing else redraws this face.
+            easing = false
         }
     }
 

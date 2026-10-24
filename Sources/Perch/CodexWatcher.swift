@@ -8,6 +8,9 @@ final class CodexWatcher {
     private let root = "\(Shell.home)/.codex/sessions"
     private let indexPath = "\(Shell.home)/.codex/session_index.jsonl"
     private var timer: Timer?
+    private var changes: DirectoryChanges?
+    private var scanWork: DispatchWorkItem?
+    private var scannedAt = Date.distantPast
     private var seen: [String: Date] = [:]
     private var meta: [String: (id: String, cwd: String?, user: Bool)] = [:]
     private var names: [String: String] = [:]
@@ -19,8 +22,14 @@ final class CodexWatcher {
         guard FileManager.default.fileExists(atPath: root) else { return }
         lastUsage()
         scan()
-        timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.scan() }
-        timer?.tolerance = 1
+        let changes = DirectoryChanges { [weak self] in self?.scanSoon() }
+        let watching = changes.start(paths: [root, indexPath, "\(Shell.home)/.codex/state_5.sqlite",
+                                              "\(Shell.home)/.codex/state_5.sqlite-wal"])
+        self.changes = changes
+        // Slow reconciliation covers dropped filesystem events and wake from sleep. Retain
+        // the original cadence if macOS cannot establish the event stream.
+        timer = Timer.scheduledTimer(withTimeInterval: watching ? 90 : 3, repeats: true) { [weak self] _ in self?.scan() }
+        timer?.tolerance = watching ? 15 : 1
     }
 
     /// Usage from the most recent session of the last few days, so there is something to show
@@ -40,7 +49,22 @@ final class CodexWatcher {
         }
     }
 
+    private func scanSoon() {
+        guard scanWork == nil else { return }
+        // Streaming transcripts may write many times a second. Process them at most as
+        // often as the former poller, without waking every three seconds while idle.
+        let delay = max(0.15, 3 - Date().timeIntervalSince(scannedAt))
+        let work = DispatchWorkItem { [weak self] in
+            self?.scanWork = nil
+            self?.scan()
+        }
+        scanWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
     private func scan() {
+        scannedAt = Date()
+        refreshNames()
         let fm = FileManager.default
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy/MM/dd"

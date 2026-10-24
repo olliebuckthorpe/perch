@@ -109,8 +109,18 @@ final class ThreadSearch {
                         self.skipped[path] = modified
                         return
                     }
-                    Self.tokenize(&doc)
-                    doc.vectors = Self.passages(doc).compactMap(Embedder.shared.embed)
+                    if let known = self.files[path], known.title == doc.title, known.text == doc.text {
+                        // Most streaming writes are tools/metadata, not searchable messages.
+                        // Keep the new file timestamp without re-tokenizing or re-embedding.
+                        doc.words = known.words
+                        doc.titleWords = known.titleWords
+                        doc.counts = known.counts
+                        doc.folded = known.folded
+                        doc.vectors = known.vectors
+                    } else {
+                        Self.tokenize(&doc)
+                        doc.vectors = Self.passages(doc).compactMap(Embedder.shared.embed)
+                    }
                     next[path] = doc
                     changed = true
                 }

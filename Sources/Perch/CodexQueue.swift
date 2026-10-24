@@ -32,15 +32,36 @@ final class CodexQueue {
     static let shared = CodexQueue()
     private let worker = DispatchQueue(label: "perch.codex-queue", qos: .utility)
     private var reading = Set<String>()
+    // Owned exclusively by worker. A chat refresh must not boot a server every three seconds.
+    private var connection: Connection?
+    private var idleClose: DispatchWorkItem?
 
     func refresh(_ agent: Agent) {
         guard agent.source == .codex, !reading.contains(agent.id), let exe = Shell.find("codex") else { return }
         reading.insert(agent.id)
         let id = agent.id, threadID = agent.sessionID
         worker.async { [weak self, weak agent] in
-            let result = Result { try Self.read(exe: exe, threadID: threadID) }
+            guard let self else { return }
+            self.idleClose?.cancel()
+            let result = Result { () throws -> [CodexQueuedMessage] in
+                do {
+                    if self.connection == nil { self.connection = try Connection(exe: exe) }
+                    return try self.connection!.read(threadID: threadID)
+                } catch {
+                    self.connection?.close()
+                    self.connection = nil
+                    throw error
+                }
+            }
+            // Release the helper once no visible chat is requesting queue updates.
+            let close = DispatchWorkItem { [weak self] in
+                self?.connection?.close()
+                self?.connection = nil
+            }
+            self.idleClose = close
+            self.worker.asyncAfter(deadline: .now() + 15, execute: close)
             DispatchQueue.main.async {
-                self?.reading.remove(id)
+                self.reading.remove(id)
                 guard let agent else { return }
                 switch result {
                 case .success(let items):
@@ -54,25 +75,42 @@ final class CodexQueue {
         }
     }
 
-    private static func read(exe: String, threadID: String) throws -> [CodexQueuedMessage] {
-        let process = Process(), input = Pipe(), output = Pipe()
-        process.executableURL = URL(fileURLWithPath: exe)
-        process.arguments = ["app-server", "--listen", "stdio://"]
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 8, execute: timeout)
-        defer {
-            timeout.cancel()
+    private final class Connection {
+        private let process = Process(), input = Pipe(), output = Pipe()
+        private var buffer = Data()
+        private var sequence = 0
+
+        init(exe: String) throws {
+            process.executableURL = URL(fileURLWithPath: exe)
+            process.arguments = ["app-server", "--listen", "stdio://"]
+            process.standardInput = input
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            do {
+                _ = try request("initialize", ["clientInfo": ["name": "perch_queue_reader", "version": "0.1"],
+                                               "capabilities": ["experimentalApi": true]])
+            } catch {
+                close()
+                throw error
+            }
+        }
+
+        func close() {
             try? input.fileHandleForWriting.close()
             if process.isRunning { process.terminate() }
-            process.waitUntilExit()
             try? output.fileHandleForReading.close()
         }
-        var buffer = Data(), sequence = 0
-        func request(_ method: String, _ params: [String: Any]) throws -> [String: Any] {
+
+        deinit { close() }
+
+        private func request(_ method: String, _ params: [String: Any]) throws -> [String: Any] {
+            guard process.isRunning else { throw QueueError.unavailable }
+            // Bound each request, including reads on an already established connection.
+            let process = process
+            let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 8, execute: timeout)
+            defer { timeout.cancel() }
             sequence += 1
             let expected = sequence
             var data = try JSONSerialization.data(withJSONObject: ["id": expected, "method": method, "params": params])
@@ -88,26 +126,27 @@ final class CodexQueue {
                     return result
                 }
                 let data = output.fileHandleForReading.availableData
-                guard !data.isEmpty, buffer.count < 8 << 20 else { throw QueueError.unavailable }
+                guard !data.isEmpty, buffer.count + data.count < 8 << 20 else { throw QueueError.unavailable }
                 buffer.append(data)
             }
         }
-        _ = try request("initialize", ["clientInfo": ["name": "perch_queue_reader", "version": "0.1"],
-                                       "capabilities": ["experimentalApi": true]])
-        var items: [CodexQueuedMessage] = [], cursor: String?, cursors = Set<String>()
-        repeat {
-            var params: [String: Any] = ["threadId": threadID, "limit": 100]
-            if let cursor { params["cursor"] = cursor }
-            let page = try request("thread/queue/list", params)
-            guard let rows = page["data"] as? [[String: Any]] else { throw QueueError.unavailable }
-            for row in rows {
-                guard let item = CodexQueuedMessage.parse(row) else { throw QueueError.unavailable }
-                items.append(item)
-            }
-            cursor = page["nextCursor"] as? String
-            if let cursor, !cursors.insert(cursor).inserted { throw QueueError.unavailable }
-        } while cursor != nil
-        return items
+
+        func read(threadID: String) throws -> [CodexQueuedMessage] {
+            var items: [CodexQueuedMessage] = [], cursor: String?, cursors = Set<String>()
+            repeat {
+                var params: [String: Any] = ["threadId": threadID, "limit": 100]
+                if let cursor { params["cursor"] = cursor }
+                let page = try request("thread/queue/list", params)
+                guard let rows = page["data"] as? [[String: Any]] else { throw QueueError.unavailable }
+                for row in rows {
+                    guard let item = CodexQueuedMessage.parse(row) else { throw QueueError.unavailable }
+                    items.append(item)
+                }
+                cursor = page["nextCursor"] as? String
+                if let cursor, !cursors.insert(cursor).inserted { throw QueueError.unavailable }
+            } while cursor != nil
+            return items
+        }
     }
 
     private enum QueueError: Error { case unavailable }

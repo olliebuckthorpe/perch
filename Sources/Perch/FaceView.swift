@@ -59,8 +59,6 @@ extension Agent {
 @Observable
 final class EyeClock {
     static let shared = EyeClock()
-    private(set) var calm = 0
-    private(set) var lively = 0
     /// Working bots all share one loop, measured from here, so copies stay in step.
     let epoch = Date()
     /// When the latest idle glance began, and whether it is still playing.
@@ -68,21 +66,17 @@ final class EyeClock {
     private(set) var calmPlaying = false
 
     private init() {
-        tick(lively: false, after: 1)
-        tick(lively: true, after: 1)
+        tick(after: 1)
     }
 
-    /// Every few seconds for bots that are working, otherwise now and then.
-    private func tick(lively: Bool, after wait: Double) {
+    /// Idle glances only. Working faces use their own timeline; no second timer is needed.
+    private func tick(after wait: Double) {
         let t = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
             guard let self else { return }
-            if lively { self.lively += 1 } else {
-                self.calm += 1
-                self.calmAt = Date()
-                self.calmPlaying = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 6.2) { self.calmPlaying = false }
-            }
-            self.tick(lively: lively, after: lively ? Double.random(in: 6...9) : Double.random(in: 28...60))
+            self.calmAt = Date()
+            self.calmPlaying = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6.2) { self.calmPlaying = false }
+            self.tick(after: Double.random(in: 28...60))
         }
         t.tolerance = 0.2
     }
@@ -91,19 +85,23 @@ final class EyeClock {
 /// Codex's cloud: a soft, bumpy blob in a blue-to-violet wash with a white `>_` prompt on it.
 struct CodexMark: View {
     private struct Cloud: Shape {
-        func path(in rect: CGRect) -> Path {
+        // The outline never changes: compute the trigonometry once, then scale the path.
+        private static let outline: Path = {
             var p = Path()
-            let c = CGPoint(x: rect.midX, y: rect.midY)
-            let radius = min(rect.width, rect.height) / 2
             for i in 0...120 {
                 let t = Double(i) / 120 * 2 * .pi
-                // Gentle, shallow bumps: a puffy cloud, not a cog.
-                let r = radius * (0.945 + 0.055 * cos(8 * t + 0.4))
-                let pt = CGPoint(x: c.x + r * cos(t), y: c.y + r * sin(t))
+                let r = 0.945 + 0.055 * cos(8 * t + 0.4)
+                let pt = CGPoint(x: r * cos(t), y: r * sin(t))
                 if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
             }
             p.closeSubpath()
             return p
+        }()
+
+        func path(in rect: CGRect) -> Path {
+            let radius = min(rect.width, rect.height) / 2
+            return Self.outline.applying(CGAffineTransform(a: radius, b: 0, c: 0, d: radius,
+                                                         tx: rect.midX, ty: rect.midY))
         }
     }
 
@@ -268,7 +266,7 @@ struct FaceView: View {
         // Jumps while there is something waiting for the user: a question, a permission, or (for
         // a Claude chat) a reply they have not opened yet. It stops once the chat is opened.
         .modifier(Bounce(active: agent.status == .needsYou || (agent.source != .grok && agent.status == .done && !agent.seen),
-                         height: max(2.5, size * 0.2)))
+                         height: max(2.5, size * 0.2), size: size))
         .overlay(alignment: .topTrailing) { badge.offset(x: size * 0.16, y: -size * 0.12) }
     }
 
@@ -366,17 +364,11 @@ struct FaceView: View {
 private struct Bounce: ViewModifier {
     let active: Bool
     var height: CGFloat = 2.5
+    let size: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        if active {
-            // Up quickly, down with a little settle, then a short rest before the next hop.
-            content.phaseAnimator([0.0, -height, 0.0, 0.0]) { view, y in
-                view.offset(y: y)
-            } animation: { y in
-                y < 0 ? .easeOut(duration: 0.2) : .easeIn(duration: 0.24)
-            }
-        } else {
-            content
-        }
+        CompositorBounce(content: content, size: size, active: active && !reduceMotion, height: height)
+            .frame(width: size, height: size)
     }
 }

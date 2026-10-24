@@ -392,9 +392,7 @@ final class NotchUI {
     /// True when the island opened itself for a prompt, so it shows only that prompt.
     private(set) var cardsOnly = false
     /// Half-written replies, kept across closing the island and across restarts.
-    var drafts: [String: String] = UserDefaults.standard.dictionary(forKey: "drafts") as? [String: String] ?? [:] {
-        didSet { UserDefaults.standard.set(drafts.filter { !$0.value.isEmpty }, forKey: "drafts") }
-    }
+    let drafts = DraftStore()
     var attachmentSaveError: String?
     var attachments: [String: [Attachment]] = DraftAttachments.load() {
         didSet {
@@ -490,7 +488,7 @@ final class NotchUI {
     @ObservationIgnored private var expandWork: DispatchWorkItem?
     @ObservationIgnored private var collapseWork: DispatchWorkItem?
 
-    func isDrafting(_ id: String) -> Bool { !(drafts[id] ?? "").isEmpty || !(attachments[id] ?? []).isEmpty }
+    func isDrafting(_ id: String) -> Bool { drafts.hasText(id) || !(attachments[id] ?? []).isEmpty }
 
     /// Once a row is open the island has keyboard focus, and it stays until Esc or a click elsewhere.
     private var typing: Bool { controller?.panel.isKeyWindow ?? false }

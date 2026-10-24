@@ -122,7 +122,12 @@ final class GrokSource {
     /// the user, by bot id, with when the chat was last seen open. Saved, so a crash or quit
     /// never leaves a bot silenced.
     private var paused: [String: Date] = [:] {
-        didSet { UserDefaults.standard.set(Array(paused.keys), forKey: "perchPausedBots") }
+        didSet {
+            // Seen timestamps move every two seconds; only the set of muted bots is persisted.
+            if Set(paused.keys) != Set(oldValue.keys) {
+                UserDefaults.standard.set(Array(paused.keys), forKey: "perchPausedBots")
+            }
+        }
     }
     private var quietTimer: Timer?
 

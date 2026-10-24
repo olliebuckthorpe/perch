@@ -24,6 +24,7 @@ final class Usage {
 
     private(set) var claude = Plan()
     private(set) var codex = Plan()
+    @ObservationIgnored private var codexStamp = Date.distantPast
     /// Grok Bot has one allowance, counted over the week.
     private(set) var grok = Plan()
 
@@ -44,6 +45,7 @@ final class Usage {
         grok = Self.load("usageGrok")
         claude = Self.load("usageClaude")
         codex = Self.load("usageCodex")
+        codexStamp = codex.at
     }
 
     /// Claude Code's status line input: `rate_limits.five_hour` and `rate_limits.seven_day`.
@@ -99,9 +101,13 @@ final class Usage {
 
     /// Codex's `rate_limits` block: `primary` is the five hour window, `secondary` the week.
     func takeCodex(_ limits: [String: Any], at: Date) {
-        guard at > codex.at else { return }
+        guard at > codexStamp else { return }
         let plan = Plan(short: Self.window(limits["primary"]), week: Self.window(limits["secondary"]), at: at)
         guard plan.short != nil || plan.week != nil else { return }
+        codexStamp = at
+        // New transcript activity often repeats exactly the same allowance. Publishing its
+        // timestamp would invalidate the entire notch, including sidebar and chat layout.
+        guard plan.short != codex.short || plan.week != codex.week else { return }
         codex = plan
         Self.save(plan, "usageCodex")
     }

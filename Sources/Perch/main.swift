@@ -141,6 +141,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ui.undoSidebarRemoval()
             results["Undo restores coding chat and pin"] = !ui.isDismissed(agent) && ui.sidebarPinned(.agent(agent)) && agent.kept
             try? JSONSerialization.data(withJSONObject: results, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: parts[1]))
+        case "performance" where parts.count > 1:
+            var layers = 0
+            func count(_ view: NSView) {
+                if view.layer?.animationKeys()?.contains("perch.attention-bounce") == true { layers += 1 }
+                view.subviews.forEach(count)
+            }
+            NSApp.windows.compactMap(\.contentView).forEach(count)
+            let state: [String: Any] = ["expanded": ui.expanded, "cardsOnly": ui.cardsOnly,
+                "compositorBounces": layers, "tasksVisible": ui.showingTasks,
+                "visibleWindows": NSApp.windows.filter(\.isVisible).count]
+            try? JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys])
+                .write(to: URL(fileURLWithPath: parts[1]))
         case "expand": ui.expand()
         case "boardcheck" where parts.count > 1:
             checkBoardDrag(to: parts[1])
