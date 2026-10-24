@@ -3398,7 +3398,8 @@ struct ReactFace: View {
                     ForEach(Self.quick, id: \.self) { emoji in
                         Button { pick(emoji) } label: {
                             Text(emoji).font(.system(size: 20))
-                                .scaleEffect(over == emoji ? 1.25 : 1)
+                                .scaleEffect(chosen == emoji ? 1.6 : over == emoji ? 1.25 : 1)
+                                .offset(y: chosen == emoji ? -4 : 0)
                                 .frame(width: 34, height: 34).contentShape(Rectangle())
                         }
                         .buttonStyle(Press())
@@ -3426,12 +3427,21 @@ struct ReactFace: View {
         }
     }
 
+    @State private var chosen: String?
+
+    /// The chosen emoji swells for a moment, then the pop-up closes and the reaction lands.
     private func pick(_ emoji: String) {
-        react(emoji)
         Settings.sentFeel()
-        open = false
-        more = false
-        over = nil
+        withAnimation(.spring(response: 0.18, dampingFraction: 0.45)) { chosen = emoji }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+            open = false
+            more = false
+            over = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                react(emoji)
+                chosen = nil
+            }
+        }
     }
 }
 
@@ -6446,15 +6456,20 @@ private struct WhatsAppBubble: View {
                     HStack(spacing: 2) {
                         ForEach(counts.keys.sorted(), id: \.self) { e in
                             Text(counts[e]! > 1 ? "\(e) \(counts[e]!)" : e).font(.system(size: 11))
+                                // Each emoji pops in on its own, so a change reads as a change.
+                                .transition(.scale(scale: 0.2).combined(with: .opacity))
                         }
                     }
                     .padding(.horizontal, 5).padding(.vertical, 2)
                     .background(Color(white: 0.2), in: Capsule())
                     .overlay(Capsule().stroke(.black, lineWidth: 1.5))
                     .offset(x: line.mine ? -8 : 8, y: 14)
+                    // Lands on the message with a little bounce, from where the reaction was picked.
+                    .transition(.scale(scale: 0.3, anchor: line.mine ? .bottomTrailing : .bottomLeading).combined(with: .opacity))
                 }
             }
             .padding(.bottom, line.reactions.isEmpty ? 0 : 14)
+            .animation(.spring(response: 0.38, dampingFraction: 0.55), value: line.reactions)
     }
 
     /// Invisible text as wide as the time and ticks, so the last line always leaves room for them.
