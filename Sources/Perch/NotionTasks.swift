@@ -160,13 +160,12 @@ final class NotionTasks {
         didSet { UserDefaults.standard.set(order, forKey: "taskOrder") }
     }
 
-    /// Explicit drop order wins. Unplaced cards retain urgency and the board's default order.
+    /// Soonest due at the top; dragging orders cards due the same day, and undated ones.
     func cards(in column: String) -> [TaskItem] {
         let cards = tasks.filter { $0.column == column }
-        let endOfToday = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: Date())) ?? Date()
-        let urgent = Set(cards.filter { $0.due.map { $0 < endOfToday } ?? false }.map(\.id))
+        let due = Dictionary(cards.compactMap { c in c.due.map { (c.id, $0) } }, uniquingKeysWith: { a, _ in a })
         let lookup = Dictionary(cards.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        return TaskOrdering.arrange(cards.map(\.id), manual: order, urgent: urgent).compactMap { lookup[$0] }
+        return TaskOrdering.arrange(cards.map(\.id), manual: order, due: due).compactMap { lookup[$0] }
     }
 
     /// Puts card `id` just above `target`, moving it to that card's column if it came from another.

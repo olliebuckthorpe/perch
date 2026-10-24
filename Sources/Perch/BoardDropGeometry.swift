@@ -16,15 +16,18 @@ enum BoardDropGeometry {
 }
 
 enum TaskOrdering {
-    static func arrange(_ ids: [String], manual: [String], urgent: Set<String>) -> [String] {
+    /// Due date first: overdue and soonest at the top, cards with no date after every dated one.
+    /// Within the same day, and among undated cards, the order the user dragged them into wins,
+    /// then the board's own order.
+    static func arrange(_ ids: [String], manual: [String], due: [String: Date]) -> [String] {
         let ranks = Dictionary(manual.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        let calendar = Calendar.current
+        func day(_ id: String) -> Date { due[id].map { calendar.startOfDay(for: $0) } ?? .distantFuture }
         return ids.enumerated().sorted {
-            let a = ranks[$0.element], b = ranks[$1.element]
-            if a != nil || b != nil {
-                if a != b { return (a ?? Int.max) < (b ?? Int.max) }
-            }
-            let x = urgent.contains($0.element), y = urgent.contains($1.element)
-            if x != y { return x }
+            let (x, y) = (day($0.element), day($1.element))
+            if x != y { return x < y }
+            let (a, b) = (ranks[$0.element] ?? Int.max, ranks[$1.element] ?? Int.max)
+            if a != b { return a < b }
             return $0.offset < $1.offset
         }.map(\.element)
     }
