@@ -1423,7 +1423,7 @@ private final class BoardDrag {
         end()
         if let destination {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
-                NotionTasks.shared.place(card.id, in: destination.column, at: destination.index)
+                NotionTasks.shared.place(card.id, in: destination.column)
             }
         }
     }

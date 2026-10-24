@@ -153,49 +153,20 @@ final class NotionTasks {
         }
     }
 
-    /// The order the user has dragged cards into. Notion's API cannot read or set a board's
-    /// manual order, so this lives in Perch only: cards placed by hand come first, in that order,
-    /// and the rest follow in the board's usual order.
-    private(set) var order: [String] = UserDefaults.standard.stringArray(forKey: "taskOrder") ?? [] {
-        didSet { UserDefaults.standard.set(order, forKey: "taskOrder") }
-    }
-
-    /// Soonest due at the top; dragging orders cards due the same day, and undated ones.
+    /// Soonest due at the top, undated last. Order is never set by hand: dragging only moves a
+    /// card to another column.
     func cards(in column: String) -> [TaskItem] {
         let cards = tasks.filter { $0.column == column }
         let due = Dictionary(cards.compactMap { c in c.due.map { (c.id, $0) } }, uniquingKeysWith: { a, _ in a })
         let lookup = Dictionary(cards.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        return TaskOrdering.arrange(cards.map(\.id), manual: order, due: due).compactMap { lookup[$0] }
+        return TaskOrdering.arrange(cards.map(\.id), due: due).compactMap { lookup[$0] }
     }
 
-    /// Puts card `id` just above `target`, moving it to that card's column if it came from another.
-    func place(_ id: String, before target: TaskItem) {
-        guard id != target.id else { return }
-        move(id, to: target.column)
-        var column = cards(in: target.column).map(\.id).filter { $0 != id }
-        column.insert(id, at: column.firstIndex(of: target.id) ?? column.count)
-        // Everything above the dropped card is now placed too, so it holds its position.
-        let placed = Array(column.prefix((column.firstIndex(of: target.id) ?? 0) + 1))
-        let known = Set(tasks.map(\.id))
-        order = placed + order.filter { !placed.contains($0) && known.contains($0) }
-    }
-
-    /// Puts card `id` at position `index` of `column`, as dropped on the board.
-    func place(_ id: String, in column: String, at index: Int) {
+    /// A card dropped on the board: into that column, where the due date decides its place.
+    func place(_ id: String, in column: String) {
+        guard tasks.first(where: { $0.id == id })?.column != column else { return }
         revision += 1
         move(id, to: column)
-        var ids = cards(in: column).map(\.id).filter { $0 != id }
-        ids.insert(id, at: max(0, min(index, ids.count)))
-        let known = Set(tasks.map(\.id))
-        order = ids + order.filter { !ids.contains($0) && known.contains($0) }
-    }
-
-    /// Puts card `id` at the very bottom of `column`.
-    func placeLast(_ id: String, in column: String) {
-        move(id, to: column)
-        let placed = cards(in: column).map(\.id).filter { $0 != id } + [id]
-        let known = Set(tasks.map(\.id))
-        order = placed + order.filter { !placed.contains($0) && known.contains($0) }
     }
 
     /// Moves a card to another column on the board, as dragging it in Notion would.
@@ -229,12 +200,10 @@ final class NotionTasks {
         revision += 1
         let temp = TaskItem(id: "new-\(UUID().uuidString)", name: name, column: column)
         tasks.append(temp)
-        order.insert(temp.id, at: 0)
         call("POST", "pages", ["parent": ["database_id": Self.database], "properties": props]) { [weak self] json, error in
             guard let self else { return }
             if let json, let item = Self.item(json) {
                 if let i = self.tasks.firstIndex(where: { $0.id == temp.id }) { self.tasks[i] = item } else { self.tasks.append(item) }
-                if let i = self.order.firstIndex(of: temp.id) { self.order[i] = item.id }
             } else {
                 self.tasks.removeAll { $0.id == temp.id }
                 self.problem = "Could not add that: \(error ?? "unknown error")"

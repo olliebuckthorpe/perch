@@ -13,6 +13,5 @@ check(target(500,100) == nil && target(50,450) == nil, "Releasing outside the bo
 let fixed = target(50,160)
 check((0..<100).allSatisfy { _ in target(50,160)?.index == fixed?.index }, "A stationary pointer cannot oscillate between insertion slots")
 let today = Date(), tomorrow = Date().addingTimeInterval(86400)
-check(TaskOrdering.arrange(["later","soon"], manual: ["later","soon"], due: ["soon": today, "later": tomorrow]) == ["soon","later"], "A nearer due date rises above a card dragged higher")
-check(TaskOrdering.arrange(["a","b","undated"], manual: ["b","a"], due: ["a": today, "b": today]) == ["b","a","undated"], "Cards due the same day keep the dragged order; undated go last")
-check(TaskOrdering.arrange(["x","y","z"], manual: ["z","z","missing"], due: [:]) == ["z","x","y"], "Undated cards follow the dragged order, then the board's; stale entries lose nothing")
+check(TaskOrdering.arrange(["later","soon","undated"], due: ["soon": today, "later": tomorrow]) == ["soon","later","undated"], "Soonest due first, undated last")
+check(TaskOrdering.arrange(["a","b"], due: ["a": today, "b": today]) == ["a","b"], "Same day keeps the board's order")
