@@ -861,8 +861,8 @@ final class NotchUI {
     @ObservationIgnored private var toastWork: DispatchWorkItem?
 
     func showToast(_ toast: Toast) {
-        // On a call: nothing pops up. It is all waiting in the sidebar afterwards.
-        guard !CallWatch.shared.onCall else { return }
+        // Sharing the screen: nothing pops up. It is all waiting in the sidebar afterwards.
+        guard !CallWatch.shared.sharing else { return }
         withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) { self.toast = toast }
         hideToastSoon()
     }
@@ -883,8 +883,8 @@ final class NotchUI {
         noteSlack(alert)
         // Open in a floating window already: it shows up there.
         if SidePanel.shared.showing(alert.workspace, alert.channel) { return }
-        // On a call (or sharing the screen in one): into the sidebar quietly, no banner, no sound.
-        if CallWatch.shared.onCall { return }
+        // Sharing the screen: into the sidebar quietly, no banner, no sound.
+        if CallWatch.shared.sharing { return }
         guard pendingLinks.isEmpty else { return }
         if expanded && !autoOpened {
             // Already reading that very conversation: it shows up there by itself.
@@ -946,8 +946,8 @@ final class NotchUI {
     /// full chat. The face in the notch keeps signalling until it is dealt with.
     func attention(_ store: AgentStore) {
         guard let id = store.attentionAgentID, store.find(id) != nil else { return }
-        // On a call: the face in the notch still shows it, but nothing opens or sounds.
-        guard !CallWatch.shared.onCall else { return }
+        // Sharing the screen: the face in the notch still shows it, but nothing opens or sounds.
+        guard !CallWatch.shared.sharing else { return }
         // A link picker is waiting on an answer; do not replace it with a notification.
         guard pendingLinks.isEmpty else { return }
         // Already open and in use: do not pull the view out from under the user. Unless it is the

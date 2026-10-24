@@ -176,6 +176,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? (rows + [String(format: "median %.3f of %d", median, all.count)]).joined(separator: "\n")
                     .write(toFile: bits[1], atomically: true, encoding: .utf8)
             }
+        case "sharing" where parts.count > 1:
+            // sharing:<file>: whether the screen is being shared now, and recent changes.
+            try? ([CallWatch.shared.sharing ? "sharing now" : "not sharing"] + CallWatch.shared.history)
+                .joined(separator: "\n").write(toFile: parts[1], atomically: true, encoding: .utf8)
         case "names" where parts.count > 1:
             // names:<query>|<file>: the search box's results for a query, as titles only.
             let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
