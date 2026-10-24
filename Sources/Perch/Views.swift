@@ -6848,6 +6848,7 @@ private struct SlackBanner: View {
     @State private var reply = ""
     @State private var state: String?
     @State private var reacted: String?
+    @State private var reacting = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -6881,6 +6882,26 @@ private struct SlackBanner: View {
                         Text(alert.workspace == WhatsAppSource.workspace ? alert.place : "\(alert.place) · \(alert.workspace.capitalized)").font(.system(size: 11))
                             .foregroundStyle(.white.opacity(0.45)).lineLimit(1)
                         Spacer(minLength: 0)
+                        if !alert.earlier.isEmpty {
+                            Text("\(alert.earlier.count + 1) messages").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
+                        }
+                        // React to the newest message: a small icon, the choices in a pop-up.
+                        Button { reacting.toggle() } label: {
+                            Image(systemName: "face.smiling").font(.system(size: 11.5))
+                                .foregroundStyle(.white.opacity(reacting ? 0.9 : 0.5))
+                        }
+                        .buttonStyle(Press()).help("React")
+                        .popover(isPresented: $reacting, arrowEdge: .bottom) {
+                            HStack(spacing: 2) {
+                                ForEach(BannerReactions.quick, id: \.emoji) { q in
+                                    Button { reacting = false; react(q) } label: {
+                                        Text(q.emoji).font(.system(size: 18)).frame(width: 32, height: 30).contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(Press())
+                                }
+                            }
+                            .padding(5)
+                        }
                         Button {
                             if alert.workspace == WhatsAppSource.workspace {
                                 ui.openConversation(alert.target)
@@ -6914,20 +6935,6 @@ private struct SlackBanner: View {
             } else if let reacted {
                 Text("Reacted \(reacted)").font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.green)
             } else {
-                // One tap reacts to the newest message, then on to the next banner.
-                HStack(spacing: 4) {
-                    ForEach(BannerReactions.quick, id: \.emoji) { q in
-                        Button { react(q) } label: {
-                            Text(q.emoji).font(.system(size: 15)).frame(width: 32, height: 26)
-                                .background(.white.opacity(0.08), in: Capsule())
-                        }
-                        .buttonStyle(Press())
-                    }
-                    Spacer(minLength: 0)
-                    if !alert.earlier.isEmpty {
-                        Text("\(alert.earlier.count + 1) messages").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
-                    }
-                }
                 HStack(spacing: 6) {
                     TextField(state == "failed" ? "Did not send. Try again, or open Slack" : "Reply to \(alert.sender)", text: $reply)
                         .textFieldStyle(.plain).font(.system(size: 12)).focused($focused)
