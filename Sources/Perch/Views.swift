@@ -133,6 +133,8 @@ private struct ExpandedBody: View {
                 LinkOpenedNote(site: opened.site, profile: opened.profile)
             } else if ui.showingWhatsAppLink {
                 WhatsAppLinkView()
+            } else if ui.cardsOnly, let meeting = ui.meetingAlert {
+                MeetingBanner(meeting: meeting)
             } else if ui.cardsOnly, let alert = ui.slackAlert {
                 SlackBanner(alert: alert)
             } else if ui.cardsOnly, let id = ui.noticeID, let agent = store.find(id) {
@@ -144,7 +146,16 @@ private struct ExpandedBody: View {
                 ClipboardPanel()
             } else {
                 TopBar()
-                    .overlay(alignment: .top) { ToastBanner() }
+                    .overlay(alignment: .top) {
+                        // A meeting about to start, over whatever is open, until joined or dismissed.
+                        if let meeting = ui.meetingAlert {
+                            MeetingBanner(meeting: meeting).frame(maxWidth: 520)
+                                .background(.black, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .shadow(color: .black.opacity(0.5), radius: 10, y: 4)
+                        } else {
+                            ToastBanner()
+                        }
+                    }
                     .zIndex(5)
                 if ui.showingTasks {
                     // The board gets the full width; the island stays the same size either way.
@@ -6835,6 +6846,58 @@ private struct ToastBanner: View {
 }
 
 /// A Slack message in the notch: who, where, and what they said. Click to open it in Slack.
+/// A meeting about to start: what it is, when, and one click to join it with Granola taking notes.
+private struct MeetingBanner: View {
+    let meeting: Meeting
+    @Environment(NotchUI.self) private var ui
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 15)) { context in
+            HStack(spacing: 11) {
+                Image(systemName: "video.fill").font(.system(size: 14)).foregroundStyle(.white)
+                    .frame(width: 32, height: 32).background(Color(red: 0.2, green: 0.55, blue: 0.95), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(meeting.title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                    Text(Self.when(meeting.start, now: context.date) + " · " + meeting.service)
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                Button {
+                    MeetingWatch.join(meeting, granola: true)
+                    ui.endMeetingAlert()
+                } label: {
+                    Text("Join + Granola").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.black)
+                        .padding(.horizontal, 11).padding(.vertical, 6).background(.white, in: Capsule())
+                }
+                .buttonStyle(Press())
+                Button {
+                    MeetingWatch.join(meeting, granola: false)
+                    ui.endMeetingAlert()
+                } label: {
+                    Text("Join").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 10).padding(.vertical, 6).background(.white.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(Press())
+                Button { ui.endMeetingAlert() } label: {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.white.opacity(0.5))
+                        .frame(width: 20, height: 20).contentShape(Rectangle())
+                }
+                .buttonStyle(Press()).help("Dismiss")
+            }
+            .padding(10)
+            .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+
+    static func when(_ start: Date, now: Date) -> String {
+        let s = Int(start.timeIntervalSince(now))
+        if s > 60 { return "Starts in \(Int((Double(s) / 60).rounded())) min" }
+        if s > 0 { return "Starts in under a minute" }
+        if s > -60 { return "Starting now" }
+        return "Started \(-s / 60) min ago"
+    }
+}
+
 /// The reactions offered on a banner, with Slack's name for each.
 enum BannerReactions {
     static let quick: [(emoji: String, slack: String)] = [("👍", "+1"), ("❤️", "heart"), ("😂", "joy"), ("😮", "open_mouth"),

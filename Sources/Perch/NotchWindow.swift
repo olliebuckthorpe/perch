@@ -807,6 +807,36 @@ final class NotchUI {
         present(PendingLink(url: last.url, site: last.site, sourceName: nil, sourceBundle: nil, choices: ChromeProfile.shown()))
     }
 
+    /// A meeting about to start, shown until joined or dismissed.
+    private(set) var meetingAlert: Meeting?
+
+    /// Two minutes before a meeting: the notch drops down with Join. If the notch is already open
+    /// and in use, it sits over the top of whatever is showing instead.
+    func meeting(_ meeting: Meeting) {
+        // Sharing the screen: nothing pops up.
+        guard !CallWatch.shared.sharing else { return }
+        if Settings.sounds { Settings.playSound() }
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { meetingAlert = meeting }
+        if !expanded {
+            autoOpened = true
+            cardsOnly = true
+            noticeID = nil
+            slackAlert = nil
+            expanded = true
+            collapseWork?.cancel()
+        }
+        // Gone by itself a few minutes after the start, joined or not.
+        let id = meeting.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(60, meeting.start.timeIntervalSinceNow + 300)) { [weak self] in
+            if self?.meetingAlert?.id == id { self?.endMeetingAlert() }
+        }
+    }
+
+    func endMeetingAlert() {
+        withAnimation(.easeOut(duration: 0.2)) { meetingAlert = nil }
+        if cardsOnly, slackAlert == nil, noticeID == nil { collapse() }
+    }
+
     /// A Slack message being shown as a banner.
     private(set) var slackAlert: SlackAlert?
     /// Messages that came in while the user was busy with the banner on screen (reading or

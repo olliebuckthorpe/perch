@@ -59,6 +59,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
   </array>
   <key>NSMicrophoneUsageDescription</key><string>Perch listens while you dictate a reply to an agent.</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>Perch turns what you say into the text of your reply.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>Perch shows a Join button just before meetings on your calendar.</string>
   <key>NSBluetoothAlwaysUsageDescription</key><string>Perch connects your headphones to this Mac when you ask it to.</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict>

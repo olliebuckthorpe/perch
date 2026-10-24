@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Headphones.shared.keepMacMicrophone()
         SlackSource.shared.start()
         CallWatch.shared.start()
+        MeetingWatch.shared.start()
         WhatsAppSource.shared.start()
         SidePanel.shared.restore()
         // Search reads every chat; that happens quietly after launch, so it is ready when needed.
@@ -175,6 +176,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let median = all.isEmpty ? 0 : all[all.count / 2]
                 try? (rows + [String(format: "median %.3f of %d", median, all.count)]).joined(separator: "\n")
                     .write(toFile: bits[1], atomically: true, encoding: .utf8)
+            }
+        case "meetings" where parts.count > 1:
+            // meetings:<file>: calendar access and today's meetings with join links (titles and times).
+            let w = MeetingWatch.shared
+            let rows = w.today().map { "\($0.start.formatted(date: .omitted, time: .shortened)) \($0.title) [\($0.service)]" }
+            try? (["access \(String(describing: w.allowed)), calendars \(w.calendarCount), \(w.why)"] + rows)
+                .joined(separator: "\n").write(toFile: parts[1], atomically: true, encoding: .utf8)
+        case "meetingtest":
+            // A pretend meeting two minutes out, to see the banner.
+            if let link = URL(string: "https://meet.google.com/abc-defg-hij") {
+                ui.meeting(Meeting(id: "test-\(UUID().uuidString)", title: "Test meeting", start: Date().addingTimeInterval(120),
+                                   end: Date().addingTimeInterval(1800), link: link, service: "Google Meet"))
             }
         case "sharing" where parts.count > 1:
             // sharing:<file>: whether the screen is being shared now, and recent changes.
