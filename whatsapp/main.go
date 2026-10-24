@@ -1118,12 +1118,19 @@ func sendReaction(chat, id, emoji string) (any, error) {
 	who, _ := types.ParseJID(sender)
 	if fromMe == 1 && client.Store.ID != nil {
 		who = client.Store.ID.ToNonAD()
+	} else if who.IsEmpty() && to.Server != types.GroupServer {
+		// Messages synced from the phone's history can lack a sender. In a one-to-one chat it is
+		// the other person; without this the reaction pointed at one of the user's own messages
+		// and WhatsApp quietly dropped it.
+		who = to
 	}
 	if _, err := client.SendMessage(ctx, to, client.BuildReaction(to, who, id, emoji)); err != nil {
+		note("reaction failed: %v", err)
 		return nil, err
 	}
 	react(chat, id, "me", emoji, true, true)
-	return nil, nil
+	note("reaction sent")
+	return map[string]any{"ok": true}, nil
 }
 
 func avatar(chat string) (any, error) {

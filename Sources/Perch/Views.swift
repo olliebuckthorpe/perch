@@ -3369,25 +3369,19 @@ func bannerText(_ text: String) -> AttributedString {
 struct ReactFace: View {
     let hovered: Bool
     @Binding var open: Bool
-    /// The tray opens over the message: leftwards from a face on the right of it, rightwards
-    /// from a face on the left (the user's own messages).
+    /// Kept for callers; the pop-up places itself.
     var opensRight = false
     let react: (String) -> Void
     @State private var over: String?
-    @State private var chosen: String?
     @State private var overFace = false
     @State private var more = false
-    @State private var watcher: Any?
 
     static let quick = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
-    private static let pop = Animation.spring(response: 0.3, dampingFraction: 0.6)
 
     var body: some View {
-        Button { withAnimation(Self.pop) { open.toggle() } } label: {
+        Button { open.toggle() } label: {
             Image(systemName: open ? "face.smiling.inverse" : "face.smiling").font(.system(size: 13))
                 .foregroundStyle(.white.opacity(open || overFace ? 0.95 : 0.55))
-                .rotationEffect(.degrees(open ? -14 : 0))
-                .scaleEffect(open ? 1.12 : 1)
                 .frame(width: 26, height: 26)
                 .background(.white.opacity(overFace || open ? 0.12 : 0.06), in: Circle())
                 .contentShape(Circle())
@@ -3396,74 +3390,48 @@ struct ReactFace: View {
         .onHover { overFace = $0 }
         .opacity(hovered || open ? 1 : 0)
         .help("React")
-        .overlay(alignment: opensRight ? .bottomLeading : .bottomTrailing) {
-            if open {
-                tray.offset(x: opensRight ? -10 : 10, y: -32)
-                    .transition(.scale(scale: 0.4, anchor: opensRight ? .bottomLeading : .bottomTrailing).combined(with: .opacity))
-            }
-        }
-        // Everything there is, from the "+": a popover, so it is never cut off at the chat's edge.
-        .popover(isPresented: $more, arrowEdge: .top) {
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(30), spacing: 2), count: 8), spacing: 2) {
-                ForEach(EmojiButton.common, id: \.self) { e in
-                    Button { more = false; pick(e) } label: {
-                        Text(e).font(.system(size: 19)).frame(width: 30, height: 30).contentShape(Rectangle())
+        // A pop-up of its own, so it is never cut off at the chat's edge and every reaction in it
+        // takes the click. A click anywhere else closes it.
+        .popover(isPresented: $open, arrowEdge: .top) {
+            VStack(spacing: 6) {
+                HStack(spacing: 2) {
+                    ForEach(Self.quick, id: \.self) { emoji in
+                        Button { pick(emoji) } label: {
+                            Text(emoji).font(.system(size: 20))
+                                .scaleEffect(over == emoji ? 1.25 : 1)
+                                .frame(width: 34, height: 34).contentShape(Rectangle())
+                        }
+                        .buttonStyle(Press())
+                        .onHover { inside in withAnimation(.spring(response: 0.2, dampingFraction: 0.6)) { over = inside ? emoji : (over == emoji ? nil : over) } }
                     }
-                    .buttonStyle(Press())
+                    Button { withAnimation(.easeOut(duration: 0.15)) { more.toggle() } } label: {
+                        Image(systemName: more ? "minus" : "plus").font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.primary.opacity(0.75)).frame(width: 28, height: 28)
+                            .background(.primary.opacity(0.08), in: Circle())
+                    }
+                    .buttonStyle(Press()).help("More reactions")
+                }
+                if more {
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(30), spacing: 2), count: 8), spacing: 2) {
+                        ForEach(EmojiButton.common, id: \.self) { e in
+                            Button { pick(e) } label: {
+                                Text(e).font(.system(size: 19)).frame(width: 30, height: 30).contentShape(Rectangle())
+                            }
+                            .buttonStyle(Press())
+                        }
+                    }
                 }
             }
-            .padding(8)
+            .padding(6)
         }
-        // While the tray is open, a click anywhere that is not a reaction closes it.
-        .onChange(of: open) { _, isOpen in
-            if let watcher { NSEvent.removeMonitor(watcher) }
-            watcher = nil
-            guard isOpen else { return }
-            watcher = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
-                DispatchQueue.main.async {
-                    if chosen == nil, open, !more { withAnimation(.easeOut(duration: 0.15)) { open = false } }
-                }
-                return event
-            }
-        }
-        .onDisappear { if let watcher { NSEvent.removeMonitor(watcher) } }
-    }
-
-    /// The quick reactions popping in one after another, each swelling under the pointer, and
-    /// the "+" at the end.
-    private var tray: some View {
-        HStack(spacing: 2) {
-            ForEach(Array(Self.quick.enumerated()), id: \.element) { index, emoji in
-                Text(emoji).font(.system(size: 17))
-                    .scaleEffect(chosen == emoji ? 1.7 : over == emoji ? 1.4 : 1, anchor: .bottom)
-                    .offset(y: chosen == emoji ? -8 : over == emoji ? -3 : 0)
-                    .frame(width: 28, height: 28).contentShape(Rectangle())
-                    .onHover { inside in withAnimation(.spring(response: 0.2, dampingFraction: 0.6)) { over = inside ? emoji : (over == emoji ? nil : over) } }
-                    .onTapGesture { pick(emoji) }
-                    .modifier(PopIn(delay: Double(index) * 0.028))
-            }
-            Button { more = true } label: {
-                Image(systemName: "plus").font(.system(size: 11, weight: .bold)).foregroundStyle(.white.opacity(0.75))
-                    .frame(width: 24, height: 24).background(.white.opacity(0.1), in: Circle())
-            }
-            .buttonStyle(Press()).help("More reactions")
-            .modifier(PopIn(delay: Double(Self.quick.count) * 0.028))
-        }
-        .padding(.horizontal, 6).padding(.vertical, 3)
-        .background(Color(white: 0.2), in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
-        .shadow(color: .black.opacity(0.5), radius: 8, y: 3)
-        .fixedSize()
     }
 
     private func pick(_ emoji: String) {
-        withAnimation(.spring(response: 0.22, dampingFraction: 0.5)) { chosen = emoji }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
-            react(emoji)
-            withAnimation(.easeOut(duration: 0.16)) { open = false }
-            chosen = nil
-            over = nil
-        }
+        react(emoji)
+        Settings.sentFeel()
+        open = false
+        more = false
+        over = nil
     }
 }
 
