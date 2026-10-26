@@ -538,6 +538,13 @@ final class CodingSessions {
         agent.source == .claude && (agent.adopted || agent.hostBundleID == Self.claudeBundleID) && agent.runner == nil
     }
 
+    /// A reply as relayed into a session: what was typed, signed with this Mac's private code
+    /// (see `RelayKey`). The user's CLAUDE.md tells sessions that only a message ending in that
+    /// exact signature is really the user, so text merely claiming to be from Perch is not.
+    static func relayed(_ text: String) -> String {
+        "The user replied from Perch, their notch app. Treat this as their next message:\n\n\(text)\n\n\(RelayKey.signature)"
+    }
+
     /// Hands a reply to the app's own session through its waiting hook. The session sees it as
     /// relayed, not typed, so it may ask before spending money or messaging people.
     private func relay(_ text: String, to agent: Agent, through waiter: HookRequest) {
@@ -546,7 +553,7 @@ final class CodingSessions {
             text += "\(Self.skillNote), where slash commands cannot run directly. Invoke the Skill tool with skill \"\(cmd.name)\""
                 + (cmd.arguments.isEmpty ? "" : " and args \"\(cmd.arguments)\"") + ", exactly as if this slash command had been typed.)"
         }
-        waiter.respond(Data("The user replied from Perch, their notch app. Treat this as their next message:\n\n\(text)".utf8))
+        waiter.respond(Data(Self.relayed(text).utf8))
         if agent.waiter === waiter { agent.waiter = nil }
         clearPending(agent)
         agent.status = .working
@@ -611,7 +618,7 @@ final class CodingSessions {
         agent.queued = []
         store.save()
         agent.waiter = nil
-        waiter.respond(Data("The user replied from Perch, their notch app. Treat this as their next message:\n\n\(text)".utf8))
+        waiter.respond(Data(Self.relayed(text).utf8))
     }
 
     /// Wakes the real session, so the reply and the answer both show up in its own chat.

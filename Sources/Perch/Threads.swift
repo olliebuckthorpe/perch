@@ -165,6 +165,7 @@ enum Threads {
     static func said(_ text: String) -> String {
         var t = text
         if let r = t.range(of: replyMarker) { t = String(t[r.upperBound...]) }
+        t = RelayKey.unsigned(t)
         t = t.components(separatedBy: "\n").filter { !$0.hasPrefix("[Image attached") && !$0.hasPrefix("[Image #") }
             .joined(separator: " ")
         return String(t.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased().prefix(300))
@@ -332,6 +333,7 @@ enum Threads {
             for closing in ["</system-reminder>", "&lt;/system-reminder"] {
                 if let end = text.range(of: closing) { text = String(text[..<end.lowerBound]) }
             }
+            text = RelayKey.unsigned(text)
             // Drop the note Perch adds to spell out a slash command, leaving what was typed.
             if let note = text.range(of: CodingSessions.skillNote) { text = String(text[..<note.lowerBound]) }
             text = text.trimmingCharacters(in: .whitespacesAndNewlines)
