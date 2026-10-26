@@ -988,7 +988,8 @@ private struct Rail: View {
     /// When something last really happened in a chat: a message or a turn, not housekeeping.
     private func lastActive(_ chat: SidebarChat) -> Double {
         switch chat {
-        case .agent(let a): return (a.lastTurnAt.map { max($0, a.lastActivity) } ?? a.lastActivity).timeIntervalSince1970
+        // When it last finished a turn, so a chat working away on its own holds its place.
+        case .agent(let a): return (a.finishedAt ?? a.createdAt).timeIntervalSince1970
         case .conversation(let t): return lastAt(t)
         }
     }

@@ -119,6 +119,7 @@ final class CodexWatcher {
         agent.transcriptPath = path
         if agent.hostBundleID == nil { agent.hostBundleID = CodingSessions.codexBundleID }
         agent.lastActivity = mtime
+        if agent.finishedAt == nil { agent.finishedAt = mtime }
         if let lifecycle { agent.codexWorking = lifecycle == "task_started" }
         questionQueue.async { [weak agent, questionScanner] in
             let batches = questionScanner.scan(path)

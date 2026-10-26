@@ -69,7 +69,14 @@ final class Agent: Identifiable {
     var lastMessage = ""
     /// What a working Grok bot is doing, in Grok Bot's own words ("Clicking around").
     var activity: String?
-    var status: AgentStatus = .idle
+    var status: AgentStatus = .idle {
+        // A turn coming to an end (finished, or stopped to ask something): this is what moves a
+        // chat up the sidebar. Updates while it works do not.
+        didSet { if oldValue == .working && status != .working { finishedAt = Date() } }
+    }
+    /// When its last turn ended. The sidebar orders chats by this, not by every small update.
+    var finishedAt: Date?
+    let createdAt = Date()
     var unread = 0
     /// How much of the context window the session's last turn used, and the model it ran on.
     var contextUsed: Int?
@@ -217,6 +224,7 @@ final class AgentStore {
             let kept = row["kept"] as? Bool ?? false
             guard kept || NotchUI.shared.isDrafting("\(source.rawValue):\(id)") || !(row["failedReplies"] as? [String: String] ?? [:]).isEmpty || now.timeIntervalSince(at) < Self.keepFor else { continue }
             let a = upsert(source: source, sessionID: id, name: name)
+            if a.finishedAt == nil { a.finishedAt = at }
             a.name = name
             a.kept = kept
             a.background = row["background"] as? Bool ?? false

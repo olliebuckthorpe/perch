@@ -39,6 +39,7 @@ final class CodingSessions {
                 agent.transcriptPath = path
                 agent.hostBundleID = Self.claudeBundleID
                 agent.lastActivity = mtime
+                if agent.finishedAt == nil { agent.finishedAt = mtime }
                 titled.insert(agent.id)
                 Threads.load(agent)
             }

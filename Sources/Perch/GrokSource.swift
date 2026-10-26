@@ -340,7 +340,10 @@ final class GrokSource {
             let open = NotchUI.shared.expanded && NotchUI.shared.selectedID == agent.id
             let unread = open ? 0 : raw["unreadCount"] as? Int ?? 0
             let preview = raw["lastMessagePreview"] as? String ?? ""
-            if let ms = raw["lastActivityAt"] as? Double { agent.lastActivity = Date(timeIntervalSince1970: ms / 1000) }
+            if let ms = raw["lastActivityAt"] as? Double {
+                agent.lastActivity = Date(timeIntervalSince1970: ms / 1000)
+                if agent.finishedAt == nil { agent.finishedAt = agent.lastActivity }
+            }
 
             let status: AgentStatus = awaiting ? .needsYou : running ? .working : unread > 0 ? .unread : .idle
             // Only something genuinely new is worth a notification: a message Perch has not
