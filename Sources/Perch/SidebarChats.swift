@@ -64,22 +64,17 @@ extension NotchUI {
         switch chat {
         case .agent(let a):
             let kept = a.kept, oldDismissal = dismissed[a.id], oldRemoval = sidebarRemovals[a.id]
-            let hidden = GrokSource.hidden.contains(a.sessionID)
-            if a.source == .grok {
-                pinned.remove(a.name)
-                GrokSource.shared.hide(a)
-                if selectedID == a.id { selectedID = nil }
-            } else {
-                dismiss(a)
-                sidebarRemovals[a.id] = Self.sidebarActivity(a)
-            }
+            // Cleared until it has something new, for bots as for every other chat. Hiding a bot
+            // for good (no notifications at all) is only ever the explicit "Hide from Perch".
+            if a.source == .grok { pinned.remove(a.name) }
+            dismiss(a)
+            sidebarRemovals[a.id] = Self.sidebarActivity(a)
             sidebarUndoAction = { [weak self, weak a] in
                 guard let self, let a else { return }
                 a.kept = kept
                 self.dismissed[a.id] = oldDismissal
                 self.sidebarRemovals[a.id] = oldRemoval
                 if a.source == .grok {
-                    if !hidden { GrokSource.hidden.remove(a.sessionID) }
                     if wasPinned { self.pinned.insert(a.name) }
                 } else if wasPinned { self.pinnedChats.insert(a.id) }
                 AgentStore.shared.save()

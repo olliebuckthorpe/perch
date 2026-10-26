@@ -4671,6 +4671,16 @@ private struct Footer: View {
                             set: { on in if on { ui.pinned.insert(bot.name) } else { ui.pinned.remove(bot.name) } }))
                     }
                 }
+                // Bots hidden here never notify or sit in the notch, but stay findable in search.
+                Menu("Hidden from Perch") {
+                    ForEach(store.grokBots) { bot in
+                        Toggle(bot.name, isOn: Binding(
+                            get: { GrokSource.hidden.contains(bot.sessionID) },
+                            set: { on in
+                                if on { GrokSource.shared.hide(bot) } else { GrokSource.hidden.remove(bot.sessionID) }
+                            }))
+                    }
+                }
                 Toggle("Launch at login", isOn: Binding(get: { preferences.loginItem }, set: setLoginItem))
                 Toggle("Keyboard cleaning mode", isOn: Binding(get: { KeyboardLock.shared.locked },
                                                                set: { _ in KeyboardLock.shared.toggle() }))
