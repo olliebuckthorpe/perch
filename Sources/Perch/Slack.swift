@@ -960,7 +960,14 @@ private final class Workspace {
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         URLSession.shared.dataTask(with: req) { data, _, _ in
             let o = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-            DispatchQueue.main.async { done(o?["ok"] as? Bool == true ? o : nil) }
+            DispatchQueue.main.async { [weak self] in
+                if o?["ok"] as? Bool != true, let self {
+                    // Slack's reason, for working out why something did not send. Never the keys.
+                    let at = Date().formatted(date: .omitted, time: .standard)
+                    SlackSource.status["\(self.name) error"] = "\(at) \(method): \(o?["error"] as? String ?? "no answer")"
+                }
+                done(o?["ok"] as? Bool == true ? o : nil)
+            }
         }.resume()
     }
 

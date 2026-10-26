@@ -262,6 +262,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         case "slackthreads": ui.expand(); ui.showThreads()
+        case "slacklines" where parts.count > 1:
+            // workspace|channel name|output path: the newest lines Perch has for it.
+            let bits = parts[1].split(separator: "|").map(String.init)
+            guard bits.count >= 3, let t = SlackDirectory.shared.targets.first(where: { $0.workspace == bits[0] && $0.name == bits[1] }) else { return }
+            if bits.count > 3 { SlackSource.shared.thread(t, ts: bits[3]) } else { SlackSource.shared.history(for: t) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                let store = SlackConversations.shared
+                let lines = bits.count > 3 ? SlackSource.shared.threadKey(t, ts: bits[3]).flatMap { store.threads[$0] } ?? [] : store.lines[store.key(t.workspace, t.id)] ?? []
+                let out = lines.suffix(8)
+                    .map { "\($0.id) \($0.mine ? "ME" : $0.sender): \($0.text.prefix(80)) replies=\($0.replyCount)" }.joined(separator: "\n")
+                try? (out + "\n\nstatus: \(SlackSource.status)").write(toFile: bits[2], atomically: true, encoding: .utf8)
+            }
         case "compose":
             ui.expand()
             ui.composing = true

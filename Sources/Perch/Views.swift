@@ -7583,6 +7583,11 @@ private struct SlackBanner: View {
                     ui.controller?.panel.makeKey()
                     focused = true
                 })
+                if state == "failed" {
+                    // Said plainly, with Slack's reason, so a reply never just sits there.
+                    Text(failure)
+                        .font(.system(size: 10.5)).foregroundStyle(Palette.red).padding(.top, 4)
+                }
             }
         }
         .padding(10)
@@ -7626,9 +7631,26 @@ private struct SlackBanner: View {
         state = "sending"
         Settings.sentFeel()
         ui.touch(alert.target)
-        SlackSource.shared.reply(to: alert, text: text) { ok in
-            state = ok ? "sent" : "failed"
-            if ok {
+        // A send that fails is tried once more before saying so: most failures are a blip.
+        func attempt(_ tries: Int) {
+            SlackSource.shared.reply(to: alert, text: text) { ok in
+                if !ok && tries > 0 { return DispatchQueue.main.asyncAfter(deadline: .now() + 1) { attempt(tries - 1) } }
+                finish(ok)
+            }
+        }
+        attempt(1)
+    }
+
+    /// Why the reply did not go, in Slack's words where it gave any.
+    private var failure: String {
+        let raw = SlackSource.status["\(alert.workspace) error"] ?? ""
+        let reason = raw.split(separator: " ").dropFirst().joined(separator: " ")
+        return reason.isEmpty ? "Did not send. Press Return to try again." : "Did not send (\(reason)). Press Return to try again."
+    }
+
+    private func finish(_ ok: Bool) {
+        state = ok ? "sent" : "failed"
+        if ok {
                 reply = ""
                 // Answered, so it no longer waits in the sidebar, nor shows unread in Slack or WhatsApp.
                 ui.slackUnread["\(alert.target.workspace):\(alert.target.id)"] = nil
@@ -7636,7 +7658,6 @@ private struct SlackBanner: View {
                 // On to the next one waiting, if any; otherwise the island tucks away.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { ui.nextBanner() }
             }
-        }
     }
 }
 
