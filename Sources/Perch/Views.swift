@@ -2534,14 +2534,19 @@ struct ChatView: View {
         return agent.codexQueueError == nil ? 0 : 52
     }
 
-    private var historyHeight: CGFloat { max(100, (agent.codexQuestion == nil ? 348 : 128) - queueHeight) }
+    /// Coding chats give up a little height to their status line; bot chats have none.
+    private var historyHeight: CGFloat {
+        let status: CGFloat = agent.source == .grok ? 0 : 32
+        return max(100, (agent.codexQuestion == nil ? 380 : 160) - status - queueHeight)
+    }
 
     var body: some View {
         let visibleItems = items
         let lastItemID = visibleItems.last?.id
         VStack(alignment: .leading, spacing: 8) {
             header
-            StatusLine(agent: agent, messages: messages)
+            // Where a coding chat's work has got to. Bots are conversations; they need none.
+            if agent.source != .grok { StatusLine(agent: agent, messages: messages) }
             ScrollViewReader { proxy in
                 ScrollView {
                     // Not lazy: every message has to exist for the view to be able to come to
