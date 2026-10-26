@@ -356,17 +356,59 @@ final class SlackSource {
         rewarm.tolerance = 120
     }
 
+    /// Where the keys live: one Keychain item per workspace and kind ("expox.app", "expox.user").
+    static let keychainService = "com.jonny.perch.slack"
+
+    /// Each workspace's file holds only its name, priority and alert choice; its two keys are in
+    /// the Keychain. A file still holding keys (the old way) has them moved there and removed.
     private func scan() {
         let files = (try? FileManager.default.contentsOfDirectory(atPath: dir))?.filter { $0.hasSuffix(".json") } ?? []
         for file in files where links[file] == nil {
-            guard let data = FileManager.default.contents(atPath: "\(dir)/\(file)"),
-                  let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let app = o["app"] as? String, let user = o["user"] as? String else { continue }
-            let w = Workspace(name: o["name"] as? String ?? file, priority: o["priority"] as? Int ?? 9,
+            let path = "\(dir)/\(file)"
+            guard let data = FileManager.default.contents(atPath: path),
+                  var o = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let name = o["name"] as? String ?? String(file.dropLast(5))
+            if let app = o["app"] as? String, let user = o["user"] as? String {
+                guard Keychain.set(Self.keychainService, "\(name).app", app),
+                      Keychain.set(Self.keychainService, "\(name).user", user) else {
+                    SlackSource.status[name] = "could not move keys to the Keychain"
+                    continue
+                }
+                o["app"] = nil
+                o["user"] = nil
+                Self.writeSettings(o, to: path)
+            }
+            guard let app = Keychain.get(Self.keychainService, "\(name).app"),
+                  let user = Keychain.get(Self.keychainService, "\(name).user") else {
+                SlackSource.status[name] = "no keys in the Keychain"
+                continue
+            }
+            let w = Workspace(name: name, priority: o["priority"] as? Int ?? 9,
                               apps: (o["alerts"] as? String ?? "apps") == "apps", appToken: app, userToken: user)
             links[file] = w
             w.connect()
         }
+    }
+
+    /// A workspace's keys handed over by `slack/add-workspace.sh` through Perch's own socket: into
+    /// the Keychain, its settings into its file, and connected at once (replacing an old link).
+    func save(name: String, priority: Int, alerts: String, app: String, user: String) -> Bool {
+        guard app.hasPrefix("xapp-"), user.hasPrefix("xoxp-"),
+              name.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil,
+              Keychain.set(Self.keychainService, "\(name).app", app),
+              Keychain.set(Self.keychainService, "\(name).user", user) else { return false }
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let file = "\(name).json"
+        Self.writeSettings(["name": name, "priority": priority, "alerts": alerts], to: "\(dir)/\(file)")
+        links[file]?.stop()
+        links[file] = nil
+        scan()
+        return true
+    }
+
+    private static func writeSettings(_ o: [String: Any], to path: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: o, options: [.prettyPrinted, .sortedKeys]) else { return }
+        FileManager.default.createFile(atPath: path, contents: data, attributes: [.posixPermissions: 0o600])
     }
 }
 
@@ -818,6 +860,7 @@ private final class Workspace {
     }
 
     func connect() {
+        guard !stopped else { return }
         if me.isEmpty {
             // Who the user is in this workspace: their own messages never become banners.
             api("auth.test", token: userToken) { [weak self] o in
@@ -895,6 +938,15 @@ private final class Workspace {
     }
 
     /// Straight onto a fresh connection, dropping the old one.
+    /// Replaced by a newer copy (keys saved again): close the connection for good.
+    private var stopped = false
+    func stop() {
+        stopped = true
+        socket?.cancel()
+        socket = nil
+        heartbeat?.invalidate()
+    }
+
     func reconnect() {
         socket?.cancel()
         socket = nil

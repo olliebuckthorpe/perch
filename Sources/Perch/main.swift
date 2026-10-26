@@ -40,7 +40,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                  attributes: [.posixPermissions: 0o700])
         let server = HookServer(path: "\(dir)/perch.sock")
         server.handler = { [weak self] req in
-            if let command = req.headers["x-perch-whatsapp"] {
+            if req.headers["x-perch-slack"] == "save" {
+                // slack/add-workspace.sh: a workspace's keys, straight into the Keychain. Only the
+                // outcome is answered; the keys are never logged or written to a file.
+                DispatchQueue.main.async {
+                    let j = req.json
+                    let ok = SlackSource.shared.save(name: j["name"] as? String ?? "", priority: j["priority"] as? Int ?? 9,
+                                                     alerts: j["alerts"] as? String ?? "apps",
+                                                     app: j["app"] as? String ?? "", user: j["user"] as? String ?? "")
+                    req.respond(Data((ok ? #"{"ok":true}"# : #"{"ok":false}"#).utf8))
+                }
+            } else if let command = req.headers["x-perch-whatsapp"] {
                 // `perch-wa`: WhatsApp from the command line (Remmi uses it to send through Perch).
                 DispatchQueue.main.async { WhatsAppSource.shared.command(command, json: req.json) { reply in
                     req.respond((try? JSONSerialization.data(withJSONObject: reply)) ?? Data())
