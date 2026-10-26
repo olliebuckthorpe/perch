@@ -4,14 +4,14 @@ import Observation
 /// Keyboard cleaning mode: every key press on the Mac is swallowed (letters, function keys,
 /// brightness, volume and media keys) so the keyboard can be wiped without typing anything.
 /// The pointer still works, and the notch shows an Unlock button. It unlocks by itself after
-/// two minutes, so it can never leave the Mac without a keyboard.
+/// five minutes, so it can never leave the Mac without a keyboard.
 ///
 /// Uses an event tap, which needs the Accessibility permission Perch already has. The tap only
 /// exists while locked. The power button cannot be blocked by any app.
 @Observable
 final class KeyboardLock {
     static let shared = KeyboardLock()
-    static let limit: TimeInterval = 120
+    static let limit: TimeInterval = 300
 
     private(set) var locked = false
     private(set) var until = Date.distantPast
