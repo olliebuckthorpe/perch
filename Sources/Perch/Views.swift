@@ -3522,12 +3522,24 @@ private struct MessageBody: View {
         case table(Int, [String], [[String]])
         /// Quoted text (lines starting "> "), such as a tweet being discussed.
         case quote(Int, String)
+        /// A fenced block (```). `writing` when it is prose (a draft post, a message to send),
+        /// shown in the normal font; otherwise code, in a code font. Line breaks kept either way.
+        case fenced(Int, String, writing: Bool)
 
         var id: Int {
             switch self {
-            case .prose(let i, _), .table(let i, _, _), .quote(let i, _): return i
+            case .prose(let i, _), .table(let i, _, _), .quote(let i, _), .fenced(let i, _, _): return i
             }
         }
+    }
+
+    /// Whether a fenced block is writing rather than code: no language (or a text one) and few of
+    /// the characters code is full of.
+    private static func isWriting(_ body: String, language: String) -> Bool {
+        let lang = language.lowercased()
+        guard ["", "text", "txt", "plain", "plaintext", "markdown", "md", "email", "post"].contains(lang) else { return false }
+        let codeChars = body.filter { "{}();=<>[]$`\\|".contains($0) }.count
+        return Double(codeChars) / Double(max(1, body.count)) < 0.02
     }
 
     private static func cells(_ line: Substring) -> [String] {
@@ -3566,6 +3578,21 @@ private struct MessageBody: View {
         }
         while i < lines.count {
             let line = lines[i]
+            // A fenced block runs to its closing fence (or the end), keeping every line as it is.
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                flush()
+                let language = line.trimmingCharacters(in: .whitespaces).dropFirst(3).trimmingCharacters(in: .whitespaces)
+                var body: [String] = []
+                i += 1
+                while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                    body.append(String(lines[i]))
+                    i += 1
+                }
+                i += 1
+                let joined = body.joined(separator: "\n").trimmingCharacters(in: .newlines)
+                if !joined.isEmpty { out.append(.fenced(out.count, joined, writing: Self.isWriting(joined, language: language))) }
+                continue
+            }
             // A table is a row of cells followed by a divider row.
             if line.contains("|"), i + 1 < lines.count, Self.isDivider(lines[i + 1]) {
                 flush()
@@ -3631,6 +3658,8 @@ private struct MessageBody: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 case .table(_, let header, let rows):
                     table(header, rows)
+                case .fenced(_, let body, let writing):
+                    FencedBlock(text: body, writing: writing)
                 case .quote(_, let s):
                     Text(Self.inline(s)).font(.system(size: 12.5)).lineSpacing(2)
                         .foregroundStyle(.white.opacity(0.72)).textSelection(.enabled)
@@ -3670,6 +3699,52 @@ private struct MessageBody: View {
         .padding(.horizontal, 9).padding(.vertical, 3)
         .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.white.opacity(0.1), lineWidth: 1))
+    }
+}
+
+/// A fenced block in a message. Writing (a draft post, an email) reads in the normal font with
+/// its paragraphs; code keeps a code font and scrolls sideways rather than wrapping. Both copy
+/// exactly as written.
+private struct FencedBlock: View {
+    let text: String
+    let writing: Bool
+    @State private var hovered = false
+    @State private var copied = false
+
+    var body: some View {
+        Group {
+            if writing {
+                Text(text).font(.system(size: 12.5)).lineSpacing(3)
+                    .foregroundStyle(.white.opacity(0.9)).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(text).font(.system(size: 11, design: .monospaced)).lineSpacing(2)
+                        .foregroundStyle(.white.opacity(0.85)).textSelection(.enabled)
+                        .fixedSize(horizontal: true, vertical: true)
+                }
+            }
+        }
+        .padding(.horizontal, 11).padding(.vertical, 9)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.white.opacity(0.1), lineWidth: 1))
+        .overlay(alignment: .topTrailing) {
+            if hovered || copied {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.8)).frame(width: 24, height: 22)
+                        .background(Color(white: 0.2), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(Press()).help("Copy").padding(5)
+            }
+        }
+        .onHover { hovered = $0 }
     }
 }
 
