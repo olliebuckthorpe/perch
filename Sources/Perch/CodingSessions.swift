@@ -427,7 +427,7 @@ final class CodingSessions {
         }
         agent.codexQuestionError = nil
         agent.sending = true
-        Shell.run(exe, ["queue", "--thread", agent.sessionID, "--message", text], cwd: agent.cwd,
+        Shell.run(exe, ["queue", "--thread", agent.sessionID, "--message=\(text)"], cwd: agent.cwd,
                   env: ["PERCH_HEADLESS": "1"], captureErrors: true, completion: { [weak self, weak agent] code, output in
             guard let self, let agent else { return }
             agent.sending = false
@@ -691,7 +691,9 @@ final class CodingSessions {
             if let made { agent?.name = made }
         }
         run(agent, exe: exe, text: prompt,
-            args: ["-p", "--permission-mode", "auto", "--session-id", id, "-n", oneLine(prompt, max: 44), prompt])
+            // "--name=" and "--" keep a message (or title) that starts with "-" from being read as
+            // an option ("error: unknown option '- Fix …'").
+            args: ["-p", "--permission-mode", "auto", "--session-id", id, "--name=\(Self.quickTitle(prompt))", "--", prompt])
 
         return agent
     }
@@ -708,7 +710,8 @@ final class CodingSessions {
             let page = url.pathComponents.last { $0 != "/" }?.replacingOccurrences(of: "-", with: " ") ?? ""
             return page.isEmpty ? site : "\(site) \(page)"
         }.joined(separator: " ")
-        var t = oneLine(linked, max: 200)
+        // A list item's dash or bullet is not part of the title.
+        var t = oneLine(linked, max: 200).trimmingCharacters(in: CharacterSet(charactersIn: "-*•–>").union(.whitespaces))
         if let end = t.firstIndex(where: { ".?!\n".contains($0) }), t.distance(from: t.startIndex, to: end) > 12 {
             t = String(t[..<end])
         }
@@ -870,7 +873,7 @@ final class CodingSessions {
         agent.unsent[messageID] = nil
         agent.sending = true
         agent.detail = "Sending to Codex…"
-        Shell.run(exe, ["queue", "--thread", agent.sessionID, "--message", text], cwd: agent.cwd,
+        Shell.run(exe, ["queue", "--thread", agent.sessionID, "--message=\(text)"], cwd: agent.cwd,
                   env: ["PERCH_HEADLESS": "1"], captureErrors: true, completion: { [weak self, weak agent] code, output in
             guard let self, let agent else { return }
             agent.sending = false
@@ -925,7 +928,8 @@ final class CodingSessions {
         let neverStarted = agent.background && agent.transcriptPath == nil
         // Chats started from the notch run in auto mode, so they do not stop to ask at every step.
         let auto = agent.background ? ["--permission-mode", "auto"] : []
-        let args = neverStarted ? ["-p"] + auto + ["--session-id", agent.sessionID, text] : ["-p"] + auto + ["--resume", agent.sessionID, text]
+        let args = neverStarted ? ["-p"] + auto + ["--session-id", agent.sessionID, "--", text]
+                                : ["-p"] + auto + ["--resume", agent.sessionID, "--", text]
         run(agent, exe: exe, text: text, args: args)
     }
 
