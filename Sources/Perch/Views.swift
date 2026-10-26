@@ -127,7 +127,9 @@ private struct ExpandedBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let link = ui.pendingLinks.first {
+            if KeyboardLock.shared.locked {
+                KeyboardLockCard()
+            } else if let link = ui.pendingLinks.first {
                 LinkPicker(link: link, waiting: ui.pendingLinks.count - 1).id(link.id)
             } else if let opened = ui.justOpened {
                 LinkOpenedNote(site: opened.site, profile: opened.profile)
@@ -4664,6 +4666,8 @@ private struct Footer: View {
                     }
                 }
                 Toggle("Launch at login", isOn: Binding(get: { preferences.loginItem }, set: setLoginItem))
+                Toggle("Keyboard cleaning mode", isOn: Binding(get: { KeyboardLock.shared.locked },
+                                                               set: { _ in KeyboardLock.shared.toggle() }))
                 Divider()
                 switch WhatsAppSource.shared.state {
                 case .ready:
@@ -6878,6 +6882,33 @@ private struct MeetingBanner: View {
         if s > 0 { return "Starts in under a minute" }
         if s > -60 { return "Starting now" }
         return "Started \(-s / 60) min ago"
+    }
+}
+
+/// Keyboard cleaning mode is on: say so, show how long is left, and unlock with a click.
+private struct KeyboardLockCard: View {
+    var body: some View {
+        let lock = KeyboardLock.shared
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(spacing: 11) {
+                Image(systemName: "keyboard.badge.ellipsis").font(.system(size: 15)).foregroundStyle(.white)
+                    .frame(width: 34, height: 34).background(Color(red: 0.95, green: 0.55, blue: 0.2), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Keyboard locked for cleaning").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                    let left = max(0, Int(lock.until.timeIntervalSince(context.date)))
+                    Text("Unlocks by itself in \(left / 60):\(String(format: "%02d", left % 60))")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)).monospacedDigit()
+                }
+                Spacer(minLength: 8)
+                Button { lock.unlock() } label: {
+                    Text("Unlock").font(.system(size: 12, weight: .semibold)).foregroundStyle(.black)
+                        .padding(.horizontal, 14).padding(.vertical, 7).background(.white, in: Capsule())
+                }
+                .buttonStyle(Press())
+            }
+            .padding(10)
+            .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
     }
 }
 

@@ -43,8 +43,9 @@ def wanted(source):
         hooks["PreToolUse"].append(entry(source, "ask", 310, matcher="AskUserQuestion"))
         # Claude Code can be woken while idle, so a reply from the notch lands in the real session
         # at any time. The turn is never held open; a background waiter listens instead.
-        # Up to a week: a chat left idle for hours still has a way in for a reply from Perch.
-        waiter = entry(source, "wait", 604800, background=True, rewake=True)
+        # A day: chats used today take a reply from Perch straight away. Older ones are woken by
+        # Perch reopening them in the Claude app, so idle waiters do not pile up.
+        waiter = entry(source, "wait", 86400, background=True, rewake=True)
         hooks["Stop"] = [entry(source, "info", 5, background=True), waiter]
         hooks["SessionStart"].append(waiter)
         # A fresh waiter after every tool call too, so a message sent mid-turn has a way in.
