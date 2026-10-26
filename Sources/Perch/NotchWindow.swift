@@ -633,8 +633,24 @@ final class NotchUI {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
+    /// The chat open when the island last closed, and when.
+    @ObservationIgnored private var lastOpen: (agent: String?, conversation: SlackTarget?, at: Date)?
+
     func expand() {
         expanded = true
+        // Back within a few minutes: the same chat as before, ahead of anything else.
+        if let last = lastOpen, Date().timeIntervalSince(last.at) < 300, selectedID == nil, slackTarget == nil, !browsing {
+            lastOpen = nil
+            if let t = last.conversation {
+                openSlack(t)
+                return resumeDraft()
+            }
+            if let id = last.agent, AgentStore.shared.find(id) != nil {
+                selectedID = id
+                focusReply = false
+                return resumeDraft()
+            }
+        }
         if selectedID == nil, !browsing, isDrafting("new") { composing = true }
         if selectedID == nil, !browsing, !composing {
             // Open straight onto a conversation: whoever needs you, else the one you last had open.
@@ -673,6 +689,10 @@ final class NotchUI {
         enlarged = nil
         toast = nil
         guard expanded else { return }
+        // What was open, so going off and straight back on lands on the same chat.
+        if !cardsOnly, selectedID != nil || slackTarget != nil {
+            lastOpen = (selectedID, slackTarget, Date())
+        }
         expanded = false
         cardsOnly = false
         slackAlert = nil
@@ -1190,9 +1210,11 @@ final class NotchController {
         // Slack all round, and plenty upwards so pushing against the top edge still counts.
         let island = CGRect(x: frame.minX + liveRect.minX, y: frame.maxY - liveRect.maxY,
                             width: liveRect.width, height: liveRect.height + 20).insetBy(dx: -3, dy: -3)
-        // Closed, the whole strip above where the island opens is the trigger, not just the pill.
-        let strip = CGRect(x: frame.midX + openOffset - openWidth / 2, y: frame.maxY - ui.notch.height,
-                           width: openWidth, height: ui.notch.height + 20)
+        // Closed, the pill itself (with a little slack) is the trigger. Not the whole width the
+        // island opens to: that took over the menu bar either side, so its icons (the camera's
+        // controls, say) opened Perch instead of being reachable.
+        let strip = CGRect(x: island.minX - 6, y: frame.maxY - ui.notch.height,
+                           width: island.width + 12, height: ui.notch.height + 20)
         let onIsland = island.contains(mouse)
         // Tell the edge guard which stretch of the top edge belongs to the island right now.
         if let primary = NSScreen.screens.first {
