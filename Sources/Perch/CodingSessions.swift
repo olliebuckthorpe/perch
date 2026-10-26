@@ -516,6 +516,7 @@ final class CodingSessions {
                 agent.queued.append(text)
                 store.save()
                 agent.detail = "Waiting for the Claude app's session to take it"
+                wakeInApp(agent)
             }
             return
         }
@@ -536,6 +537,16 @@ final class CodingSessions {
     /// The chat lives in the Claude app (it was opened there, or handed over to it).
     func ownedByApp(_ agent: Agent) -> Bool {
         agent.source == .claude && (agent.adopted || agent.hostBundleID == Self.claudeBundleID) && agent.runner == nil
+    }
+
+    /// A chat the Claude app owns that has no waiting hook (idle a long time, say): ask the app,
+    /// quietly and without coming to the front, to open it again. That is what clicking the chat
+    /// does: the session starts its hooks, a waiter connects, and the queued reply goes in.
+    private func wakeInApp(_ agent: Agent) {
+        guard let url = URL(string: "claude://resume?session=\(agent.sessionID)") else { return }
+        let quiet = NSWorkspace.OpenConfiguration()
+        quiet.activates = false
+        NSWorkspace.shared.open(url, configuration: quiet)
     }
 
     /// A reply as relayed into a session: what was typed, signed with this Mac's private code
