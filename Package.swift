@@ -5,6 +5,8 @@ let package = Package(
     name: "Perch",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "Perch", path: "Sources/Perch")
+        // Apple's on-device model (macOS 26) is optional: weak-linked so Perch still runs without it.
+        .executableTarget(name: "Perch", path: "Sources/Perch",
+                          linkerSettings: [.unsafeFlags(["-Xlinker", "-weak_framework", "-Xlinker", "FoundationModels"])])
     ]
 )

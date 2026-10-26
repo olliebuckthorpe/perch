@@ -2526,7 +2526,7 @@ struct ChatView: View {
         return agent.codexQueueError == nil ? 0 : 52
     }
 
-    private var historyHeight: CGFloat { max(100, (agent.codexQuestion == nil ? 362 : 142) - queueHeight) }
+    private var historyHeight: CGFloat { max(100, (agent.codexQuestion == nil ? 348 : 128) - queueHeight) }
 
     var body: some View {
         let visibleItems = items
@@ -6934,6 +6934,8 @@ private struct StatusLine: View {
     /// Building the streams"), else the opening of its latest update, and only failing both
     /// whatever it is doing this second.
     private var text: String? {
+        // The on-device summary of what is done and what is happening now, once written.
+        if let progress = agent.progress { return progress }
         let steps = agent.steps
         let done = steps.filter { $0.status == "completed" }.count
         if !steps.isEmpty, done < steps.count {
@@ -6958,12 +6960,16 @@ private struct StatusLine: View {
             HStack(spacing: 6) {
                 Circle().fill(agent.status == .working ? Palette.green : .white.opacity(0.3)).frame(width: 5, height: 5)
                 Text(text).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
-                    .lineLimit(1).truncationMode(.tail)
+                    .lineLimit(2).truncationMode(.tail).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.leading, 2)
             .help(text)
             .animation(.easeOut(duration: 0.2), value: text)
         }
+        Color.clear.frame(height: 0)
+            .task(id: "\(messages.last?.id ?? "")-\(agent.status)") {
+                ProgressSummary.shared.refresh(agent, messages: messages)
+            }
     }
 }
 
