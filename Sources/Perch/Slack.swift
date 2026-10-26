@@ -643,13 +643,14 @@ private final class Workspace {
         let user = m["user"] as? String ?? ""
         // Your own messages sent through Perch carry Perch's app name: they are still yours.
         let bot = user == me ? nil : (m["bot_profile"] as? [String: Any])?["name"] as? String ?? m["username"] as? String
+        let rich = tidy(m["text"] as? String ?? "", event: m, full: true, rich: true)
         var line = SlackLine(id: m["ts"] as? String ?? UUID().uuidString,
                              sender: bot ?? names[user] ?? (user == me ? "You" : ""),
                              mine: user == me,
-                             text: tidy(m["text"] as? String ?? "", event: m, full: true),
+                             text: Self.unlinked(rich),
                              picture: pictures[user], files: SlackFile.list(m, workspace: name),
                              time: (m["ts"] as? String).flatMap(Double.init).map { Date(timeIntervalSince1970: $0) })
-        line.rich = tidy(m["text"] as? String ?? "", event: m, full: true, rich: true)
+        line.rich = rich
         line.edited = m["edited"] != nil
         line.slackReactions = (m["reactions"] as? [[String: Any]] ?? []).compactMap { r in
             guard let name = r["name"] as? String else { return nil }
@@ -1233,15 +1234,26 @@ private final class Workspace {
         for key in ["blocks", "elements"] { if let child = o[key] { learnEmoji(child) } }
     }
 
+    // Compiled once: building a pattern costs more than using it.
+    nonisolated(unsafe) private static let emojiPattern = #/:([a-z0-9_+\-']+)(::skin-tone-[2-6])?:/#
+    nonisolated(unsafe) private static let mentionPattern = #/<@([A-Z0-9]+)(?:\|([^>]*))?>/#
+    private static let markdownLink = try! NSRegularExpression(pattern: #"\[([^\]]*)\]\((?:https?|mailto):[^)]*\)"#)
+
+    /// Slack text as plain words, from the version with its links kept.
+    static func unlinked(_ rich: String) -> String {
+        guard rich.contains("](") else { return rich }
+        return markdownLink.stringByReplacingMatches(in: rich, range: NSRange(rich.startIndex..., in: rich), withTemplate: "$1")
+    }
+
     private func tidy(_ text: String, event: [String: Any], full: Bool = false, rich: Bool = false) -> String {
         var s = text
         if let blocks = event["blocks"] { learnEmoji(blocks) }
-        for match in s.matches(of: #/:([a-z0-9_+\-']+)(::skin-tone-[2-6])?:/#).reversed() {
+        for match in s.matches(of: Self.emojiPattern).reversed() {
             let name = String(match.1), tone = match.2.map(String.init) ?? ""
             if let char = emoji[name + tone] ?? emoji[name] ?? Self.common[name] { s.replaceSubrange(match.range, with: char) }
         }
         // Mentions read as the person's name, and as "you" only when they are.
-        for match in s.matches(of: #/<@([A-Z0-9]+)(?:\|([^>]*))?>/#).reversed() {
+        for match in s.matches(of: Self.mentionPattern).reversed() {
             let id = String(match.1)
             let who = names[id] ?? match.2.map(String.init) ?? (id == me ? "you" : "someone")
             s.replaceSubrange(match.range, with: "@" + who)

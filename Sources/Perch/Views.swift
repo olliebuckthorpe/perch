@@ -5582,7 +5582,9 @@ private struct SlackComposer: View {
             // The conversation so far, newest at the bottom, live as messages arrive.
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
+                    // Lazy: only the messages in view are laid out, so opening a long
+                    // conversation and jumping to its end stays instant.
+                    LazyVStack(alignment: .leading, spacing: 8) {
                         if let lines {
                             if lines.isEmpty {
                                 Text("No messages yet.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
@@ -5913,10 +5915,11 @@ private struct SlackComposer: View {
             proxy.scrollTo(line.viewKey, anchor: UnitPoint(x: 0.5, y: 0.25))
         } else {
             proxy.scrollTo(last.viewKey, anchor: .bottom)
-            // Pictures take their size once loaded, which pushes the end down: settle again.
-            for delay in [0.15, 0.45, 1.0] {
+            // Pictures take their size once loaded, which pushes the end down: settle again, but
+            // only if it did. Each jump lays out the whole conversation, so none are spare.
+            for delay in [0.3, 1.0] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    guard let id = self.lines?.last?.viewKey else { return }
+                    guard !self.following, let id = self.lines?.last?.viewKey else { return }
                     proxy.scrollTo(id, anchor: .bottom)
                 }
             }
@@ -6315,8 +6318,34 @@ struct SlackMarkup: View {
         Text("(edited)").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4))
     }
 
-    private func inline(_ t: String, edited: Bool) -> some View {
-        var out = Self.styled(t, workspace: workspace)
+    @ViewBuilder private func inline(_ t: String, edited: Bool) -> some View {
+        if Self.plain(t) {
+            // Most messages have no formatting: plain text measures far faster than styled.
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text(verbatim: t).font(.system(size: 12.5)).lineSpacing(2).foregroundStyle(.white.opacity(0.9))
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                if edited { editedMark.padding(.leading, 4) }
+            }
+        } else {
+            rich(t, edited: edited)
+        }
+    }
+
+    /// Nothing in it that would be shown differently from plain text.
+    private static func plain(_ t: String) -> Bool {
+        !t.contains { "*_~`[@#".contains($0) }
+    }
+
+    /// Styled text, worked out once per message and kept.
+    private static var made: [String: AttributedString] = [:]
+
+    private func rich(_ t: String, edited: Bool) -> some View {
+        let key = workspace + "\u{0}" + t
+        if Self.made[key] == nil {
+            if Self.made.count > 600 { Self.made.removeAll() }
+            Self.made[key] = Self.styled(t, workspace: workspace)
+        }
+        var out = Self.made[key]!
         if edited {
             var mark = AttributedString(" (edited)")
             mark.foregroundColor = .white.opacity(0.4)
