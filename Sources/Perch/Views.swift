@@ -6930,17 +6930,27 @@ private struct StatusLine: View {
     let agent: Agent
     let messages: [ChatMessage]
 
+    /// Where the work has got to, broadest first: the chat's own step list ("3 of 6 done ·
+    /// Building the streams"), else the opening of its latest update, and only failing both
+    /// whatever it is doing this second.
     private var text: String? {
-        if agent.status == .working, let now = agent.activity ?? (agent.detail.isEmpty ? nil : agent.detail) {
-            return now
+        let steps = agent.steps
+        let done = steps.filter { $0.status == "completed" }.count
+        if !steps.isEmpty, done < steps.count {
+            let now = steps.first { $0.status == "in_progress" }.map(\.doing)
+                ?? steps.first { $0.status == "pending" }.map { "Next: \($0.subject)" } ?? ""
+            return "\(done) of \(steps.count) done" + (now.isEmpty ? "" : " · \(now)")
         }
-        guard let latest = messages.last(where: { !$0.fromUser && !$0.text.isEmpty })?.text else { return nil }
-        let line = oneLine(latest.replacingOccurrences(of: "**", with: ""), max: 400)
-        // The first sentence says where things are; the rest is detail.
-        if let end = line.firstIndex(where: { ".!?".contains($0) }), line.distance(from: line.startIndex, to: end) > 20 {
-            return String(line[...end])
+        if let latest = messages.last(where: { !$0.fromUser && !$0.text.isEmpty })?.text {
+            let line = oneLine(latest.replacingOccurrences(of: "**", with: ""), max: 400)
+            // The first sentence says where things are; the rest is detail.
+            if let end = line.firstIndex(where: { ".!?".contains($0) }), line.distance(from: line.startIndex, to: end) > 20 {
+                return String(line[...end])
+            }
+            return line
         }
-        return line
+        if agent.status == .working { return agent.activity ?? (agent.detail.isEmpty ? nil : agent.detail) }
+        return nil
     }
 
     var body: some View {

@@ -74,6 +74,9 @@ final class Agent: Identifiable {
         // chat up the sidebar. Updates while it works do not.
         didSet { if oldValue == .working && status != .working { finishedAt = Date() } }
     }
+    /// The chat's own step list (Claude Code's tasks or checklist): what each step is, its
+    /// "doing" wording, and whether it is pending, in progress or completed. Shown as progress.
+    var steps: [(id: String, subject: String, doing: String, status: String)] = []
     /// When its last turn ended. The sidebar orders chats by this, not by every small update.
     var finishedAt: Date?
     let createdAt = Date()

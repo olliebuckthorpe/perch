@@ -259,7 +259,34 @@ final class CodingSessions {
         }
     }
 
+    /// Follows the chat's own step list as it creates and ticks off steps, for a progress line
+    /// ("3 of 6 done · Building the streams"). Read from the hooks, so it costs nothing.
+    private func trackSteps(_ agent: Agent, tool: String, input: [String: Any], json j: [String: Any]) {
+        switch tool {
+        case "TaskCreate":
+            let response = j["tool_response"].map { ($0 as? String) ?? String(describing: $0) } ?? ""
+            let id = response.range(of: #"#(\d+)"#, options: .regularExpression).map { String(response[$0].dropFirst()) }
+                ?? String(agent.steps.count + 1)
+            let subject = input["subject"] as? String ?? ""
+            agent.steps.append((id, subject, input["activeForm"] as? String ?? subject, "pending"))
+        case "TaskUpdate":
+            guard let id = (input["taskId"] as? String) ?? (input["taskId"] as? Int).map(String.init),
+                  let i = agent.steps.firstIndex(where: { $0.id == id }) else { return }
+            if let status = input["status"] as? String { agent.steps[i].status = status == "deleted" ? "completed" : status }
+            if let subject = input["subject"] as? String { agent.steps[i].subject = subject }
+            if let doing = input["activeForm"] as? String { agent.steps[i].doing = doing }
+        case "TodoWrite":
+            let todos = input["todos"] as? [[String: Any]] ?? []
+            agent.steps = todos.enumerated().map { n, t in
+                let subject = t["content"] as? String ?? ""
+                return (String(n + 1), subject, t["activeForm"] as? String ?? subject, t["status"] as? String ?? "pending")
+            }
+        default: break
+        }
+    }
+
     private func info(event: String, agent: Agent, json j: [String: Any], tool: String, input: [String: Any], headless: Bool) {
+        if event == "PostToolUse" { trackSteps(agent, tool: tool, input: input, json: j) }
         switch event {
         case "UserPromptSubmit":
             clearPending(agent)
