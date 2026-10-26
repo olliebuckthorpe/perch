@@ -77,7 +77,13 @@ struct ChromeProfile: Identifiable {
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         try? p.run()
-        Self.bringChromeForward()
+        // The link lands in this profile's window, but Chrome brings forward whichever window was
+        // last in front, often another profile's. Bring this profile's window forward instead,
+        // the moment Chrome has taken the link.
+        guard url != nil else { return Self.bringChromeForward() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [self] in
+            if !jumpToExistingWindow() { Self.bringChromeForward() }
+        }
     }
 
     /// Brings Chrome to the front a beat after asking it to switch. Doing it at once shows
