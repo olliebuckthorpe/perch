@@ -93,6 +93,9 @@ final class Agent: Identifiable {
     var pending: PendingRequest?
     /// A background hook parked in an idle Claude Code session. Answering it wakes the session.
     var waiter: HookRequest?
+    /// The waiter came at the end of a turn (or at the start), so the chat is really idle,
+    /// whatever its status says.
+    var waiterAtRest = false
     /// Replies sent while there was no way in. Delivered at the next opening.
     var queued: [String] = []
     /// A turn Perch is running in the background, so a new message can interrupt it.

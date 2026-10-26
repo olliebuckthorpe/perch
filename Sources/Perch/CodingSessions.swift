@@ -74,6 +74,8 @@ final class CodingSessions {
     }
 
     func start() {
+        let sweeper = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.sweep() }
+        sweeper.tolerance = 10
         SkillIndex.shared.refresh()
         indexDesktopSessions()
         let reindex = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in self?.indexDesktopSessions() }
@@ -184,6 +186,7 @@ final class CodingSessions {
                 return
             }
             agent.waiter = req
+            agent.waiterAtRest = event == "Stop" || event == "SessionStart"
             req.onCancel = { [weak agent, weak req] in
                 if agent?.waiter === req { agent?.waiter = nil }
             }
@@ -490,6 +493,12 @@ final class CodingSessions {
             runner.interrupt()
             return
         }
+        // A chat the Claude app owns whose waiter came at the end of its turn is idle, even if its
+        // status missed the turn ending (Perch restarting at that moment): in it goes, now.
+        if ownedByApp(agent), let waiter = agent.waiter, agent.waiterAtRest {
+            relay(text, to: agent, through: waiter)
+            return
+        }
         // Otherwise a busy chat finishes its turn first, so long work is never cut off halfway;
         // "Interrupt with it" is there for when that is wanted.
         if (agent.status == .working && agent.pending == nil) || agent.sending {
@@ -537,6 +546,28 @@ final class CodingSessions {
     /// The chat lives in the Claude app (it was opened there, or handed over to it).
     func ownedByApp(_ agent: Agent) -> Bool {
         agent.source == .claude && (agent.adopted || agent.hostBundleID == Self.claudeBundleID) && agent.runner == nil
+    }
+
+    /// When each chat was last reopened in the app to take a waiting reply.
+    private var woken: [String: Date] = [:]
+
+    /// Every minute: replies still waiting for a chat the Claude app owns go in through its waiter
+    /// if it is at rest, or the chat is reopened in the app (at most every five minutes) so one
+    /// connects. Nothing typed in Perch is left sitting until the chat happens to be opened.
+    private func sweep() {
+        for agent in store.agents where !agent.queued.isEmpty && agent.source == .claude && ownedByApp(agent) {
+            // Only a waiter from the end of a turn: one from mid-turn would cut long work short.
+            if let waiter = agent.waiter, agent.waiterAtRest {
+                let text = agent.queued.joined(separator: Threads.queueSeparator)
+                agent.queued = []
+                store.save()
+                relay(text, to: agent, through: waiter)
+            } else if agent.waiter == nil, Date().timeIntervalSince(agent.lastActivity) > 60,
+                      Date().timeIntervalSince(woken[agent.id] ?? .distantPast) > 300 {
+                woken[agent.id] = Date()
+                wakeInApp(agent)
+            }
+        }
     }
 
     /// A chat the Claude app owns that has no waiting hook (idle a long time, say): ask the app,
