@@ -3589,6 +3589,10 @@ private struct MessageBody: View {
                     i += 1
                 }
                 i += 1
+                // Code inside a list item comes indented: take off what every line shares.
+                let indent = body.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                    .map { $0.prefix { $0 == " " }.count }.min() ?? 0
+                body = body.map { String($0.dropFirst(min(indent, $0.prefix { $0 == " " }.count))) }
                 let joined = body.joined(separator: "\n").trimmingCharacters(in: .newlines)
                 if !joined.isEmpty { out.append(.fenced(out.count, joined, writing: Self.isWriting(joined, language: language))) }
                 continue

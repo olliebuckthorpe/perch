@@ -3,6 +3,8 @@ import AppKit
 /// Claude Code and Codex share the same hook protocol, so one handler serves both.
 final class CodingSessions {
     static let shared = CodingSessions()
+    /// When each chat's transcript was last read for its title.
+    private var titleLook: [String: Date] = [:]
     private let store = AgentStore.shared
 
     static let codexBundleID = "com.openai.codex"
@@ -146,7 +148,11 @@ final class CodingSessions {
         if let title = j["session_title"] as? String, !title.isEmpty {
             agent.name = title
         } else if source == .claude, let path = j["transcript_path"] as? String,
-                  !titled.contains(agent.id) || event == "UserPromptSubmit" || event == "Stop" {
+                  ["UserPromptSubmit", "Stop", "SessionStart"].contains(event)
+                    || (!titled.contains(agent.id) && Date().timeIntervalSince(titleLook[agent.id] ?? .distantPast) > 60) {
+            // Reading the end of the transcript for a title is not free: at turn boundaries, and
+            // otherwise at most once a minute, never on every step of a busy chat.
+            titleLook[agent.id] = Date()
             // Claude Code names a session a little after it starts, so look again at turn boundaries.
             let info = Self.transcriptInfo(path)
             if let title = info.title {

@@ -252,28 +252,50 @@ enum Threads {
     private static let imageGenerationKey = Data("image_gen.generation".utf8)
     private static let imageCompletedKey = Data("item_completed".utf8)
 
+    /// How far each transcript has been read, and what it said up to there. A chat working away
+    /// appends a line at a time, so only the new lines are read and decoded, not the last
+    /// megabyte again every couple of seconds (which kept Perch busy all day). Touched only on
+    /// `queue`, which runs one read at a time.
+    private static var progress: [String: (offset: UInt64, out: [ChatMessage], context: (used: Int, model: String?)?)] = [:]
+
     static func parse(_ path: String, codex: Bool) -> ([ChatMessage], (used: Int, model: String?)?) {
         guard let h = FileHandle(forReadingAtPath: path) else { return ([], nil) }
         defer { try? h.close() }
         let size = (try? h.seekToEnd()) ?? 0
-        // Codex writes generated pictures into its file in full, a few megabytes each, so read
-        // further back for it or a single picture pushes the conversation out of reach.
-        let span: UInt64 = codex ? 12 << 20 : 1 << 20
-        var start = size > span ? size - span : 0
-        var startsAtBoundary = true
-        if start > 0 {
-            try? h.seek(toOffset: start - 1)
-            startsAtBoundary = (try? h.read(upToCount: 1))?.first == 0x0A
-        }
-        try? h.seek(toOffset: start)
-        guard var data = try? h.readToEnd() else { return ([], nil) }
-        if !startsAtBoundary, let newline = data.firstIndex(of: 0x0A) {
-            let skipped = data.distance(from: data.startIndex, to: newline) + 1
-            data = data.subdata(in: skipped..<data.count)
-            start += UInt64(skipped)
-        }
         var out: [ChatMessage] = []
         var context: (used: Int, model: String?)?
+        var start: UInt64
+        if let known = progress[path], known.offset <= size {
+            // Carry on from where the last read stopped.
+            if known.offset == size { return (Array(known.out.suffix(40)), known.context) }
+            start = known.offset
+            out = known.out
+            context = known.context
+        } else {
+            // First read (or the file was rewritten): the last stretch of it. Codex writes generated
+            // pictures into its file in full, a few megabytes each, so read further back for it or a
+            // single picture pushes the conversation out of reach.
+            let span: UInt64 = codex ? 12 << 20 : 1 << 20
+            start = size > span ? size - span : 0
+            if start > 0 {
+                try? h.seek(toOffset: start - 1)
+                if (try? h.read(upToCount: 1))?.first != 0x0A {
+                    // Mid-line: skip to the next whole line.
+                    try? h.seek(toOffset: start)
+                    if let head = try? h.read(upToCount: 1 << 20), let newline = head.firstIndex(of: 0x0A) {
+                        start += UInt64(head.distance(from: head.startIndex, to: newline) + 1)
+                    }
+                }
+            }
+        }
+        try? h.seek(toOffset: start)
+        guard var data = try? h.readToEnd() else { return (Array(out.suffix(40)), context) }
+        // A line still being written has no newline yet: leave it for the next read.
+        if let lastNewline = data.lastIndex(of: 0x0A) {
+            data = data.subdata(in: 0..<(data.distance(from: data.startIndex, to: lastNewline) + 1))
+        } else {
+            return (Array(out.suffix(40)), context)
+        }
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
             var cursor = 0
@@ -317,6 +339,9 @@ enum Threads {
                 }
             }
         }
+        out = Array(out.suffix(80))
+        progress[path] = (start + UInt64(data.count), out, context)
+        if progress.count > 60 { progress.removeAll() }
         return (Array(out.suffix(40)), context)
     }
 
