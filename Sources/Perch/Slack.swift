@@ -39,7 +39,11 @@ struct SlackLine: Identifiable, Equatable {
     var viewKey: String { viewID.isEmpty ? id : viewID }
     var sender: String
     let mine: Bool
-    let text: String
+    var text: String
+    /// Slack only: the text with its formatting and links kept, as Slack's own markup.
+    var rich = ""
+    /// Slack only: changed since it was sent.
+    var edited = false
     var picture: URL?
     var files: [SlackFile] = []
     /// WhatsApp only: when it was sent, and for the user's own messages the ticks (1 sent,
@@ -215,11 +219,13 @@ struct SlackAlert: Identifiable, Equatable {
     let team: String
     let channel: String
     let place: String
-    let sender: String
+    var sender: String
     let text: String
     let ts: String
     /// The thread it belongs to, if any. A reply goes into the same thread.
     var thread: String?
+    /// The message this one replies under, when it is a reply in a thread.
+    var threadParent: String? { thread.flatMap { $0 == ts ? nil : $0 } }
     /// Earlier messages from the same conversation that arrived while this banner was up,
     /// oldest first, so a burst of messages reads as one banner.
     var earlier: [String] = []
@@ -274,12 +280,12 @@ final class SlackSource {
     func myName(in workspace: String) -> String? { links.values.first { $0.name == workspace }?.myName }
     func myPicture(in workspace: String) -> URL? { links.values.first { $0.name == workspace }?.myPicture }
 
-    /// Sends a reply as the user: in a thread, into that thread; to a mention in a channel, as a
-    /// reply in a thread under it; to a direct message, straight into the conversation.
+    /// Sends a reply as the user, as Slack does: to a reply in a thread, into that thread;
+    /// anything else, straight into the conversation.
     func reply(to alert: SlackAlert, text: String, done: @escaping (Bool) -> Void) {
         if alert.workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.send(to: alert.target, text: text, files: [], done: done) }
         guard let link = links.values.first(where: { $0.name == alert.workspace }) else { return done(false) }
-        link.post(channel: alert.channel, text: text, thread: alert.thread ?? (alert.direct ? nil : alert.ts), done: done)
+        link.post(channel: alert.channel, text: text, thread: alert.threadParent, done: done)
     }
 
     /// Adds or takes away the user's reaction on a Slack message.
@@ -291,9 +297,17 @@ final class SlackSource {
     func thread(_ target: SlackTarget, ts: String) {
         links.values.first(where: { $0.name == target.workspace })?.thread(target, ts: ts)
     }
-    func replyInThread(_ target: SlackTarget, ts: String, text: String, done: @escaping (Bool) -> Void) {
+    func replyInThread(_ target: SlackTarget, ts: String, text: String, broadcast: Bool = false, done: @escaping (Bool) -> Void) {
         guard let link = links.values.first(where: { $0.name == target.workspace }) else { return done(false) }
-        link.replyInThread(target, ts: ts, text: text, done: done)
+        link.replyInThread(target, ts: ts, text: text, broadcast: broadcast, done: done)
+    }
+    func edit(_ target: SlackTarget, ts: String, text: String, done: @escaping (Bool) -> Void) {
+        guard let link = links.values.first(where: { $0.name == target.workspace }) else { return done(false) }
+        link.edit(target, ts: ts, text: text, done: done)
+    }
+    func delete(_ target: SlackTarget, ts: String, done: @escaping (Bool) -> Void) {
+        guard let link = links.values.first(where: { $0.name == target.workspace }) else { return done(false) }
+        link.delete(target, ts: ts, done: done)
     }
     func threadKey(_ target: SlackTarget, ts: String) -> String? {
         links.values.first(where: { $0.name == target.workspace })?.threadKey(target, ts: ts)
@@ -635,6 +649,8 @@ private final class Workspace {
                              text: tidy(m["text"] as? String ?? "", event: m, full: true),
                              picture: pictures[user], files: SlackFile.list(m, workspace: name),
                              time: (m["ts"] as? String).flatMap(Double.init).map { Date(timeIntervalSince1970: $0) })
+        line.rich = tidy(m["text"] as? String ?? "", event: m, full: true, rich: true)
+        line.edited = m["edited"] != nil
         line.slackReactions = (m["reactions"] as? [[String: Any]] ?? []).compactMap { r in
             guard let name = r["name"] as? String else { return nil }
             return SlackReaction(name: name, emoji: emoji(for: name), count: r["count"] as? Int ?? 1,
@@ -670,13 +686,100 @@ private final class Workspace {
         }
     }
 
-    func replyInThread(_ target: SlackTarget, ts: String, text: String, done: @escaping (Bool) -> Void) {
+    func replyInThread(_ target: SlackTarget, ts: String, text: String, broadcast: Bool, done: @escaping (Bool) -> Void) {
         channel(for: target) { [weak self] channel in
             guard let self, let channel else { return done(false) }
-            self.post(channel: channel, text: text, thread: ts) { ok in
+            self.post(channel: channel, text: text, thread: ts, broadcast: broadcast) { ok in
                 done(ok)
-                if ok { self.thread(target, ts: ts) }
+                if ok {
+                    self.thread(target, ts: ts)
+                    if broadcast { self.history(for: target) }
+                }
             }
+        }
+    }
+
+    /// Changes the text of one of the user's own messages.
+    func edit(_ target: SlackTarget, ts: String, text: String, done: @escaping (Bool) -> Void) {
+        channel(for: target) { [weak self] channel in
+            guard let self, let channel else { return done(false) }
+            let old = self.change(channel: channel, ts: ts) { $0.text = text; $0.rich = text; $0.edited = true }
+            self.api("chat.update", token: self.userToken, ["channel": channel, "ts": ts, "text": text]) { o in
+                if o == nil, let old { _ = self.change(channel: channel, ts: ts) { $0 = old } }
+                done(o != nil)
+            }
+        }
+    }
+
+    /// Deletes one of the user's own messages.
+    func delete(_ target: SlackTarget, ts: String, done: @escaping (Bool) -> Void) {
+        channel(for: target) { [weak self] channel in
+            guard let self, let channel else { return done(false) }
+            self.api("chat.delete", token: self.userToken, ["channel": channel, "ts": ts]) { o in
+                if o != nil { self.remove(channel: channel, ts: ts) }
+                done(o != nil)
+            }
+        }
+    }
+
+    /// Changes a message wherever it is shown, in its conversation and in any thread. Returns
+    /// it as it was.
+    @discardableResult
+    private func change(channel: String, ts: String, _ edit: (inout SlackLine) -> Void) -> SlackLine? {
+        let store = SlackConversations.shared
+        let key = store.key(name, channel)
+        var before: SlackLine?
+        if let i = store.lines[key]?.firstIndex(where: { $0.id == ts }) {
+            before = store.lines[key]![i]
+            edit(&store.lines[key]![i])
+        }
+        for (k, lines) in store.threads where k.hasPrefix(key + ":") {
+            if let i = lines.firstIndex(where: { $0.id == ts }) {
+                before = before ?? lines[i]
+                edit(&store.threads[k]![i])
+            }
+        }
+        return before
+    }
+
+    private func remove(channel: String, ts: String) {
+        let store = SlackConversations.shared
+        let key = store.key(name, channel)
+        withAnimation(.easeOut(duration: 0.2)) {
+            store.lines[key]?.removeAll { $0.id == ts }
+            for (k, lines) in store.threads where k.hasPrefix(key + ":") && lines.contains(where: { $0.id == ts }) {
+                // The message a thread hangs off stays as a placeholder while it has replies.
+                if k == "\(key):\(ts)", lines.count > 1 {
+                    store.threads[k]![0].text = "This message was deleted."
+                    store.threads[k]![0].rich = "_This message was deleted._"
+                    store.threads[k]![0].files = []
+                } else {
+                    store.threads[k]?.removeAll { $0.id == ts }
+                    if let i = store.lines[key]?.firstIndex(where: { "\(key):\($0.id)" == k }) {
+                        store.lines[key]![i].replyCount = max(0, store.lines[key]![i].replyCount - 1)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Someone (or the user, elsewhere) edited or deleted a message.
+    private func changed(_ event: [String: Any]) {
+        guard let channel = event["channel"] as? String else { return }
+        if event["subtype"] as? String == "message_deleted" {
+            if let ts = event["deleted_ts"] as? String { remove(channel: channel, ts: ts) }
+            return
+        }
+        guard var m = event["message"] as? [String: Any], let ts = m["ts"] as? String else { return }
+        // A deleted thread parent comes as a change to a tombstone.
+        if m["subtype"] as? String == "tombstone" { return remove(channel: channel, ts: ts) }
+        if m["channel"] == nil { m["channel"] = channel }
+        let fresh = line(m)
+        change(channel: channel, ts: ts) { l in
+            l.text = fresh.text
+            l.rich = fresh.rich
+            l.edited = fresh.edited
+            l.files = fresh.files
         }
     }
 
@@ -820,9 +923,10 @@ private final class Workspace {
         people(nil)
     }
 
-    func post(channel: String, text: String, thread: String?, done: @escaping (Bool) -> Void) {
+    func post(channel: String, text: String, thread: String?, broadcast: Bool = false, done: @escaping (Bool) -> Void) {
         var params = ["channel": channel, "text": text]
         if let thread { params["thread_ts"] = thread }
+        if thread != nil && broadcast { params["reply_broadcast"] = "true" }
         api("chat.postMessage", token: userToken, params) { o in done(o != nil) }
     }
 
@@ -997,6 +1101,7 @@ private final class Workspace {
         if event["type"] as? String == "reaction_removed" { return reacted(event, add: false) }
         guard event["type"] as? String == "message" else { return }
         let subtype = event["subtype"] as? String
+        if subtype == "message_changed" || subtype == "message_deleted" { return changed(event) }
         guard subtype == nil || subtype == "bot_message" || subtype == "thread_broadcast" || subtype == "file_share" else { return }
         let sender = event["user"] as? String ?? ""
         guard let channel = event["channel"] as? String else { return }
@@ -1020,7 +1125,27 @@ private final class Workspace {
         // The user's own messages: anything in that conversation from before is already answered.
         if sender == me, let ts = event["ts"] as? String {
             lastMine[channel] = max(Double(ts) ?? 0, lastMine[channel] ?? 0)
-            if let thread = event["thread_ts"] as? String { myThreads.insert(thread) }
+            if let thread = event["thread_ts"] as? String, thread != ts {
+                myThreads.insert(thread)
+                // Into the Threads list, read.
+                let kind = event["channel_type"] as? String ?? ""
+                let direct = kind == "im" || kind == "mpim"
+                resolve(sender: sender, botName: nil, channel: channel, direct: direct) { [weak self] who, place in
+                    guard let self else { return }
+                    var alert = SlackAlert(id: "\(self.name)-\(ts)", workspace: self.name, priority: self.priority, team: self.team,
+                                           channel: channel, place: place, sender: who, text: self.tidy(event["text"] as? String ?? "", event: event), ts: ts)
+                    alert.direct = direct
+                    if direct {
+                        // The person the conversation is with, not the user.
+                        let store = SlackConversations.shared
+                        guard let person = store.dmChannel.first(where: { $0.value == channel && $0.key.hasPrefix("\(self.name):") })?
+                            .key.dropFirst(self.name.count + 1) else { return }
+                        alert.senderID = String(person)
+                        alert.sender = self.names[String(person)] ?? ""
+                    }
+                    SlackThreads.shared.note(alert, thread: thread, mine: true)
+                }
+            }
             return
         }
         let body = event["text"] as? String ?? ""
@@ -1052,6 +1177,7 @@ private final class Workspace {
             let botIcons = (event["bot_profile"] as? [String: Any])?["icons"] as? [String: Any]
             alert.picture = (botIcons?["image_72"] as? String ?? botIcons?["image_48"] as? String).flatMap(URL.init(string:))
                 ?? self.pictures[sender]
+            if let thread = alert.threadParent { SlackThreads.shared.note(alert, thread: thread, mine: false) }
             if stale { NotchUI.shared.noteSlack(alert) } else { NotchUI.shared.slack(alert) }
         }
     }
@@ -1107,7 +1233,7 @@ private final class Workspace {
         for key in ["blocks", "elements"] { if let child = o[key] { learnEmoji(child) } }
     }
 
-    private func tidy(_ text: String, event: [String: Any], full: Bool = false) -> String {
+    private func tidy(_ text: String, event: [String: Any], full: Bool = false, rich: Bool = false) -> String {
         var s = text
         if let blocks = event["blocks"] { learnEmoji(blocks) }
         for match in s.matches(of: #/:([a-z0-9_+\-']+)(::skin-tone-[2-6])?:/#).reversed() {
@@ -1123,9 +1249,84 @@ private final class Workspace {
         if s.isEmpty, let blocks = event["attachments"] as? [[String: Any]] {
             s = blocks.compactMap { $0["text"] as? String ?? $0["fallback"] as? String }.joined(separator: " ")
         }
+        s = s.replacingOccurrences(of: #"<!(here|channel|everyone)(?:\|[^>]*)?>"#, with: "@$1", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"<#[A-Z0-9]+\|([^>]+)>"#, with: "#$1", options: .regularExpression)
+        if rich {
+            // Links keep where they go, as Markdown, for showing them as links.
+            s = s.replacingOccurrences(of: #"<((?:https?|mailto):[^|>]+)\|([^>]+)>"#, with: "[$2]($1)", options: .regularExpression)
+            s = s.replacingOccurrences(of: #"<((?:https?|mailto):[^>]+)>"#, with: "[$1]($1)", options: .regularExpression)
+        }
         s = s.replacingOccurrences(of: #"<([^|>]+)\|([^>]+)>"#, with: "$2", options: .regularExpression)
         s = s.replacingOccurrences(of: #"<(https?://[^>]+)>"#, with: "$1", options: .regularExpression)
         s = s.replacingOccurrences(of: "&amp;", with: "&").replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
         return full ? s.trimmingCharacters(in: .whitespacesAndNewlines) : oneLine(s, max: 200)
+    }
+}
+
+/// Threads the user is in, as Slack's Threads view lists them: ones they started, wrote in or
+/// were mentioned in, newest reply first. Built from what arrives, and kept on disk so the list
+/// survives a restart.
+@Observable
+final class SlackThreads {
+    static let shared = SlackThreads()
+
+    struct Followed: Codable, Identifiable, Equatable {
+        /// The same as the thread's key in `SlackConversations.threads`.
+        var id: String { "\(workspace):\(channel):\(ts)" }
+        let workspace: String
+        let channel: String
+        let ts: String
+        var targetID: String
+        var targetName: String
+        var isChannel: Bool
+        var lastSender: String
+        var lastText: String
+        var lastAt: Date
+        var unread: Int
+        var target: SlackTarget {
+            SlackDirectory.shared.targets.first { $0.workspace == workspace && $0.id == targetID }
+                ?? SlackTarget(workspace: workspace, id: targetID, name: targetName, channel: isChannel)
+        }
+    }
+
+    private(set) var all: [Followed] = []
+    var unread: Int { all.reduce(0) { $0 + $1.unread } }
+    private let path = "\(Shell.home)/.perch/slack-threads.json"
+
+    init() {
+        if let data = FileManager.default.contents(atPath: path),
+           let saved = try? JSONDecoder().decode([Followed].self, from: data) { all = saved }
+    }
+
+    /// A reply in a thread the user is in. Theirs marks it read; anyone else's counts as unread
+    /// unless that thread is on screen.
+    func note(_ alert: SlackAlert, thread: String, mine: Bool) {
+        let target = alert.target
+        var item = Followed(workspace: alert.workspace, channel: alert.channel, ts: thread, targetID: target.id,
+                            targetName: target.name, isChannel: target.channel, lastSender: mine ? "You" : alert.sender,
+                            lastText: alert.text, lastAt: Date(), unread: 0)
+        let viewing = NotchUI.shared.viewingThread(target, ts: thread)
+        if let i = all.firstIndex(where: { $0.id == item.id }) {
+            item.unread = mine || viewing ? 0 : all[i].unread + 1
+            all.remove(at: i)
+        } else {
+            item.unread = mine || viewing ? 0 : 1
+        }
+        all.insert(item, at: 0)
+        all = Array(all.prefix(60))
+        save()
+    }
+
+    func read(_ id: String) {
+        guard let i = all.firstIndex(where: { $0.id == id }), all[i].unread > 0 else { return }
+        all[i].unread = 0
+        save()
+    }
+
+    func unread(_ id: String) -> Int { all.first { $0.id == id }?.unread ?? 0 }
+
+    private func save() {
+        guard let data = try? JSONEncoder().encode(all) else { return }
+        FileManager.default.createFile(atPath: path, contents: data, attributes: [.posixPermissions: 0o600])
     }
 }

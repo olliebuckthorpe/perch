@@ -28,6 +28,19 @@ final class NotchUI {
     var browsing = false
     /// Showing the Chrome profile switcher in the right-hand pane.
     var showingProfiles = false
+    /// Slack's Threads list, in place of a conversation.
+    var showingThreads = false
+    /// The Slack thread open beside each conversation, by "workspace:conversation": its first
+    /// message's ts.
+    var openThreads: [String: String] = [:]
+
+    /// Whether a thread is on screen right now, so its new replies are not counted as unread.
+    func viewingThread(_ t: SlackTarget, ts: String) -> Bool {
+        guard expanded, let open = slackTarget, open.workspace == t.workspace, open.id == t.id else {
+            return SidePanel.shared.showing(t.workspace, t.id) && openThreads["\(t.workspace):\(t.id)"] == ts
+        }
+        return openThreads["\(t.workspace):\(t.id)"] == ts
+    }
     /// Showing the Notion to-do list in the right-hand pane.
     var showingTasks = false
     var showingClips = false
@@ -182,11 +195,24 @@ final class NotchUI {
         if slackTarget?.id == t.id && slackTarget?.workspace == t.workspace { slackTarget = nil }
     }
 
-    func openSlack(_ t: SlackTarget) {
+    /// Slack's Threads list, in the right-hand pane.
+    func showThreads() {
         composing = false
         browsing = false
         showingTasks = false
         showingProfiles = false
+        selectedID = nil
+        slackTarget = nil
+        showingThreads = true
+    }
+
+    func openSlack(_ t: SlackTarget, thread: String? = nil) {
+        if let thread { openThreads["\(t.workspace):\(t.id)"] = thread }
+        composing = false
+        browsing = false
+        showingTasks = false
+        showingProfiles = false
+        showingThreads = false
         selectedID = nil
         slackTarget = t
     }
@@ -279,6 +305,7 @@ final class NotchUI {
         composing = false
         browsing = false
         showingProfiles = false
+        showingThreads = false
         showingTasks = false
         showingShelf = false
         showingClips = true
@@ -668,6 +695,7 @@ final class NotchUI {
         selectedID = nil
         composing = false
         showingProfiles = false
+        showingThreads = false
         showingTasks = false
         showingClips = false
         slackTarget = nil
@@ -705,6 +733,7 @@ final class NotchUI {
         if let id = selectedID, !isDrafting(id) { selectedID = nil }
         browsing = false
         showingProfiles = false
+        showingThreads = false
         showingTasks = false
         showingClips = false
         slackTarget = nil
@@ -723,6 +752,7 @@ final class NotchUI {
         composing = false
         browsing = false
         showingProfiles = false
+        showingThreads = false
         showingTasks = false
         showingClips = false
         slackTarget = nil
@@ -749,6 +779,7 @@ final class NotchUI {
         composing = false
         browsing = false
         showingProfiles = false
+        showingThreads = false
         showingTasks = false
         showingClips = false
         slackTarget = nil
@@ -864,8 +895,8 @@ final class NotchUI {
     private(set) var slackQueue: [SlackAlert] = []
 
     /// A conversation from a banner: the whole island, on that chat.
-    func openConversation(_ t: SlackTarget) {
-        openSlack(t)
+    func openConversation(_ t: SlackTarget, thread: String? = nil) {
+        openSlack(t, thread: thread)
         if cardsOnly { showEverything() }
         expanded = true
     }
@@ -1056,7 +1087,7 @@ final class NotchController {
     private var openOffset: CGFloat = 0
     private var monitors: [Any] = []
     private var dragWatch: Timer?
-    private static let canvas = CGSize(width: 860, height: 680)
+    private static let canvas = CGSize(width: 1220, height: 680)
 
     init(store: AgentStore) {
         panel = NotchPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],

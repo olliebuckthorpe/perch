@@ -250,6 +250,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "slack" where parts.count > 1:
             let data = try? JSONSerialization.data(withJSONObject: SlackSource.status)
             try? data?.write(to: URL(fileURLWithPath: parts[1]))
+        case "slackopen" where parts.count > 1:
+            // workspace|channel name, opening its latest thread too.
+            let bits = parts[1].split(separator: "|").map(String.init)
+            guard bits.count >= 2, let t = SlackDirectory.shared.targets.first(where: { $0.workspace == bits[0] && $0.name == bits[1] }) else { return }
+            ui.openConversation(t)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                let store = SlackConversations.shared
+                if bits.count > 2, let parent = store.lines[store.key(t.workspace, t.id)]?.last(where: { $0.replyCount > 0 }) {
+                    ui.openThreads["\(t.workspace):\(t.id)"] = parent.id
+                }
+            }
+        case "slackthreads": ui.expand(); ui.showThreads()
         case "compose":
             ui.expand()
             ui.composing = true
