@@ -1034,8 +1034,16 @@ private struct Rail: View {
             let entries = sidebarEntries
             let pinned = entries.filter(ui.sidebarPinned)
             // Messages from people (Slack, WhatsApp) apart from the AI chats.
-            let messages = entries.filter { if case .conversation = $0 { return !ui.sidebarPinned($0) } else { return false } }
-            let chats = entries.filter { if case .agent = $0 { return !ui.sidebarPinned($0) } else { return false } }
+            // Bots are people-like too: they sit with Slack and WhatsApp. AI chats are the coding ones.
+            let messages = entries.filter { e in
+                guard !ui.sidebarPinned(e) else { return false }
+                if case .agent(let a) = e { return a.source == .grok }
+                return true
+            }
+            let chats = entries.filter { e in
+                guard !ui.sidebarPinned(e), case .agent(let a) = e else { return false }
+                return a.source != .grok
+            }
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 1) {
                     if !pinned.isEmpty {
