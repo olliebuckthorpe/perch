@@ -2478,6 +2478,7 @@ struct ChatView: View {
     /// something arrived while they were reading further up.
     @State private var following = true
     @State private var newBelow = false
+    @State private var newCount = 0
     @State private var viewHeight: CGFloat = 0
     /// Hidden until it has come to rest on the right message, so opening never shows it jumping.
     @State private var ready = false
@@ -2525,13 +2526,14 @@ struct ChatView: View {
         return agent.codexQueueError == nil ? 0 : 52
     }
 
-    private var historyHeight: CGFloat { max(100, (agent.codexQuestion == nil ? 380 : 160) - queueHeight) }
+    private var historyHeight: CGFloat { max(100, (agent.codexQuestion == nil ? 362 : 142) - queueHeight) }
 
     var body: some View {
         let visibleItems = items
         let lastItemID = visibleItems.last?.id
         VStack(alignment: .leading, spacing: 8) {
             header
+            StatusLine(agent: agent, messages: messages)
             ScrollViewReader { proxy in
                 ScrollView {
                     // Not lazy: every message has to exist for the view to be able to come to
@@ -2580,14 +2582,17 @@ struct ChatView: View {
                 .background(GeometryReader { g in Color.clear.onAppear { viewHeight = g.size.height }
                     .onChange(of: g.size.height) { _, h in viewHeight = h } })
                 .onPreferenceChange(LastTopKey.self) { top in
-                    following = top < viewHeight + 24
-                    if following, newBelow { withAnimation(.easeOut(duration: 0.2)) { newBelow = false } }
+                    // At the bottom: the newest message rests at the top (where the chat settles it), or
+                    // its end is in view. Scrolled up any further is reading, not following.
+                    following = top.minY < 30 || top.maxY < viewHeight + 30
+                    if following, newBelow { withAnimation(.easeOut(duration: 0.2)) { newBelow = false; newCount = 0 } }
                 }
                 .overlay(alignment: .bottom) {
                     if newBelow {
-                        NewBelowButton {
+                        NewBelowButton(count: newCount) {
                             withAnimation(.sendSpring) { settle(proxy) }
                             newBelow = false
+                            newCount = 0
                         }
                     }
                 }
@@ -2600,7 +2605,7 @@ struct ChatView: View {
                         // Reading further up: say something came, do not pull the view down.
                         // Your own message always goes to the bottom.
                         if messages.last?.fromUser != true && !following {
-                            withAnimation(.easeOut(duration: 0.2)) { newBelow = true }
+                            withAnimation(.easeOut(duration: 0.2)) { newBelow = true; newCount += 1 }
                             return
                         }
                         withAnimation(.sendSpring) { settle(proxy) }
@@ -5531,14 +5536,16 @@ private struct SlackComposer: View {
                 .background(GeometryReader { g in Color.clear.onAppear { viewHeight = g.size.height }
                     .onChange(of: g.size.height) { _, h in viewHeight = h } })
                 .onPreferenceChange(LastTopKey.self) { top in
-                    following = top < viewHeight + 24
-                    if following, newBelow { withAnimation(.easeOut(duration: 0.2)) { newBelow = false } }
+                    // At the bottom: the end of the newest message is in view.
+                    following = top.maxY < viewHeight + 30
+                    if following, newBelow { withAnimation(.easeOut(duration: 0.2)) { newBelow = false; newCount = 0 } }
                 }
                 .overlay(alignment: .bottom) {
                     if newBelow, let last = lines?.last {
-                        NewBelowButton {
+                        NewBelowButton(count: newCount) {
                             withAnimation(.sendSpring) { proxy.scrollTo(last.viewKey, anchor: .bottom) }
                             newBelow = false
+                            newCount = 0
                         }
                     }
                 }
@@ -5548,7 +5555,7 @@ private struct SlackComposer: View {
                     // unless the user is reading further up: then a button says something came.
                     if !landed { return land(proxy) }
                     if lines?.last?.mine != true && !following {
-                        withAnimation(.easeOut(duration: 0.2)) { newBelow = true }
+                        withAnimation(.easeOut(duration: 0.2)) { newBelow = true; newCount += 1 }
                         return
                     }
                     follow(proxy, to: id)
@@ -5745,6 +5752,7 @@ private struct SlackComposer: View {
     @State private var openThread: SlackLine?
     @State private var following = true
     @State private var newBelow = false
+    @State private var newCount = 0
     @State private var viewHeight: CGFloat = 0
     /// How many were unread when this opened, and the first of them (where it opens).
     private var unreadAtOpen: Int { ui.openedUnread[replyKey] ?? 0 }
@@ -5864,8 +5872,8 @@ private struct SlackComposer: View {
 /// Where the newest message starts, relative to the top of the chat's visible area, so the chat
 /// knows whether the user is following along or has scrolled up to read something.
 struct LastTopKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
 }
 
 extension View {
@@ -5873,7 +5881,7 @@ extension View {
     func reportsTop(_ on: Bool) -> some View {
         background {
             if on {
-                GeometryReader { g in Color.clear.preference(key: LastTopKey.self, value: g.frame(in: .named("chat")).minY) }
+                GeometryReader { g in Color.clear.preference(key: LastTopKey.self, value: g.frame(in: .named("chat"))) }
             }
         }
     }
@@ -5882,10 +5890,12 @@ extension View {
 /// Something new arrived while the user was reading further up: a small button to go to it,
 /// instead of the chat pulling them down.
 struct NewBelowButton: View {
+    var count = 0
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Label("New messages", systemImage: "arrow.down").font(.system(size: 11, weight: .semibold))
+            Label(count == 1 ? "1 new message" : count > 1 ? "\(count) new messages" : "New messages", systemImage: "arrow.down")
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.black).padding(.horizontal, 11).padding(.vertical, 6)
                 .background(.white, in: Capsule())
                 .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
@@ -6909,6 +6919,40 @@ private struct KeyboardLockCard: View {
             }
             .padding(10)
             .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+    }
+}
+
+/// One quiet line under a chat's header: where the work has got to. Working, what it is doing
+/// right now; otherwise the opening of its latest update. Read from the chat itself, so it costs
+/// no tokens.
+private struct StatusLine: View {
+    let agent: Agent
+    let messages: [ChatMessage]
+
+    private var text: String? {
+        if agent.status == .working, let now = agent.activity ?? (agent.detail.isEmpty ? nil : agent.detail) {
+            return now
+        }
+        guard let latest = messages.last(where: { !$0.fromUser && !$0.text.isEmpty })?.text else { return nil }
+        let line = oneLine(latest.replacingOccurrences(of: "**", with: ""), max: 400)
+        // The first sentence says where things are; the rest is detail.
+        if let end = line.firstIndex(where: { ".!?".contains($0) }), line.distance(from: line.startIndex, to: end) > 20 {
+            return String(line[...end])
+        }
+        return line
+    }
+
+    var body: some View {
+        if let text {
+            HStack(spacing: 6) {
+                Circle().fill(agent.status == .working ? Palette.green : .white.opacity(0.3)).frame(width: 5, height: 5)
+                Text(text).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1).truncationMode(.tail)
+            }
+            .padding(.leading, 2)
+            .help(text)
+            .animation(.easeOut(duration: 0.2), value: text)
         }
     }
 }
