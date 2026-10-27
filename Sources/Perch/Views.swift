@@ -2002,6 +2002,60 @@ private struct LinkOpenedNote: View {
     }
 }
 
+/// One option in a question: a round (or square, for several) marker, the option, what it
+/// means underneath, and "Recommended" picked out instead of left in the label.
+private struct QuestionOption: View {
+    let label: String
+    let detail: String
+    let multi: Bool
+    let on: Bool
+    let tint: Color
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        let recommended = label.localizedCaseInsensitiveContains("(recommended)")
+        let shown = recommended ? label.replacingOccurrences(of: #"\s*\((?i:recommended)\)"#, with: "", options: .regularExpression) : label
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 8) {
+                ZStack {
+                    if multi {
+                        RoundedRectangle(cornerRadius: 3).stroke(on ? tint : .white.opacity(0.35), lineWidth: 1.5)
+                        if on { Image(systemName: "checkmark").font(.system(size: 8, weight: .heavy)).foregroundStyle(tint) }
+                    } else {
+                        Circle().stroke(on ? tint : .white.opacity(0.35), lineWidth: 1.5)
+                        if on { Circle().fill(tint).padding(3) }
+                    }
+                }
+                .frame(width: 13, height: 13).padding(.top, 1.5)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(shown).font(.system(size: 12, weight: .medium)).foregroundStyle(.white)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if recommended {
+                            Text("Recommended").font(.system(size: 9, weight: .semibold)).foregroundStyle(Palette.green)
+                                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                                .background(Palette.green.opacity(0.15), in: Capsule())
+                        }
+                    }
+                    if !detail.isEmpty {
+                        Text(detail).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.5))
+                            .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 9).padding(.vertical, 7)
+            .background(on ? tint.opacity(0.18) : .white.opacity(hovered ? 0.09 : 0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(on ? tint.opacity(0.75) : .clear, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(Press(reach: 0))
+        .onHover { hovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: on)
+    }
+}
+
 // MARK: Chrome profiles
 
 /// A profile as a circle: a chosen icon, else its Google picture ringed in Chrome's colour for
@@ -4594,6 +4648,8 @@ private struct PendingCard: View {
     let agent: Agent
     @State private var picks: [UUID: Set<String>] = [:]
     @State private var written: [UUID: String] = [:]
+    /// The question on screen, when there are several.
+    @State private var step = 0
 
     var body: some View {
         let tint = agent.color
@@ -4653,38 +4709,101 @@ private struct PendingCard: View {
     }
 
     private func questionList(_ questions: [Question]) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            ForEach(questions) { q in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(q.text).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.9))
-                        .fixedSize(horizontal: false, vertical: true)
-                    ForEach(q.options, id: \.self) { option in
-                        let on = picks[q.id]?.contains(option) ?? false
-                        Button(option) { pick(option, for: q, in: questions) }
-                            .buttonStyle(ChipButton(fill: on ? agent.color : nil, wide: true))
+        let at = min(step, max(0, questions.count - 1))
+        return VStack(alignment: .leading, spacing: 9) {
+            if questions.count > 1 {
+                // Where you are: a tab per question, ticked once answered.
+                HStack(spacing: 4) {
+                    ForEach(Array(questions.enumerated()), id: \.element.id) { i, q in
+                        let done = answered(q)
+                        Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) { step = i } } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 9.5)).foregroundStyle(done ? agent.color : .white.opacity(0.35))
+                                Text(q.header.isEmpty ? "Question \(i + 1)" : q.header).lineLimit(1)
+                            }
+                            .font(.system(size: 10.5, weight: i == at ? .semibold : .regular))
+                            .foregroundStyle(.white.opacity(i == at ? 0.95 : 0.55))
+                            .padding(.horizontal, 7).padding(.vertical, 3)
+                            .background(.white.opacity(i == at ? 0.12 : 0), in: Capsule())
+                        }
+                        .buttonStyle(Press())
                     }
-                    if agent.source == .codex {
-                        TextField(q.options.isEmpty ? "Your answer" : "Or type an answer", text: Binding(
-                            get: { written[q.id] ?? "" }, set: { written[q.id] = $0 }
-                        ))
-                        .textFieldStyle(.plain).font(.system(size: 11.5)).foregroundStyle(.white)
-                        .padding(7).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
-                        .onSubmit { if ready(questions) { submit(questions) } }
-                    }
+                    Spacer(minLength: 0)
+                    Text("\(at + 1) of \(questions.count)").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
                 }
+            }
+            if questions.indices.contains(at) {
+                question(questions[at], in: questions)
+                    .id(questions[at].id)
+                    .transition(.asymmetric(insertion: .opacity.combined(with: .offset(x: 18)), removal: .opacity))
             }
             if let error = agent.codexQuestionError {
                 Text(error).font(.system(size: 11)).foregroundStyle(Palette.red).fixedSize(horizontal: false, vertical: true)
             }
-            HStack {
-                if agent.source == .codex || questions.count > 1 || questions.contains(where: \.multiSelect) {
-                    Button("Send") { submit(questions) }
-                        .buttonStyle(ChipButton(fill: Palette.green))
+            HStack(spacing: 10) {
+                if at > 0 {
+                    Button("Back") { withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) { step = at - 1 } }
+                        .buttonStyle(LinkButton())
+                }
+                Button("Answer in the app") { CodingSessions.shared.dismiss(agent) }.buttonStyle(LinkButton())
+                Spacer()
+                if at < questions.count - 1 {
+                    Button("Next") { withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) { step = at + 1 } }
+                        .buttonStyle(ChipButton(fill: answered(questions[at]) ? agent.color : nil))
+                        .disabled(!answered(questions[at]))
+                } else if questions.count > 1 || questions.contains(where: \.multiSelect) || !(written[questions[at].id] ?? "").isEmpty {
+                    Button(agent.sending ? "Sending…" : "Send answers") { submit(questions) }
+                        .buttonStyle(ChipButton(fill: ready(questions) ? Palette.green : nil))
                         .disabled(!ready(questions) || agent.sending)
                 }
-                Spacer()
-                Button("In the app") { CodingSessions.shared.dismiss(agent) }.buttonStyle(LinkButton())
             }
+        }
+        .onChange(of: questions.map(\.id)) { step = 0 }
+    }
+
+    /// One question: what it asks, its options (with what each means), and room for your own.
+    private func question(_ q: Question, in questions: [Question]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(q.text).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                .fixedSize(horizontal: false, vertical: true).padding(.bottom, 2)
+            if q.multiSelect {
+                Text("Pick any that apply").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.45))
+            }
+            ForEach(Array(q.options.enumerated()), id: \.offset) { i, option in
+                QuestionOption(label: option, detail: q.descriptions.indices.contains(i) ? q.descriptions[i] : "",
+                               multi: q.multiSelect, on: picks[q.id]?.contains(option) ?? false, tint: agent.color) {
+                    pick(option, for: q, in: questions)
+                }
+            }
+            // Your own answer, as "Other" in the app.
+            HStack(spacing: 7) {
+                Image(systemName: "pencil").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.4)).frame(width: 14)
+                TextField(q.options.isEmpty ? "Your answer" : "Something else…", text: Binding(
+                    get: { written[q.id] ?? "" },
+                    set: { written[q.id] = $0; if !$0.isEmpty { picks[q.id] = nil } }
+                ))
+                .textFieldStyle(.plain).font(.system(size: 12)).foregroundStyle(.white)
+                .onSubmit { advance(from: q, in: questions) }
+            }
+            .padding(.horizontal, 9).padding(.vertical, 7)
+            .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke((written[q.id] ?? "").isEmpty ? .white.opacity(0.08) : agent.color.opacity(0.7), lineWidth: 1))
+        }
+    }
+
+    private func answered(_ q: Question) -> Bool {
+        !(written[q.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !(picks[q.id] ?? []).isEmpty
+    }
+
+    /// On to the next unanswered question, or send once they are all answered.
+    private func advance(from q: Question, in questions: [Question]) {
+        guard answered(q) else { return }
+        if let i = questions.firstIndex(where: { $0.id == q.id }), i < questions.count - 1 {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) { step = i + 1 }
+        } else if ready(questions) {
+            submit(questions)
         }
     }
 
@@ -4697,7 +4816,14 @@ private struct PendingCard: View {
             picks[q.id] = set
         } else {
             picks[q.id] = [option]
-            if questions.count == 1 { submit(questions) }
+            // One question: that's the answer. Several: on to the next, a beat later so the
+            // choice is seen landing.
+            if questions.count == 1 { return submit(questions) }
+            if let i = questions.firstIndex(where: { $0.id == q.id }), i < questions.count - 1 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) { step = i + 1 }
+                }
+            }
         }
     }
 

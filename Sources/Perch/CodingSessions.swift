@@ -1160,9 +1160,10 @@ final class CodingSessions {
     static func questions(from input: [String: Any]) -> [Question] {
         (input["questions"] as? [[String: Any]] ?? []).compactMap { q in
             guard let text = q["question"] as? String else { return nil }
-            let options = (q["options"] as? [[String: Any]] ?? []).compactMap { $0["label"] as? String }
-            return Question(text: text, header: q["header"] as? String ?? "", options: options,
-                            multiSelect: q["multiSelect"] as? Bool ?? false)
+            let raw = (q["options"] as? [[String: Any]] ?? []).filter { $0["label"] is String }
+            return Question(text: text, header: q["header"] as? String ?? "", options: raw.map { $0["label"] as! String },
+                            multiSelect: q["multiSelect"] as? Bool ?? false,
+                            descriptions: raw.map { $0["description"] as? String ?? "" })
         }
     }
 }

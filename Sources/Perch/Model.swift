@@ -27,6 +27,8 @@ struct Question: Identifiable {
     let header: String
     let options: [String]
     let multiSelect: Bool
+    /// What each option means, where the agent said.
+    var descriptions: [String] = []
 }
 
 enum PendingKind {
