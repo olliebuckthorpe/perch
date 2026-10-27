@@ -166,6 +166,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys])
                 .write(to: URL(fileURLWithPath: parts[1]))
         case "expand": ui.expand()
+        case "hold": ui.expand(); ui.heldOpen = true
+        case "release": ui.heldOpen = false; ui.collapse()
         case "boardcheck" where parts.count > 1:
             checkBoardDrag(to: parts[1])
         case "tasks":

@@ -250,7 +250,13 @@ struct FaceView: View {
                 CodexMark().frame(width: size, height: size)
             } else if agent.source == .claude {
                 // Every Claude chat wears the same little orange Claude Code creature.
-                Mascot(eyes: .black.opacity(0.85), thinking: agent.status == .working).frame(width: size, height: size)
+                if agent.status == .working {
+                    // Stepping in a view of its own, so each step redraws just this face.
+                    Isolated(width: size, height: size) { Mascot(eyes: .black.opacity(0.85), thinking: true) }
+                        .frame(width: size, height: size)
+                } else {
+                    Mascot(eyes: .black.opacity(0.85), thinking: false).frame(width: size, height: size)
+                }
             } else {
                 bodyShape.fill(agent.color)
                 VStack(spacing: size * 0.07) {

@@ -4852,17 +4852,9 @@ private struct PendingCard: View {
                 Spacer()
                 Button("Dismiss") { CodingSessions.shared.dismiss(agent) }.buttonStyle(LinkButton())
             }
+            // No countdown bar: a chat now waits up to a day, and the bar's smooth shrinking kept
+            // SwiftUI laying out the whole open notch many times a second to move it a pixel.
             ReplyField(agent: agent)
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                let total = max(1, pending.deadline.timeIntervalSince(pending.createdAt))
-                let left = max(0, pending.deadline.timeIntervalSince(context.date))
-                GeometryReader { geo in
-                    Capsule().fill(.white.opacity(0.25))
-                        .frame(width: geo.size.width * left / total)
-                        .animation(.linear(duration: 1), value: left)
-                }
-                .frame(height: 2)
-            }
         }
     }
 }

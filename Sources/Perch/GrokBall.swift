@@ -19,9 +19,12 @@ struct GrokBall: View {
     var body: some View {
         // Only ticks while something is moving: a working bot, a glance, or easing to the pointer.
         let glancing = clock.calmPlaying
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: !(working || glancing || easing))) { context in
-            Canvas { g, canvas in
-                draw(&g, canvas, pose(at: context.date))
+        // Ticks in a view of its own, so a frame redraws just this ball, not everything around it.
+        Isolated(width: size, height: size) {
+            TimelineView(.animation(minimumInterval: 1 / 30, paused: !(working || glancing || easing))) { context in
+                Canvas { g, canvas in
+                    draw(&g, canvas, pose(at: context.date))
+                }
             }
         }
         .frame(width: size, height: size)
