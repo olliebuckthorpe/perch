@@ -5530,6 +5530,41 @@ private struct SlackRailRow: View {
 
 /// A profile picture (or workspace icon for a channel) with the Slack logo in its corner, so a
 /// Slack row is told apart from a chat at a glance.
+/// A reaction's emoji: the character, or the workspace's uploaded picture for a custom one.
+private struct ReactionEmoji: View {
+    let reaction: SlackReaction
+    let workspace: String?
+    @State private var image: NSImage?
+
+    private static let cache: NSCache<NSURL, NSImage> = {
+        let cache = NSCache<NSURL, NSImage>()
+        cache.countLimit = 200
+        return cache
+    }()
+
+    private var url: URL? { workspace.flatMap { SlackCustomEmoji.shared.url($0, reaction.name) } }
+
+    var body: some View {
+        if let url {
+            Group {
+                if let image { Image(nsImage: image).resizable().aspectRatio(contentMode: .fit) }
+                else { Color.white.opacity(0.08) }
+            }
+            .frame(width: 15, height: 15)
+            .help(":\(reaction.name):")
+            .task(id: url) {
+                if let hit = Self.cache.object(forKey: url as NSURL) { image = hit; return }
+                if let (data, _) = try? await URLSession.shared.data(from: url), let img = NSImage(data: data) {
+                    Self.cache.setObject(img, forKey: url as NSURL)
+                    image = img
+                }
+            }
+        } else {
+            Text(reaction.emoji).font(.system(size: 12))
+        }
+    }
+}
+
 private struct SlackAvatar: View {
     let url: URL?
     let channel: Bool
@@ -6305,7 +6340,7 @@ private struct SlackRow: View {
             ForEach(line.slackReactions, id: \.self) { r in
                 Button { react?(r.name, !r.mine) } label: {
                     HStack(spacing: 3) {
-                        Text(r.emoji).font(.system(size: 12))
+                        ReactionEmoji(reaction: r, workspace: target?.workspace)
                         Text("\(r.count)").font(.system(size: 10.5, weight: .semibold))
                             .foregroundStyle(r.mine ? Self.blue : .white.opacity(0.7))
                     }

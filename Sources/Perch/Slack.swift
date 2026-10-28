@@ -465,6 +465,19 @@ private final class Workspace {
         self.userToken = userToken
     }
 
+    /// The workspace's uploaded emoji. An alias ("alias:other") points at another one.
+    private func loadCustomEmoji() {
+        api("emoji.list", token: userToken) { [weak self] o in
+            guard let self, let list = o?["emoji"] as? [String: String] else { return }
+            var urls: [String: URL] = [:]
+            for (name, value) in list where !value.hasPrefix("alias:") { urls[name] = URL(string: value) }
+            for (name, value) in list where value.hasPrefix("alias:") {
+                urls[name] = urls[String(value.dropFirst(6))]
+            }
+            SlackCustomEmoji.shared.byWorkspace[self.name] = urls
+        }
+    }
+
     /// Which direct message channel belongs to which person, so DMs open without asking Slack each time.
     private func directMessages(_ cursor: String?, then: (() -> Void)? = nil) {
         var params = ["limit": "200", "types": "im"]
@@ -991,6 +1004,7 @@ private final class Workspace {
                         let icon = (o?["team"] as? [String: Any])?["icon"] as? [String: Any]
                         self?.teamIcon = (icon?["image_88"] as? String ?? icon?["image_68"] as? String).flatMap(URL.init(string:))
                         self?.loadDirectory()
+                        self?.loadCustomEmoji()
                     }
                     self.connect()
                 }
@@ -1285,6 +1299,16 @@ private final class Workspace {
         s = s.replacingOccurrences(of: "&amp;", with: "&").replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
         return full ? s.trimmingCharacters(in: .whitespacesAndNewlines) : oneLine(s, max: 200)
     }
+}
+
+/// Each workspace's own emoji (the ones people upload), name to picture, so a custom reaction
+/// shows as its image rather than as ":its-name:".
+@Observable
+final class SlackCustomEmoji {
+    static let shared = SlackCustomEmoji()
+    var byWorkspace: [String: [String: URL]] = [:]
+
+    func url(_ workspace: String, _ name: String) -> URL? { byWorkspace[workspace]?[name] }
 }
 
 /// Threads the user is in, as Slack's Threads view lists them: ones they started, wrote in or
