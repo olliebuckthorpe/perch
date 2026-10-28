@@ -66,6 +66,19 @@ struct ChromeProfile: Identifiable {
             if !AXIsProcessTrusted() { Self.log("jump to \(name): Perch is not allowed under Accessibility, opening a new window") }
             if jumpToExistingWindow() { return }
         }
+        // Quick way for a link: bring the profile's open window to the front, then hand Chrome the
+        // link as a plain "open this" request. Chrome puts an outside link in whichever profile was
+        // last in front, so it lands in this one, in a fraction of a second instead of the second
+        // or so it takes to start Chrome's program below.
+        if let url, jumpToExistingWindow(forward: false) {
+            let chromeApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").first
+            chromeApp?.activate()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                guard let at = chromeApp?.bundleURL else { return }
+                NSWorkspace.shared.open([url], withApplicationAt: at, configuration: NSWorkspace.OpenConfiguration())
+            }
+            return
+        }
         // Run Chrome's own program directly. It passes the request to the Chrome that is already
         // open and exits in under half a second. Going through `open -n` instead starts a whole
         // second copy of Chrome first, which is what bounced in the Dock for seconds.
@@ -103,7 +116,7 @@ struct ChromeProfile: Identifiable {
     /// Presses this profile's entry in Chrome's own Profiles menu, which is the one thing that
     /// brings a profile's existing window forward. Driving another app's menu needs the
     /// Accessibility permission; without it this returns false and a new window opens instead.
-    private func jumpToExistingWindow() -> Bool {
+    private func jumpToExistingWindow(forward: Bool = true) -> Bool {
         guard AXIsProcessTrusted(),
               let chrome = NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").first
         else { return false }
@@ -140,7 +153,7 @@ struct ChromeProfile: Identifiable {
             && AXUIElementPerformAction(matches[position], kAXPressAction as CFString) == .success
         Self.log("jump to \(name) [\(id)]: menu = \(titles) | matched \(matches.map(title)) | pressed \(pressed)")
         guard pressed else { return false }
-        Self.bringChromeForward()
+        if forward { Self.bringChromeForward() }
         return true
     }
 
