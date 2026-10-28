@@ -954,7 +954,12 @@ private final class Workspace {
 
     private func api(_ method: String, token: String, _ params: [String: String] = [:], done: @escaping ([String: Any]?) -> Void) {
         var parts = URLComponents(string: "https://slack.com/api/\(method)")!
-        if !params.isEmpty { parts.queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) } }
+        if !params.isEmpty {
+            parts.queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) }
+            // Slack reads a bare "+" as a space, which turned the 👍 reaction ("+1") into " 1" and
+            // any plus sign in a message into a gap.
+            parts.percentEncodedQuery = parts.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        }
         var req = URLRequest(url: parts.url!)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
