@@ -5795,11 +5795,17 @@ private struct SlackComposer: View {
                                         .transition(line.mine ? .sent : .opacity)
                                         .reportsTop(line.viewKey == lines.last?.viewKey)
                                 } else {
+                                // As in WhatsApp, a run of messages from one person shows their
+                                // name and picture once, with the rest stacked close underneath.
+                                let run = Self.sameSender(line, after: lines.prevLine(line))
                                 HStack(alignment: .top, spacing: 8) {
                                     if line.mine { Spacer(minLength: 50) }
-                                    if !line.mine && !(target.workspace == WhatsAppSource.workspace && !target.id.hasSuffix("@g.us")) { SlackAvatar(url: line.picture, channel: false, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace) }
+                                    if !line.mine && !(target.workspace == WhatsAppSource.workspace && !target.id.hasSuffix("@g.us")) {
+                                        if run { Color.clear.frame(width: 22, height: 1) }
+                                        else { SlackAvatar(url: line.picture, channel: false, size: 22, whatsapp: target.workspace == WhatsAppSource.workspace) }
+                                    }
                                     VStack(alignment: line.mine ? .trailing : .leading, spacing: 2) {
-                                        if !line.mine && !(target.workspace == WhatsAppSource.workspace && !target.id.hasSuffix("@g.us")) {
+                                        if !line.mine && !run && !(target.workspace == WhatsAppSource.workspace && !target.id.hasSuffix("@g.us")) {
                                             Text(line.sender).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.6))
                                         }
                                         if target.workspace == WhatsAppSource.workspace {
@@ -5816,6 +5822,7 @@ private struct SlackComposer: View {
                                     }
                                     if !line.mine { Spacer(minLength: 40) }
                                 }
+                                .padding(.top, run ? -6 : 0)
                                 .offset(x: target.workspace == WhatsAppSource.workspace && ui.swipe?.id == line.viewKey ? ui.swipe!.x : 0)
                                 .background(alignment: line.mine ? .trailing : .leading) {
                                     // Pulled far enough, the reply arrow shows.
@@ -6117,6 +6124,14 @@ private struct SlackComposer: View {
         guard let prev, prev.mine == line.mine, prev.sender == line.sender,
               let a = prev.time, let b = line.time, Calendar.current.isDate(a, inSameDayAs: b) else { return false }
         return b.timeIntervalSince(a) < 300
+    }
+
+    /// The next message in a run from the same person on the same day, however far apart, the
+    /// way WhatsApp groups them.
+    static func sameSender(_ line: SlackLine, after prev: SlackLine?) -> Bool {
+        guard let prev, prev.mine == line.mine, prev.sender == line.sender else { return false }
+        guard let a = prev.time, let b = line.time else { return true }
+        return Calendar.current.isDate(a, inSameDayAs: b)
     }
 
     /// The messages that are the first of their day.
