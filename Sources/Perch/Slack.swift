@@ -965,6 +965,19 @@ private final class Workspace {
         }
     }
 
+    /// Every Slack refusal, not just the latest, so a failure that keeps happening can be traced.
+    private static func logError(_ line: String) {
+        let path = "\(Shell.home)/.perch/slack-errors.log"
+        let entry = "\(Date()) \(line)\n"
+        if let handle = FileHandle(forWritingAtPath: path) {
+            _ = try? handle.seekToEnd()
+            handle.write(Data(entry.utf8))
+            try? handle.close()
+        } else {
+            try? entry.write(toFile: path, atomically: true, encoding: .utf8)
+        }
+    }
+
     private func api(_ method: String, token: String, _ params: [String: String] = [:], done: @escaping ([String: Any]?) -> Void) {
         var parts = URLComponents(string: "https://slack.com/api/\(method)")!
         if !params.isEmpty {
@@ -983,6 +996,7 @@ private final class Workspace {
                     // Slack's reason, for working out why something did not send. Never the keys.
                     let at = Date().formatted(date: .omitted, time: .standard)
                     SlackSource.status["\(self.name) error"] = "\(at) \(method): \(o?["error"] as? String ?? "no answer")"
+                    Self.logError("\(self.name) \(method): \(o?["error"] as? String ?? "no answer")")
                 }
                 done(o?["ok"] as? Bool == true ? o : nil)
             }

@@ -263,7 +263,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     ui.openThreads["\(t.workspace):\(t.id)"] = parent.id
                 }
             }
-        case "slackthreads": ui.expand(); ui.showThreads()
         case "slacklines" where parts.count > 1:
             // workspace|channel name|output path: the newest lines Perch has for it.
             let bits = parts[1].split(separator: "|").map(String.init)

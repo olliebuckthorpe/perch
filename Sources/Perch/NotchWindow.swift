@@ -28,8 +28,6 @@ final class NotchUI {
     var browsing = false
     /// Showing the Chrome profile switcher in the right-hand pane.
     var showingProfiles = false
-    /// Slack's Threads list, in place of a conversation.
-    var showingThreads = false
     /// The Slack thread open beside each conversation, by "workspace:conversation": its first
     /// message's ts.
     var openThreads: [String: String] = [:]
@@ -195,24 +193,12 @@ final class NotchUI {
         if slackTarget?.id == t.id && slackTarget?.workspace == t.workspace { slackTarget = nil }
     }
 
-    /// Slack's Threads list, in the right-hand pane.
-    func showThreads() {
-        composing = false
-        browsing = false
-        showingTasks = false
-        showingProfiles = false
-        selectedID = nil
-        slackTarget = nil
-        showingThreads = true
-    }
-
     func openSlack(_ t: SlackTarget, thread: String? = nil) {
         if let thread { openThreads["\(t.workspace):\(t.id)"] = thread }
         composing = false
         browsing = false
         showingTasks = false
         showingProfiles = false
-        showingThreads = false
         selectedID = nil
         slackTarget = t
     }
@@ -305,7 +291,6 @@ final class NotchUI {
         composing = false
         browsing = false
         showingProfiles = false
-        showingThreads = false
         showingTasks = false
         showingShelf = false
         showingClips = true
@@ -695,7 +680,6 @@ final class NotchUI {
         selectedID = nil
         composing = false
         showingProfiles = false
-        showingThreads = false
         showingTasks = false
         showingClips = false
         slackTarget = nil
@@ -733,7 +717,6 @@ final class NotchUI {
         if let id = selectedID, !isDrafting(id) { selectedID = nil }
         browsing = false
         showingProfiles = false
-        showingThreads = false
         showingTasks = false
         showingClips = false
         slackTarget = nil
@@ -752,7 +735,6 @@ final class NotchUI {
         composing = false
         browsing = false
         showingProfiles = false
-        showingThreads = false
         showingTasks = false
         showingClips = false
         slackTarget = nil
@@ -779,7 +761,6 @@ final class NotchUI {
         composing = false
         browsing = false
         showingProfiles = false
-        showingThreads = false
         showingTasks = false
         showingClips = false
         slackTarget = nil

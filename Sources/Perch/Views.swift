@@ -35,7 +35,7 @@ struct NotchContent: View {
         let chatting = ui.selectedID != nil || ui.composing
         // A Slack thread opens beside its conversation, as in Slack, so the island widens for it.
         let threadBeside = ui.slackTarget.map { t in t.workspace != WhatsAppSource.workspace && ui.openThreads["\(t.workspace):\(t.id)"] != nil } == true
-            && !ui.showingThreads && !ui.browsing && !ui.showingTasks
+            && !ui.browsing && !ui.showingTasks
         let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : (ui.showingClips && !ui.clipsInline) || ui.showingShelf ? 380 : threadBeside ? 1180 : 768) - (l + ui.notch.width + r)) : 0
         let side = max(l, r, extra > 0 ? (l + r + extra) / 2 : 0)
         let leftWidth = ui.expanded ? side : l, rightWidth = ui.expanded ? side : r
@@ -197,8 +197,6 @@ private struct ExpandedBody: View {
                 TasksView()
             } else if ui.showingProfiles {
                 ProfilesView()
-            } else if ui.showingThreads {
-                SlackThreadsView().transition(.opacity)
             } else if let target = ui.slackTarget {
                 SlackComposer(target: target).id(target.id).transition(.opacity)
             } else if ui.composing {
@@ -306,7 +304,6 @@ private struct SearchBar: View {
             }
             Button {
                 ui.showingProfiles = false
-                ui.showingThreads = false
                 ui.composing = true
             } label: {
                 Image(systemName: "square.and.pencil").font(.system(size: 12))
@@ -1057,9 +1054,8 @@ private struct Rail: View {
                         sidebarHeading("Pinned")
                         ForEach(pinned) { sidebarRow($0) }
                     }
-                    if !messages.isEmpty || !SlackThreads.shared.all.isEmpty {
+                    if !messages.isEmpty {
                         sidebarHeading("Messages")
-                        if !SlackThreads.shared.all.isEmpty { ThreadsRailRow() }
                         ForEach(messages) { sidebarRow($0) }
                     }
                     if !chats.isEmpty {
@@ -5848,6 +5844,11 @@ private struct SlackComposer: View {
                 }
                 .onAppear {
                     if lines?.isEmpty == false { land(proxy) }
+                    // Opening a chat is reading it, in Slack too. Without this only a new message
+                    // arriving while it was open marked anything read.
+                    if target.workspace != WhatsAppSource.workspace {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { SlackSource.shared.markRead(target) }
+                    }
                     // Slack's own read marker decides where "New" goes; it may answer a moment later.
                     if target.workspace != WhatsAppSource.workspace {
                         SlackSource.shared.lastRead(target) { at in
@@ -6733,98 +6734,6 @@ private struct SlackThreadView: View {
             state = ok ? nil : "failed"
             if !ok { ui.drafts[draftKey] = text }
         }
-    }
-}
-
-/// Slack's Threads view: every thread the user is in, newest reply first, unread ones marked.
-private struct SlackThreadsView: View {
-    @Environment(NotchUI.self) private var ui
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 7) {
-                Button { ui.showingThreads = false; ui.browse() } label: {
-                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.6)).frame(width: 18, height: 20).contentShape(Rectangle())
-                }
-                .buttonStyle(Press())
-                Text("Threads").font(.system(size: 13.5, weight: .bold)).foregroundStyle(.white)
-                Spacer()
-            }
-            let all = SlackThreads.shared.all
-            if all.isEmpty {
-                Text("Threads you start, reply in or are mentioned in show up here.")
-                    .font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4)).padding(.top, 20)
-                    .frame(maxWidth: .infinity)
-            }
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(all) { ThreadListRow(item: $0) }
-                }
-            }
-        }
-        .frame(height: 452, alignment: .top)
-    }
-}
-
-private struct ThreadListRow: View {
-    let item: SlackThreads.Followed
-    @Environment(NotchUI.self) private var ui
-    @State private var hovered = false
-
-    var body: some View {
-        let target = item.target
-        HStack(alignment: .top, spacing: 9) {
-            SlackAvatar(url: target.picture, channel: target.channel, size: 24, whatsapp: false)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(target.label).font(.system(size: 12.5, weight: item.unread > 0 ? .bold : .semibold))
-                        .foregroundStyle(.white).lineLimit(1)
-                    Text("Slack · \(item.workspace.capitalized)").font(.system(size: 10)).foregroundStyle(.white.opacity(0.35)).lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text(SlackRow.lastReply(item.lastAt)).font(.system(size: 10)).foregroundStyle(.white.opacity(0.4)).lineLimit(1)
-                }
-                Text((item.lastSender.isEmpty ? "" : "\(item.lastSender): ") + item.lastText)
-                    .font(.system(size: 11.5)).foregroundStyle(.white.opacity(item.unread > 0 ? 0.85 : 0.55)).lineLimit(2)
-            }
-            if item.unread > 0 {
-                Text("\(item.unread)").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                    .padding(.horizontal, 5).frame(minWidth: 17, minHeight: 17)
-                    .background(Palette.red, in: Capsule())
-            }
-        }
-        .padding(.horizontal, 8).padding(.vertical, 7)
-        .background(.white.opacity(hovered ? 0.06 : 0), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .contentShape(Rectangle())
-        .onHover { hovered = $0 }
-        .onTapGesture { ui.openSlack(target, thread: item.ts) }
-    }
-}
-
-/// The way into Slack's Threads list from the sidebar, with how many replies are unread.
-private struct ThreadsRailRow: View {
-    @Environment(NotchUI.self) private var ui
-    @State private var hovered = false
-
-    var body: some View {
-        let unread = SlackThreads.shared.unread
-        HStack(spacing: 8) {
-            Image(systemName: "bubble.left.and.text.bubble.right").font(.system(size: 11.5))
-                .foregroundStyle(.white.opacity(0.6)).frame(width: 22)
-            Text("Threads").font(.system(size: 12.5, weight: unread > 0 ? .semibold : .regular))
-                .foregroundStyle(.white.opacity(unread > 0 ? 0.95 : 0.75))
-            Spacer(minLength: 0)
-            if unread > 0 {
-                Text("\(unread)").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                    .padding(.horizontal, 5).frame(minWidth: 17, minHeight: 17)
-                    .background(Palette.red, in: Capsule())
-            }
-        }
-        .padding(.horizontal, 7).padding(.vertical, 5)
-        .background(.white.opacity(ui.showingThreads ? 0.1 : hovered ? 0.05 : 0), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .contentShape(Rectangle())
-        .onHover { hovered = $0 }
-        .onTapGesture { ui.showThreads() }
     }
 }
 
