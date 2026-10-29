@@ -625,6 +625,39 @@ final class GrokSource {
         }
     }
 
+    /// Copies any file from the bot's computer (a Word document, a spreadsheet) into Downloads,
+    /// a piece at a time the way Grok Bot does, and gives back where it landed.
+    func download(_ path: String, name: String, completion: @escaping (URL?) -> Void) {
+        let piece = 256 * 1024
+        var data = Data()
+        func next(_ total: Int?) {
+            request("readAttachmentChunk", ["path": path, "offset": data.count, "length": total == nil ? 0 : piece]) { reply in
+                guard let reply = reply as? [String: Any], let size = reply["totalSize"] as? Int else { return completion(nil) }
+                if total != nil {
+                    let bytes = (reply["bytesBase64"] as? String).flatMap { Data(base64Encoded: $0) } ?? Data()
+                    if bytes.isEmpty && data.count < size { return completion(nil) }
+                    data.append(bytes)
+                }
+                if data.count < size { return next(size) }
+                completion(Self.save(data, as: name))
+            }
+        }
+        next(nil)
+    }
+
+    /// Saves into Downloads without replacing a file already there: "Report 2.docx" and so on.
+    private static func save(_ data: Data, as name: String) -> URL? {
+        let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        let base = (name as NSString).deletingPathExtension, ext = (name as NSString).pathExtension
+        var url = folder.appendingPathComponent(name)
+        var n = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = folder.appendingPathComponent(ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)")
+            n += 1
+        }
+        return (try? data.write(to: url)) == nil ? nil : url
+    }
+
     func readAttachment(_ path: String, completion: @escaping (String?) -> Void) {
         if let cached = attachmentText[path] { completion(cached); return }
         request("readAttachmentText", ["path": path]) { [weak self] reply in

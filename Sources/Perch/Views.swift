@@ -4350,8 +4350,8 @@ private struct ChoiceCard: View {
     }
 }
 
-/// A file an agent attached. Text files open right here, formatted; anything else points to
-/// the agent's own app.
+/// A file an agent attached. Text files open right here, formatted; anything else (a Word
+/// document, a spreadsheet) is saved to Downloads and opened in its own app.
 private struct FileCard: View {
     let name: String
     let path: String
@@ -4362,6 +4362,13 @@ private struct FileCard: View {
     @State private var text: String?
     @State private var failed = false
     @State private var copied = false
+    @State private var fetching = false
+    @State private var saved: URL?
+
+    /// Files that are not text, so reading them here would only fail.
+    private static let documents: Set<String> = ["docx", "doc", "xlsx", "xls", "pptx", "ppt", "pdf", "pages", "numbers",
+                                                 "key", "zip", "odt", "ods", "rtf", "mp3", "mp4", "mov", "wav"]
+    private var isDocument: Bool { Self.documents.contains((name as NSString).pathExtension.lowercased()) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -4369,12 +4376,19 @@ private struct FileCard: View {
                 Image(systemName: "doc.text").font(.system(size: 13)).foregroundStyle(.white.opacity(0.7))
                 Text(name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                 Spacer()
-                Text(expanded ? "Hide" : "Read").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
-                Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.4))
+                if isDocument {
+                    Text(fetching ? "Downloading…" : failed ? "Could not download" : "Open")
+                        .font(.system(size: 11)).foregroundStyle(failed ? Palette.red : .white.opacity(0.5))
+                    Image(systemName: "arrow.up.forward.app").font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.4))
+                } else {
+                    Text(expanded ? "Hide" : "Read").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
             }
             .contentShape(Rectangle())
-            .onTapGesture { toggle() }
+            .onTapGesture { isDocument ? openFile() : toggle() }
 
             if expanded {
                 Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
@@ -4390,12 +4404,16 @@ private struct FileCard: View {
                         Spacer()
                     }
                 } else if failed {
-                    Text("This one can only be opened in Grok Bot.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.55))
-                    Button("Open Grok Bot") {
-                        GrokSource.shared.open(agent)
-                        ui.collapse()
+                    Text("This one is not text, so it opens in its own app.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.55))
+                    HStack(spacing: 6) {
+                        Button(fetching ? "Downloading…" : "Open") { openFile() }
+                            .buttonStyle(ChipButton()).disabled(fetching)
+                        Button("Open Grok Bot") {
+                            GrokSource.shared.open(agent)
+                            ui.collapse()
+                        }
+                        .buttonStyle(ChipButton())
                     }
-                    .buttonStyle(ChipButton())
                 } else {
                     Text("Loading…").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
                 }
@@ -4405,6 +4423,20 @@ private struct FileCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
+    }
+
+    /// Downloads the file (once) and opens it in whatever app opens that kind of file.
+    private func openFile() {
+        if let saved, FileManager.default.fileExists(atPath: saved.path) { NSWorkspace.shared.open(saved); return }
+        guard !fetching else { return }
+        fetching = true
+        GrokSource.shared.download(path, name: name) { url in
+            fetching = false
+            guard let url else { failed = true; return }
+            failed = false
+            saved = url
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func toggle() {
