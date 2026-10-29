@@ -14,7 +14,15 @@ const src = process.argv[2];
 const { Gateway } = await import(pathToFileURL(`${src}/gateway.js`));
 const session = await import(pathToFileURL(`${src}/session.js`));
 const { resolveGatewaySession } = session;
-import { readFileSync } from "node:fs";
+const { CursorClient } = await import(pathToFileURL(`${src}/cursor.js`));
+import { readFileSync, appendFileSync } from "node:fs";
+
+// What went wrong, for working out why a message did not get through. Never the keys.
+const logPath = `${process.env.HOME}/.perch/grok-bridge.log`;
+const log = (line) => {
+  try { appendFileSync(logPath, `${new Date().toISOString()} ${session.redact(String(line))}\n`); } catch {}
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Grok Bot 0.70 saves its connection in a newer file format the plugin does not read yet; the
 // entries inside are the same. Used when the usual route (asking Cursor for a fresh one) fails.
@@ -37,13 +45,48 @@ async function gateway() {
   return gw;
 }
 
+// The cloud box goes to sleep when it has been idle, and until now only opening the Grok Bot
+// app woke it, so a message sent from the notch first thing sat there undelivered. Ask Cursor
+// whether it is running and start it if not, the way the app does on launch.
+const RUNNING = "SAND_BOX_RUN_STATE_RUNNING";
+async function wake() {
+  let auth;
+  try { auth = session.loadCursorAuth({}); } catch (err) { log(`wake: no sign-in: ${err?.message ?? err}`); return false; }
+  if (!auth?.accessToken) return false;
+  const cursor = new CursorClient(auth);
+  for (let i = 0; i < 40; i++) {
+    const state = (await cursor.runState().catch((err) => { log(`wake: run state: ${err?.message ?? err}`); return null; }))?.state;
+    if (state === RUNNING) {
+      if (i > 0) log(`wake: box running after ${i * 3}s`);
+      return true;
+    }
+    if (i === 0) {
+      log(`wake: box is ${state ?? "unknown"}, starting it`);
+      try { gw = new Gateway(await session.ensureSandBox(auth), { timeoutMs: 30_000 }); }
+      catch (err) { log(`wake: EnsureSandBox: ${err?.message ?? err}`); }
+    }
+    await sleep(3000);
+  }
+  log("wake: box still not running after two minutes");
+  return false;
+}
+
 async function call(command, body) {
+  if (command === "sendPrompt") await wake();
   try {
     return await (await gateway()).call(command, body);
   } catch (err) {
+    log(`${command}: ${err?.message ?? err}`);
     // The stored session can go stale (app restart, token refresh). Re-read it once.
     gw = null;
-    return await (await gateway()).call(command, body);
+    try {
+      return await (await gateway()).call(command, body);
+    } catch (again) {
+      // Still failing: the box may be asleep. Wake it and try once more.
+      log(`${command} again: ${again?.message ?? again}`);
+      if (!(await wake())) throw again;
+      return await (await gateway()).call(command, body);
+    }
   }
 }
 
