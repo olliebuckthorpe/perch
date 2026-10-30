@@ -7534,8 +7534,6 @@ private struct StatusLine: View {
     /// Building the streams"), else the opening of its latest update, and only failing both
     /// whatever it is doing this second.
     private var text: String? {
-        // The on-device summary of what is done and what is happening now, once written.
-        if let progress = agent.progress { return progress }
         let steps = agent.steps
         let done = steps.filter { $0.status == "completed" }.count
         if !steps.isEmpty, done < steps.count {
@@ -7566,10 +7564,6 @@ private struct StatusLine: View {
             .help(text)
             .animation(.easeOut(duration: 0.2), value: text)
         }
-        Color.clear.frame(height: 0)
-            .task(id: "\(messages.last?.id ?? "")-\(agent.status)") {
-                ProgressSummary.shared.refresh(agent, messages: messages)
-            }
     }
 }
 

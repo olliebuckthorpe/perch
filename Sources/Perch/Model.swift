@@ -79,8 +79,6 @@ final class Agent: Identifiable {
     /// The chat's own step list (Claude Code's tasks or checklist): what each step is, its
     /// "doing" wording, and whether it is pending, in progress or completed. Shown as progress.
     var steps: [(id: String, subject: String, doing: String, status: String)] = []
-    /// "Done … · Now …", written on the Mac by Apple's on-device model (see ProgressSummary).
-    var progress: String?
     /// When its last turn ended. The sidebar orders chats by this, not by every small update.
     var finishedAt: Date?
     let createdAt = Date()
@@ -227,6 +225,8 @@ final class AgentStore {
         for row in rows {
             guard let raw = row["source"] as? String, let source = AgentSource(rawValue: raw),
                   let id = row["id"] as? String, let name = row["name"] as? String else { continue }
+            // Runs of the session summariser, not chats.
+            if (row["cwd"] as? String)?.contains(".claude-session-sync") == true { continue }
             let at = Date(timeIntervalSince1970: row["at"] as? Double ?? 0)
             let kept = row["kept"] as? Bool ?? false
             guard kept || NotchUI.shared.isDrafting("\(source.rawValue):\(id)") || !(row["failedReplies"] as? [String: String] ?? [:]).isEmpty || now.timeIntervalSince(at) < Self.keepFor else { continue }
