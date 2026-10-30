@@ -318,10 +318,14 @@ final class ThreadSearch {
 
     /// Gets the open chats ready to search, so the first letter typed doesn't wait on them.
     func prepare(live: [Agent]) {
+        guard !prepared else { return }
+        prepared = true
         _ = search("\u{1}", live: live, slack: [])
         cache = nil
         queue.async { _ = Embedder.shared.query("ready") }
     }
+
+    @ObservationIgnored private var prepared = false
 
     /// The threads closest in meaning to a search, with how close, for tuning.
     func nearest(_ query: String) -> [(String, Float)] {

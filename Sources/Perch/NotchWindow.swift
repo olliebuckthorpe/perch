@@ -431,7 +431,11 @@ final class NotchUI {
     }
 
     func isDismissed(_ agent: Agent) -> Bool {
-        if sidebarRemovals[agent.id] == Self.sidebarActivity(agent) { return true }
+        if let removal = sidebarRemovals[agent.id] {
+            if removal == Self.sidebarActivity(agent) { return true }
+            // Swiped away mid-run: that same run carrying on is not news, however often it updates.
+            if agent.status == .working, agent.pending == nil, removal.hasPrefix("\(agent.status.rawValue)|") { return true }
+        }
         guard !pinnedChats.contains(agent.id), let at = dismissed[agent.id] else { return false }
         // It stays cleared through restarts and background housekeeping. Only something the user
         // would care about brings it back: it is working, it needs them, it has a new message,

@@ -17,7 +17,7 @@ struct NotchContent: View {
     @Environment(NotchUI.self) private var ui
 
     var body: some View {
-        let left = Array(store.grokBots.filter(ui.inPill).prefix(maxFaces))
+        let left = Array(store.grokBots.filter { ui.inPill($0) && !ui.isDismissed($0) }.prefix(maxFaces))
         // Every chat that is in the sidebar sits in the notch too, idle ones included (they just
         // sit still). Only chats the user has cleared are left out.
         let right = Array(store.sessions.filter { !ui.isDismissed($0) }.prefix(maxFaces))
@@ -324,8 +324,11 @@ private struct SearchBar: View {
         })
         .onChange(of: focused) { _, on in
             guard on else { return }
+            // Only now, not whenever the island opens: reading every chat's history and warming the
+            // search is real work, and it was making each open stutter.
             SessionIndex.shared.refresh()
             ThreadSearch.shared.refresh()
+            ThreadSearch.shared.prepare(live: store.sessions + store.grokBots)
             // Typing here shows the results on the right.
             if !ui.browsing { ui.browse() }
         }
@@ -336,11 +339,6 @@ private struct SearchBar: View {
         }
         // New chats read, or a Slack conversation understood: refresh what is shown, quietly.
         .onChange(of: ThreadSearch.shared.version) { if !ui.query.isEmpty { ui.searchSoon() } }
-        .onAppear {
-            SessionIndex.shared.refresh()
-            ThreadSearch.shared.refresh()
-            DispatchQueue.main.async { ThreadSearch.shared.prepare(live: store.sessions + store.grokBots) }
-        }
         .onChange(of: ui.searchFocus) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
         }
