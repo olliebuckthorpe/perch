@@ -79,8 +79,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MeetingWatch.shared.start()
         WhatsAppSource.shared.start()
         SidePanel.shared.restore()
-        // Search reads every chat; that happens quietly after launch, so it is ready when needed.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { ThreadSearch.shared.refresh() }
         Clips.shared.start()
         // Control+Option+V: the clipboard. Control+Option+R: the pinned bot (Remmi).
         Hotkeys.shared.register(key: kVK_ANSI_V, modifiers: controlKey | optionKey) { NotchUI.shared.toggleClips() }

@@ -4908,9 +4908,14 @@ private final class FooterPreferences: ObservableObject {
     @Published var loginItem = false
     @Published var routesLinks = false
 
+    private var checkedAt = Date.distantPast
+
     /// Off the main thread: both ask macOS and wait for its answer, and this runs as the island
     /// opens, where waiting froze the first frames of the animation.
     func refreshSystemStatus() {
+        // Neither changes often, so a burst of opens asks once.
+        guard Date().timeIntervalSince(checkedAt) > 300 else { return }
+        checkedAt = Date()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let login = SMAppService.mainApp.status == .enabled, links = LinkRouter.isDefault
             DispatchQueue.main.async {
