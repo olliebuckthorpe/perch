@@ -142,7 +142,8 @@ private struct ExpandedBody: View {
             } else if ui.cardsOnly, let meeting = ui.meetingAlert {
                 MeetingBanner(meeting: meeting)
             } else if ui.cardsOnly, let alert = ui.slackAlert {
-                SlackBanner(alert: alert)
+                // One per chat: nothing typed or sent for one person carries onto the next.
+                SlackBanner(alert: alert).id(NotchUI.bannerKey(alert))
             } else if ui.cardsOnly, let id = ui.noticeID, let agent = store.find(id) {
                 NoticeView(agent: agent)
             } else if ui.showingShelf {
@@ -7584,16 +7585,23 @@ private struct SlackBanner: View {
     let alert: SlackAlert
     @Environment(NotchUI.self) private var ui
     @State private var hovered = false
-    @State private var reply = ""
-    @State private var state: String?
     @State private var reacted: String?
     @State private var reacting = false
     @FocusState private var focused: Bool
+
+    private var key: String { NotchUI.bannerKey(alert) }
+    private var reply: Binding<String> { Binding(get: { ui.drafts[key] ?? "" }, set: { ui.drafts[key] = $0 }) }
+    private var failed: Bool { ui.bannerFailed.contains(key) }
+    private var sent: [NotchUI.BannerMessage] { ui.bannerSent[key] ?? [] }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             card
             waitingList
+        }
+        // Moved on from replying to someone else: the keyboard carries on here.
+        .onAppear {
+            if ui.controller?.panel.isKeyWindow == true { DispatchQueue.main.async { focused = true } }
         }
     }
 
@@ -7607,7 +7615,7 @@ private struct SlackBanner: View {
         }
         SlackSource.shared.markRead(alert.target, upTo: alert.ts)
         ui.slackUnread["\(alert.target.workspace):\(alert.target.id)"] = nil
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { ui.nextBanner() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { ui.nextBanner(after: alert.target) }
     }
 
     private var card: some View {
@@ -7669,21 +7677,34 @@ private struct SlackBanner: View {
             .contentShape(Rectangle())
             .onTapGesture { ui.openConversation(alert.target, thread: alert.threadParent) }
             // Reply straight from here; it posts as you, in the same conversation or thread.
-            if state == "sent" {
-                Label("Sent", systemImage: "checkmark").font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.green)
-            } else if let reacted {
+            // What has gone so far, with the box still open underneath for another message.
+            if !sent.isEmpty {
+                VStack(alignment: .trailing, spacing: 3) {
+                    ForEach(sent) { message in
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            Text(oneLine(message.text, max: 200)).font(.system(size: 11.5))
+                                .foregroundStyle(.white.opacity(0.75)).lineLimit(2)
+                            Image(systemName: message.sent ? "checkmark" : "clock").font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(message.sent ? Palette.green : .white.opacity(0.4))
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            if let reacted {
                 Text("Reacted \(reacted)").font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.green)
             } else {
                 HStack(spacing: 6) {
-                    TextField(state == "failed" ? "Did not send. Try again, or open Slack" : "Reply to \(alert.sender)", text: $reply)
+                    TextField(failed ? "Did not send. Try again, or open Slack" : sent.isEmpty ? "Reply to \(alert.sender)" : "Send another",
+                              text: reply)
                         .textFieldStyle(.plain).font(.system(size: 12)).focused($focused)
                         .onSubmit(send)
-                    EmojiButton { reply += $0 }
+                    EmojiButton { reply.wrappedValue += $0 }
                     Button(action: send) {
                         Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
-                            .foregroundStyle(reply.isEmpty ? .white.opacity(0.25) : .white)
+                            .foregroundStyle(reply.wrappedValue.isEmpty ? .white.opacity(0.25) : .white)
                     }
-                    .buttonStyle(Press()).disabled(reply.isEmpty || state == "sending")
+                    .buttonStyle(Press()).disabled(reply.wrappedValue.isEmpty)
                 }
                 .padding(.horizontal, 9).padding(.vertical, 6)
                 .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -7692,7 +7713,7 @@ private struct SlackBanner: View {
                     ui.controller?.panel.makeKey()
                     focused = true
                 })
-                if state == "failed" {
+                if failed {
                     // Said plainly, with Slack's reason, so a reply never just sits there.
                     Text(failure)
                         .font(.system(size: 10.5)).foregroundStyle(Palette.red).padding(.top, 4)
@@ -7702,7 +7723,7 @@ private struct SlackBanner: View {
         .padding(10)
         .background(.white.opacity(hovered ? 0.1 : 0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onHover { hovered = $0 }
-        .animation(.easeOut(duration: 0.15), value: state)
+        .animation(.easeOut(duration: 0.15), value: sent.count)
     }
 
     /// Whatever came in meanwhile, so nothing is missed while replying. Click one to see it.
@@ -7735,19 +7756,13 @@ private struct SlackBanner: View {
     }
 
     private func send() {
-        let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, state != "sending" else { return }
-        state = "sending"
+        let text = reply.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        reply.wrappedValue = ""
         Settings.sentFeel()
         ui.touch(alert.target)
-        // A send that fails is tried once more before saying so: most failures are a blip.
-        func attempt(_ tries: Int) {
-            SlackSource.shared.reply(to: alert, text: text) { ok in
-                if !ok && tries > 0 { return DispatchQueue.main.asyncAfter(deadline: .now() + 1) { attempt(tries - 1) } }
-                finish(ok)
-            }
-        }
-        attempt(1)
+        ui.sendFromBanner(alert, text: text)
+        focused = true
     }
 
     /// Why the reply did not go, in Slack's words where it gave any.
@@ -7755,18 +7770,6 @@ private struct SlackBanner: View {
         let raw = SlackSource.status["\(alert.workspace) error"] ?? ""
         let reason = raw.split(separator: " ").dropFirst().joined(separator: " ")
         return reason.isEmpty ? "Did not send. Press Return to try again." : "Did not send (\(reason)). Press Return to try again."
-    }
-
-    private func finish(_ ok: Bool) {
-        state = ok ? "sent" : "failed"
-        if ok {
-                reply = ""
-                // Answered, so it no longer waits in the sidebar, nor shows unread in Slack or WhatsApp.
-                ui.slackUnread["\(alert.target.workspace):\(alert.target.id)"] = nil
-                SlackSource.shared.markRead(alert.target, upTo: alert.ts)
-                // On to the next one waiting, if any; otherwise the island tucks away.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { ui.nextBanner() }
-            }
     }
 }
 

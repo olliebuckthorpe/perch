@@ -709,6 +709,8 @@ final class NotchUI {
         cardsOnly = false
         slackAlert = nil
         slackQueue = []
+        clearBannerSent()
+        bannerFailed = []
         pendingLinks = []
         justOpened = nil
         query = ""
@@ -875,6 +877,92 @@ final class NotchUI {
     /// replying). Listed under it instead of replacing it; one per conversation, newest first.
     private(set) var slackQueue: [SlackAlert] = []
 
+    /// A message sent from a banner, shown under it so a second one can follow straight away.
+    struct BannerMessage: Identifiable {
+        let id = UUID()
+        let text: String
+        var sent = false
+    }
+    /// Sent from each banner, by its draft key. Kept per chat, so replying to one person never
+    /// shows on the next person's banner.
+    private(set) var bannerSent: [String: [BannerMessage]] = [:]
+    private(set) var bannerFailed = Set<String>()
+    @ObservationIgnored private var bannerSending = Set<String>()
+    @ObservationIgnored private var settleWork: DispatchWorkItem?
+
+    /// The same draft the chat itself uses, so a half-written reply carries over.
+    static func bannerKey(_ alert: SlackAlert) -> String {
+        let t = alert.target
+        if let thread = alert.threadParent { return "thread:\(t.workspace):\(t.id):\(thread)" }
+        return "conversation:\(t.workspace):\(t.id)"
+    }
+
+    /// Sends a reply from a banner. The box clears at once for the next message; replies go one
+    /// at a time so they arrive in the order they were written.
+    func sendFromBanner(_ alert: SlackAlert, text: String) {
+        let key = Self.bannerKey(alert)
+        bannerFailed.remove(key)
+        settleWork?.cancel()
+        collapseWork?.cancel()
+        bannerSent[key, default: []].append(BannerMessage(text: text))
+        pumpBanner(alert, key)
+    }
+
+    private func pumpBanner(_ alert: SlackAlert, _ key: String) {
+        guard !bannerSending.contains(key) else { return }
+        guard let next = bannerSent[key]?.first(where: { !$0.sent }) else { return settleBanner(alert) }
+        bannerSending.insert(key)
+        // A send that fails is tried once more before saying so: most failures are a blip.
+        func attempt(_ tries: Int) {
+            SlackSource.shared.reply(to: alert, text: next.text) { [self] ok in
+                DispatchQueue.main.async { [self] in
+                    if !ok && tries > 0 {
+                        return DispatchQueue.main.asyncAfter(deadline: .now() + 1) { attempt(tries - 1) }
+                    }
+                    bannerSending.remove(key)
+                    if let i = bannerSent[key]?.firstIndex(where: { $0.id == next.id }) {
+                        if ok { bannerSent[key]![i].sent = true } else { bannerSent[key]!.remove(at: i) }
+                    }
+                    if ok {
+                        // Answered, so it no longer waits in the sidebar, nor shows unread in Slack or WhatsApp.
+                        slackUnread["\(alert.target.workspace):\(alert.target.id)"] = nil
+                        SlackSource.shared.markRead(alert.target, upTo: alert.ts)
+                    } else {
+                        bannerFailed.insert(key)
+                        let draft = drafts[key] ?? ""
+                        drafts[key] = draft.isEmpty ? next.text : "\(next.text) \(draft)"
+                    }
+                    pumpBanner(alert, key)
+                }
+            }
+        }
+        attempt(1)
+    }
+
+    /// Replied, and nothing more being written: on to the next person waiting, or close. It waits
+    /// a moment first, longer with nobody else waiting, so another message can follow.
+    private func settleBanner(_ alert: SlackAlert) {
+        settleWork?.cancel()
+        guard !bannerFailed.contains(Self.bannerKey(alert)) else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.cardsOnly, let showing = self.slackAlert, Self.same(showing.target, alert.target) else { return }
+            let writing = !(self.drafts[Self.bannerKey(showing)] ?? "").isEmpty
+            if writing || (self.slackQueue.isEmpty && self.hovering) { return self.settleBanner(alert) }
+            self.nextBanner()
+        }
+        settleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + (slackQueue.isEmpty ? 4 : 2.5), execute: work)
+    }
+
+    /// Forgets what was sent from banners, keeping anything still on its way.
+    private func clearBannerSent(_ key: String? = nil) {
+        if let key {
+            if bannerSent[key]?.allSatisfy(\.sent) == true { bannerSent[key] = nil }
+        } else {
+            bannerSent = bannerSent.filter { !$0.value.allSatisfy(\.sent) }
+        }
+    }
+
     /// A conversation from a banner: the whole island, on that chat.
     func openConversation(_ t: SlackTarget, thread: String? = nil) {
         openSlack(t, thread: thread)
@@ -892,9 +980,18 @@ final class NotchUI {
 
     /// Done with this banner (replied, say): the next waiting one, or close.
     func nextBanner() {
+        if let current = slackAlert {
+            bannerFailed.remove(Self.bannerKey(current))
+            clearBannerSent(Self.bannerKey(current))
+        }
         guard let next = slackQueue.first else { return collapse() }
         slackQueue.removeFirst()
         withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { slackAlert = next }
+    }
+
+    /// The same, but only if that chat's banner is still the one showing.
+    func nextBanner(after target: SlackTarget) {
+        if let showing = slackAlert, Self.same(showing.target, target) { nextBanner() }
     }
 
     private static func same(_ a: SlackTarget, _ b: SlackTarget) -> Bool { a.workspace == b.workspace && a.id == b.id }
@@ -967,6 +1064,7 @@ final class NotchUI {
                 alert.earlier = Array((showing.earlier + [showing.text]).suffix(5))
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { slackAlert = alert }
                 collapseWork?.cancel()
+                settleWork?.cancel()
                 if !(hovering || typing) { scheduleCollapse(for: alert) }
                 return
             }
