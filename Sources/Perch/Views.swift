@@ -131,6 +131,7 @@ private struct ExpandedBody: View {
     @Environment(AgentStore.self) private var store
     @Environment(NotchUI.self) private var ui
     @State private var showQuiet = false
+    @State private var paneReady = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -177,7 +178,11 @@ private struct ExpandedBody: View {
                     HStack(alignment: .top, spacing: 12) {
                         Rail()
                         Rectangle().fill(.white.opacity(0.08)).frame(width: 1).frame(maxHeight: .infinity)
-                        VStack(alignment: .leading, spacing: 6) { pane }
+                        VStack(alignment: .leading, spacing: 6) {
+                            // The chat is the costly part to build, so it waits for the opening
+                            // to finish rather than competing with it for frames.
+                            if paneReady { pane } else { Color.clear.frame(height: 452) }
+                        }
                             .frame(maxWidth: .infinity, alignment: .topLeading)
                             // Going to and from search eases across; chat to chat stays instant.
                             .animation(.easeOut(duration: 0.2), value: ui.browsing)
@@ -191,6 +196,11 @@ private struct ExpandedBody: View {
         .padding(.horizontal, 14)
         .padding(.top, 8)
         .padding(.bottom, 14)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.26) {
+                withAnimation(.easeOut(duration: 0.12)) { paneReady = true }
+            }
+        }
     }
 
     @ViewBuilder private var pane: some View {
