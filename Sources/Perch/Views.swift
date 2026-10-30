@@ -66,8 +66,11 @@ struct NotchContent: View {
             .onTapGesture { ui.showEverything() }
 
             if ui.expanded {
+                // Laid out once at its final width. The island's edges animate over it, so the
+                // chat is not measured again on every frame of the opening.
                 ExpandedBody()
-                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
+                    .frame(width: max(side * 2 + ui.notch.width, 60))
+                    .transition(.opacity)
             }
         }
         .frame(width: max(leftWidth + ui.notch.width + rightWidth, 60))
@@ -4895,9 +4898,17 @@ private final class FooterPreferences: ObservableObject {
     @Published var loginItem = false
     @Published var routesLinks = false
 
+    /// Off the main thread: both ask macOS and wait for its answer, and this runs as the island
+    /// opens, where waiting froze the first frames of the animation.
     func refreshSystemStatus() {
-        loginItem = SMAppService.mainApp.status == .enabled
-        routesLinks = LinkRouter.isDefault
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let login = SMAppService.mainApp.status == .enabled, links = LinkRouter.isDefault
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if self.loginItem != login { self.loginItem = login }
+                if self.routesLinks != links { self.routesLinks = links }
+            }
+        }
     }
 }
 
