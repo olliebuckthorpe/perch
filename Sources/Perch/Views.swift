@@ -35,7 +35,7 @@ struct NotchContent: View {
         let chatting = ui.selectedID != nil || ui.composing
         // A Slack thread opens beside its conversation, as in Slack, so the island widens for it.
         let threadBeside = ui.slackTarget.map { t in t.workspace != WhatsAppSource.workspace && ui.openThreads["\(t.workspace):\(t.id)"] != nil } == true
-            && !ui.browsing && !ui.showingTasks
+            && !ui.browsing && !ui.showingTasks && !ui.showingCalendar
         let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : (ui.showingClips && !ui.clipsInline) || ui.showingShelf ? 380 : threadBeside ? 1180 : 768) - (l + ui.notch.width + r)) : 0
         let side = max(l, r, extra > 0 ? (l + r + extra) / 2 : 0)
         let leftWidth = ui.expanded ? side : l, rightWidth = ui.expanded ? side : r
@@ -97,6 +97,7 @@ struct NotchContent: View {
         .animation(island, value: ui.expanded)
         .animation(island, value: ui.cardsOnly)
         .animation(tabSwitch, value: ui.showingTasks)
+        .animation(tabSwitch, value: ui.showingCalendar)
         .animation(island, value: ui.showingClips)
         .animation(island, value: ui.showingShelf)
         .animation(island, value: store.needing.count)
@@ -168,7 +169,9 @@ private struct ExpandedBody: View {
                         }
                     }
                     .zIndex(5)
-                if ui.showingTasks {
+                if ui.showingCalendar {
+                    CalendarView().transition(.opacity)
+                } else if ui.showingTasks {
                     // The board gets the full width; the island stays the same size either way.
                     TasksView()
                         .transition(.asymmetric(insertion: .opacity.combined(with: .offset(x: 24)),
@@ -883,12 +886,16 @@ private struct TopBar: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            tab("Chats", on: !ui.showingTasks) {
-                withAnimation(tabSwitch) { ui.showingTasks = false }
+            tab("Chats", on: !ui.showingTasks && !ui.showingCalendar) {
+                withAnimation(tabSwitch) { ui.showingTasks = false; ui.showingCalendar = false }
+            }
+            tab("Calendar", on: ui.showingCalendar) {
+                ui.composing = false
+                withAnimation(tabSwitch) { ui.showingTasks = false; ui.showingCalendar = true }
             }
             tab("To-dos", count: NotionTasks.shared.connected ? NotionTasks.shared.tasks.count : nil, on: ui.showingTasks) {
                 ui.composing = false
-                withAnimation(tabSwitch) { ui.showingTasks = true }
+                withAnimation(tabSwitch) { ui.showingCalendar = false; ui.showingTasks = true }
             }
             // Only when something is being held: a small tray with how many. Click for the shelf.
             if !Clips.shared.shelf.isEmpty {

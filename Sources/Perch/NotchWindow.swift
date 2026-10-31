@@ -41,6 +41,8 @@ final class NotchUI {
     }
     /// Showing the Notion to-do list in the right-hand pane.
     var showingTasks = false
+    /// The Calendar tab.
+    var showingCalendar = false
     var showingClips = false
     /// The Slack conversation open in the notch.
     var slackTarget: SlackTarget? {
@@ -198,6 +200,7 @@ final class NotchUI {
         composing = false
         browsing = false
         showingTasks = false
+        showingCalendar = false
         showingProfiles = false
         selectedID = nil
         slackTarget = t
@@ -229,6 +232,7 @@ final class NotchUI {
         cardsOnly = false
         showingClips = false
         showingTasks = false
+        showingCalendar = false
         showingShelf = true
         expanded = true
     }
@@ -282,6 +286,7 @@ final class NotchUI {
         clipsInline = expanded && !cardsOnly && pendingLinks.isEmpty && !showingShelf
         if clipsInline {
             showingTasks = false
+            showingCalendar = false
             showingClips = true
             clipIndex = 0
             controller?.panel.makeKey()
@@ -292,6 +297,7 @@ final class NotchUI {
         browsing = false
         showingProfiles = false
         showingTasks = false
+        showingCalendar = false
         showingShelf = false
         showingClips = true
         clipIndex = 0
@@ -304,7 +310,7 @@ final class NotchUI {
     func openPinned() {
         let bots = AgentStore.shared.grokBots
         guard let bot = bots.first(where: { pinned.contains($0.name) }) ?? bots.first else { return }
-        if expanded, selectedID == bot.id, !showingClips, !showingTasks, !cardsOnly {
+        if expanded, selectedID == bot.id, !showingClips, !showingTasks && !showingCalendar, !cardsOnly {
             collapse()
             return
         }
@@ -549,11 +555,11 @@ final class NotchUI {
     func touch(_ t: SlackTarget) { conversationTouched["\(t.workspace):\(t.id)"] = Date() }
 
     func pasteImages() -> Bool {
-        if expanded, !cardsOnly, !showingClips, !showingShelf, !showingTasks, let t = slackTarget { return pasteImages(into: t) }
+        if expanded, !cardsOnly, !showingClips, !showingShelf, !showingTasks && !showingCalendar, let t = slackTarget { return pasteImages(into: t) }
         // The chat on screen is the one being written to. (Going by which box last had the
         // cursor could point at a chat that is no longer showing, and the picture vanished.)
         // Starting a new chat collects them under "new"; otherwise the chat on screen.
-        guard expanded, !showingClips, !showingShelf, !showingTasks,
+        guard expanded, !showingClips, !showingShelf, !showingTasks && !showingCalendar,
               let id = composing ? "new" : (selectedID ?? focusedAgentID) else { return false }
         let images = Attachment.fromPasteboard()
         guard !images.isEmpty else { return false }
@@ -685,6 +691,7 @@ final class NotchUI {
         composing = false
         showingProfiles = false
         showingTasks = false
+        showingCalendar = false
         showingClips = false
         slackTarget = nil
         clipsInline = false
@@ -724,6 +731,7 @@ final class NotchUI {
         browsing = false
         showingProfiles = false
         showingTasks = false
+        showingCalendar = false
         showingClips = false
         slackTarget = nil
         clipsInline = false
@@ -742,6 +750,7 @@ final class NotchUI {
         browsing = false
         showingProfiles = false
         showingTasks = false
+        showingCalendar = false
         showingClips = false
         slackTarget = nil
         clipsInline = false
@@ -768,6 +777,7 @@ final class NotchUI {
         browsing = false
         showingProfiles = false
         showingTasks = false
+        showingCalendar = false
         showingClips = false
         slackTarget = nil
         clipsInline = false
