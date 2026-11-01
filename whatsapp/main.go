@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go.mau.fi/whatsmeow/appstate"
 	waCommon "go.mau.fi/whatsmeow/proto/waCommon"
@@ -132,8 +133,29 @@ func connect() {
 		}
 		return
 	}
-	if err := client.Connect(); err != nil {
+	keepTrying(ctx, client.Connect, 5*time.Second, func(err error) {
 		emit("error", map[string]any{"message": err.Error()})
+	})
+}
+
+// keepTrying connects, and on failure tries again with growing gaps up to a minute. Perch often
+// starts before the network is back (after a restart or waking), and one failed attempt used to
+// leave WhatsApp off until the next relaunch. Once connected, whatsmeow handles reconnecting.
+func keepTrying(ctx context.Context, connect func() error, wait time.Duration, report func(error)) {
+	for {
+		err := connect()
+		if err == nil || errors.Is(err, whatsmeow.ErrAlreadyConnected) {
+			return
+		}
+		report(err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		if wait < time.Minute {
+			wait = min(wait*2, time.Minute)
+		}
 	}
 }
 
