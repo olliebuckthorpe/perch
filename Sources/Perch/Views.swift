@@ -7827,6 +7827,17 @@ final class SidePanelWindow: NSPanel {
     }
 
     override var canBecomeMain: Bool { false }
+
+    override func becomeKey() {
+        super.becomeKey()
+        if firstResponder is NSTextView { FrontApp.take(for: self) }
+    }
+
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        let done = super.makeFirstResponder(responder)
+        if done, responder is NSTextView { FrontApp.take(for: self) }
+        return done
+    }
 }
 
 /// One chat kept open in a slim floating panel down the right of the screen, so instructions
@@ -7970,6 +7981,7 @@ final class SidePanel {
     }
 
     func close() {
+        FrontApp.giveBack()
         window?.close()
         window = nil
         agentID = nil

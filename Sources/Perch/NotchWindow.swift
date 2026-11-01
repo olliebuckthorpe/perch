@@ -8,9 +8,41 @@ final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+/// Perch's windows normally leave the app you were in at the front. Dictation tools (Granola)
+/// look for a text box in the front app before pasting, so while a Perch box has the cursor, Perch
+/// comes forward, and the app you were in returns when the notch closes.
+enum FrontApp {
+    nonisolated(unsafe) private static var previous: NSRunningApplication?
+
+    static func take(for window: NSWindow) {
+        guard window.isKeyWindow, !NSApp.isActive else { return }
+        let front = NSWorkspace.shared.frontmostApplication
+        if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier { previous = front }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    static func giveBack() {
+        defer { previous = nil }
+        // Already somewhere else (the user clicked another app): leave them there.
+        guard NSApp.isActive, let previous, !previous.isTerminated else { return }
+        previous.activate()
+    }
+}
+
 final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    override func becomeKey() {
+        super.becomeKey()
+        if firstResponder is NSTextView { FrontApp.take(for: self) }
+    }
+
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        let done = super.makeFirstResponder(responder)
+        if done, responder is NSTextView { FrontApp.take(for: self) }
+        return done
+    }
 
     /// AppKit would otherwise nudge the window down to keep it clear of the menu bar.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
@@ -712,6 +744,8 @@ final class NotchUI {
         enlarged = nil
         toast = nil
         guard expanded else { return }
+        // Not if the cursor is in the side panel: that is still in use.
+        if controller?.panel.isKeyWindow == true { FrontApp.giveBack() }
         // What was open, so going off and straight back on lands on the same chat.
         if !cardsOnly, selectedID != nil || slackTarget != nil {
             lastOpen = (selectedID, slackTarget, Date())
