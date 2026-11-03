@@ -1093,7 +1093,10 @@ final class NotchUI {
         // Sharing the screen: into the sidebar quietly, no banner, no sound.
         if CallWatch.shared.sharing { return }
         guard pendingLinks.isEmpty else { return }
-        if expanded && !autoOpened {
+        // A banner the user is busy with (hovering or replying) still counts as the banner: more
+        // from that chat goes into it, rather than a toast on top of it.
+        let banner = expanded && cardsOnly && slackAlert != nil
+        if expanded && !autoOpened && !banner {
             // Already reading that very conversation: it shows up there by itself.
             let reading = (slackTarget.map { t in t.workspace == alert.workspace && (t.id == alert.channel || (alert.direct && t.id == alert.senderID)) } ?? false)
                 || SidePanel.shared.showing(alert.workspace, alert.channel)
@@ -1103,11 +1106,12 @@ final class NotchUI {
             }
             return
         }
-        if let showing = slackAlert, expanded, cardsOnly, showing.priority < alert.priority { return }
+        let sameChat = slackAlert.map { Self.same($0.target, alert.target) } ?? false
+        if let showing = slackAlert, expanded, cardsOnly, !sameChat, showing.priority < alert.priority { return }
         if Settings.sounds { Settings.playSound() }
         var alert = alert
         if let showing = slackAlert, expanded, cardsOnly {
-            if Self.same(showing.target, alert.target) {
+            if sameChat {
                 // More from the same person: one banner, every message in it.
                 alert.earlier = Array((showing.earlier + [showing.text]).suffix(5))
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { slackAlert = alert }

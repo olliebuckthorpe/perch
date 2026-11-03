@@ -7138,6 +7138,48 @@ private struct WhatsAppBubble: View {
     }
 }
 
+/// A WhatsApp banner's recent messages, as small bubbles: theirs on the left, yours in green on
+/// the right with ticks, the way the chat itself looks.
+private struct BannerThread: View {
+    let lines: [SlackLine]
+    let group: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(lines, id: \.viewKey) { line in
+                HStack(spacing: 0) {
+                    if line.mine { Spacer(minLength: 36) }
+                    VStack(alignment: .leading, spacing: 1) {
+                        if group && !line.mine && !line.sender.isEmpty {
+                            Text(line.sender).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Palette.colors[3])
+                        }
+                        HStack(alignment: .lastTextBaseline, spacing: 6) {
+                            Text(WhatsAppText.styled(words(line))).font(.system(size: 12)).foregroundStyle(.white.opacity(0.95))
+                                .lineLimit(4).fixedSize(horizontal: false, vertical: true)
+                            HStack(spacing: 3) {
+                                if let time = line.time {
+                                    Text(time.formatted(.dateTime.hour().minute())).font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
+                                }
+                                if line.mine, let ticks = line.ticks { Ticks(level: ticks) }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(line.mine ? WhatsAppBubble.mine : WhatsAppBubble.theirs,
+                                in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    if !line.mine { Spacer(minLength: 36) }
+                }
+            }
+        }
+    }
+
+    private func words(_ line: SlackLine) -> String {
+        if !line.text.isEmpty { return line.text }
+        guard let file = line.files.first else { return "Message" }
+        return file.image ? "Photo" : file.kind.capitalized
+    }
+}
+
 /// The message a WhatsApp reply quotes, as a tinted block with a coloured edge, as in WhatsApp.
 struct WhatsAppQuote: View {
     let quote: SlackQuote
@@ -7619,6 +7661,18 @@ private struct SlackBanner: View {
     private var failed: Bool { ui.bannerFailed.contains(key) }
     private var sent: [NotchUI.BannerMessage] { ui.bannerSent[key] ?? [] }
 
+    /// The WhatsApp chat's latest messages, loaded from the helper, so new ones appear here live.
+    private var thread: [SlackLine] {
+        guard alert.workspace == WhatsAppSource.workspace else { return [] }
+        let store = SlackConversations.shared
+        return Array((store.lines[store.key(alert.workspace, alert.target.id)] ?? []).suffix(6))
+    }
+
+    private var unlanded: [NotchUI.BannerMessage] {
+        let mine = Set(thread.filter(\.mine).map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) })
+        return sent.filter { !$0.sent || !mine.contains($0.text) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             card
@@ -7627,6 +7681,14 @@ private struct SlackBanner: View {
         // Moved on from replying to someone else: the keyboard carries on here.
         .onAppear {
             if ui.controller?.panel.isKeyWindow == true { DispatchQueue.main.async { focused = true } }
+        }
+        .task(id: alert.target.id) {
+            if alert.workspace == WhatsAppSource.workspace { SlackSource.shared.history(for: alert.target) }
+        }
+        // Replying here is reading: what arrives while the box has the keyboard is read too.
+        .onChange(of: thread.last?.viewKey) {
+            guard ui.controller?.panel.isKeyWindow == true, thread.last?.mine == false else { return }
+            SlackSource.shared.markRead(alert.target, upTo: alert.ts)
         }
     }
 
@@ -7686,6 +7748,11 @@ private struct SlackBanner: View {
                         }
                         .buttonStyle(Press()).help(alert.workspace == WhatsAppSource.workspace ? "Open the chat" : "Open in Slack")
                     }
+                    // WhatsApp reads as the chat itself: the last few messages as bubbles, yours
+                    // included, and anything new from them arriving in place.
+                    if !thread.isEmpty {
+                        BannerThread(lines: thread, group: alert.channel.hasSuffix("@g.us"))
+                    } else {
                     // A burst from the same person: the earlier ones first, then the newest.
                     if !alert.earlier.isEmpty {
                         VStack(alignment: .leading, spacing: 3) {
@@ -7696,16 +7763,18 @@ private struct SlackBanner: View {
                         }
                     }
                     NotificationMessagePreview(alert: alert, expanded: hovered)
+                    }
                 }
             }
             // A click anywhere but the reply box opens the chat, in Perch.
             .contentShape(Rectangle())
             .onTapGesture { ui.openConversation(alert.target, thread: alert.threadParent) }
             // Reply straight from here; it posts as you, in the same conversation or thread.
-            // What has gone so far, with the box still open underneath for another message.
-            if !sent.isEmpty {
+            // What has gone so far, with the box still open underneath for another message. In a
+            // WhatsApp chat shown as bubbles, only what has not yet landed in it.
+            if !unlanded.isEmpty {
                 VStack(alignment: .trailing, spacing: 3) {
-                    ForEach(sent) { message in
+                    ForEach(unlanded) { message in
                         HStack(alignment: .firstTextBaseline, spacing: 5) {
                             Text(oneLine(message.text, max: 200)).font(.system(size: 11.5))
                                 .foregroundStyle(.white.opacity(0.75)).lineLimit(2)
