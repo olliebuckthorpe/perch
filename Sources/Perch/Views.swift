@@ -7053,18 +7053,27 @@ private struct WhatsAppBubble: View {
     static let theirs = Color(red: 0.13, green: 0.17, blue: 0.2)
 
     /// The words, with the time (and ticks) tucked after the last line.
-    private var words: some View {
+    private var words: some View { wordsOnly.overlay(alignment: .bottomTrailing) { stamp.padding(.trailing, 7).padding(.bottom, 4) } }
+
+    private var wordsOnly: some View {
         Text(WhatsAppText.styled(line.text) + spacer)
             .font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.95)).textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.leading, 9).padding(.trailing, 9).padding(.top, 6).padding(.bottom, 7)
-            .overlay(alignment: .bottomTrailing) { stamp.padding(.trailing, 7).padding(.bottom, 4) }
     }
 
     /// A photo or file sits inside the bubble, as in WhatsApp: the caption under it, and with
     /// no caption the time over the picture's corner.
     @ViewBuilder private var content: some View {
-        if let quote = line.quote {
+        if let quote = line.quote, line.files.isEmpty {
+            // The time and ticks go in the bubble's corner, which the quote can make wider than
+            // the reply itself, as WhatsApp does; not straight after a short reply's last word.
+            VStack(alignment: .leading, spacing: 0) {
+                WhatsAppQuote(quote: quote).padding([.horizontal, .top], 3)
+                wordsOnly
+            }
+            .overlay(alignment: .bottomTrailing) { stamp.padding(.trailing, 7).padding(.bottom, 4) }
+        } else if let quote = line.quote {
             VStack(alignment: .leading, spacing: 0) {
                 WhatsAppQuote(quote: quote).padding([.horizontal, .top], 3)
                 media
