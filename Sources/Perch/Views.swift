@@ -7968,8 +7968,17 @@ private struct SlackBanner: View {
                         }
                         .frame(height: chatOpen ? Self.chatHeight : previewHeight, alignment: .top)
                         .clipped()
+                        // Messages scrolling up fade out at the top edge rather than being cut.
+                        .mask {
+                            VStack(spacing: 0) {
+                                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: chatOpen ? 12 : 0)
+                                Color.black
+                            }
+                        }
                         // Open, the chat takes the banner's full width, so their messages start
-                        // at the left edge as in WhatsApp rather than indented past the picture.
+                        // at the left edge as in WhatsApp rather than indented past the picture;
+                        // it starts below the picture, so nothing scrolls up over it.
+                        .padding(.top, chatOpen ? 14 : 0)
                         .padding(.leading, chatOpen ? -40 : 0)
                     }
                 }
