@@ -8,7 +8,7 @@ import Observation
 // If its token only works on Upshow's /mcp route rather than /api, write a second service that
 // calls those tools and return it from `UpshowAccess.service`. Nothing else has to change.
 
-struct UpshowMeeting: Identifiable, Equatable {
+struct UpshowMeeting: Identifiable, Equatable, Codable {
     let id: String
     var title: String
     var guest: String
@@ -17,26 +17,30 @@ struct UpshowMeeting: Identifiable, Equatable {
     var start: Date
     var end: Date
     var link: URL?
+    /// The sequence (meeting type) running on it, if any.
+    var sequenceID: String?
 }
 
 /// Time taken on a connected calendar by something that is not an Upshow meeting.
-struct UpshowBusy: Identifiable, Equatable {
+struct UpshowBusy: Identifiable, Equatable, Codable {
     let id: String
     let start: Date
     let end: Date
     let allDay: Bool
 }
 
-struct UpshowCalendarSource: Identifiable, Equatable {
+struct UpshowCalendarSource: Identifiable, Equatable, Codable {
     let id: String
     let calendarID: String
     let name: String
     let primary: Bool
 }
 
-struct UpshowMeetingType: Identifiable, Equatable {
+struct UpshowMeetingType: Identifiable, Equatable, Codable {
     let id: String
     let name: String
+    var isDefault = false
+    var defaultMinutes: Int?
 }
 
 enum UpshowPlace: String, CaseIterable, Identifiable {
@@ -57,26 +61,59 @@ enum UpshowPlace: String, CaseIterable, Identifiable {
     }
 }
 
-/// One new meeting. `clientID` is what Upshow uses to spot a repeat, so the same booking sent
-/// twice after a timeout can never book anyone twice. It stays the same until the form is reset.
-struct UpshowBooking: Equatable {
-    var clientID = UUID()
-    var title = ""
-    var guestName = ""
-    var guestEmail = ""
-    var start = Date()
-    var minutes = 30
-    var meetingTypeID: String?
-    var place = UpshowPlace.meet
-    var placeDetail = ""
-    var note = ""
-    var notifyGuests = true
-    var timeZone = TimeZone.current.identifier
+/// Someone on a booking. A guest needs an email or a phone number to be reachable.
+struct UpshowGuest: Identifiable, Equatable {
+    var id = UUID()
+    var name = ""
+    var email = ""
+    var phone = ""
+    var company = ""
 
-    var ready: Bool {
-        !guestName.trimmingCharacters(in: .whitespaces).isEmpty
-            && guestEmail.contains("@") && start > Date()
+    var reachable: Bool { email.contains("@") || phone.filter(\.isNumber).count >= 7 }
+    var initials: String {
+        let words = (name.isEmpty ? email : name).split(whereSeparator: { $0 == " " || $0 == "." || $0 == "@" })
+        return words.prefix(2).compactMap(\.first).map { String($0).uppercased() }.joined()
     }
+    var label: String { name.isEmpty ? email : name }
+}
+
+/// One new meeting, as the ticket in the booking panel fills it in. Upshow spots a repeat of
+/// exactly the same booking, so sending it twice after a timeout never books anyone twice.
+struct UpshowBooking: Equatable {
+    var title = ""
+    var guests: [UpshowGuest] = []
+    /// The day, and whether a time has been chosen on it yet.
+    var start: Date?
+    var hasTime = false
+    var minutes = 30
+    /// nil until chosen; `.none` is "No reminders".
+    var sequence: String??
+    var place: UpshowPlace?
+    var placeDetail = ""
+
+    var end: Date? { start.map { $0.addingTimeInterval(Double(minutes) * 60) } }
+
+    /// Why it cannot be booked yet, in the words the button shows.
+    var blocker: String? {
+        if guests.isEmpty { return "Add who it's with" }
+        if !guests.contains(where: \.reachable) { return "Add an email or phone number" }
+        guard let start, hasTime else { return "Pick a time" }
+        if start <= Date() { return "That time has already passed. Pick a time from now on." }
+        return nil
+    }
+}
+
+/// What Upshow's language model read out of a sentence like "call Sam tomorrow 3pm".
+struct UpshowParsed {
+    var title: String?
+    var guests: [UpshowGuest] = []
+    var sequenceID: String?
+    var noReminders = false
+    var start: Date?
+    var hasTime = false
+    var minutes: Int?
+    var place: UpshowPlace?
+    var placeDetail: String?
 }
 
 enum CalendarProblem: LocalizedError {
@@ -103,6 +140,8 @@ protocol UpshowCalendarService {
     func busy(from: Date, to: Date) async throws -> [UpshowBusy]
     func calendars() async throws -> [UpshowCalendarSource]
     func meetingTypes() async throws -> [UpshowMeetingType]
+    /// Writes nothing. Names in the text go to Upshow's language model.
+    func parse(_ text: String) async throws -> UpshowParsed?
     func book(_ booking: UpshowBooking) async throws -> UpshowMeeting
     func reschedule(_ id: String, to start: Date, minutes: Int) async throws
     func cancel(_ id: String, sendSequence: Bool) async throws
@@ -131,126 +170,23 @@ enum UpshowAccess {
     }
 }
 
-// MARK: Upshow's API
+// MARK: Times
 
-/// The routes Upshow's own app uses, as they stand on main.
-struct UpshowAPI: UpshowCalendarService {
-    let connection: UpshowConnection
-    var live: Bool { true }
-
-    private static let parse: (String) -> Date? = { text in
-        let whole = ISO8601DateFormatter()
-        whole.formatOptions = [.withInternetDateTime]
-        let fine = ISO8601DateFormatter()
-        fine.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fine.date(from: text) ?? whole.date(from: text)
-    }
-
+enum UpshowTime {
+    /// UTC with milliseconds: the only form every Upshow tool accepts.
     static func stamp(_ date: Date) -> String {
         let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        f.timeZone = TimeZone(identifier: "UTC")
         return f.string(from: date)
     }
 
-    private func call(_ method: String, _ path: String, query: [String: String] = [:],
-                      body: [String: Any]? = nil) async throws -> Any {
-        var parts = URLComponents(url: connection.baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
-        if !query.isEmpty { parts.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
-        var request = URLRequest(url: parts.url!)
-        request.httpMethod = method
-        request.timeoutInterval = 20
-        request.setValue("Bearer \(connection.token)", forHTTPHeaderField: "Authorization")
-        if let body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        }
-        let data: Data, response: URLResponse
-        do { (data, response) = try await URLSession.shared.data(for: request) } catch { throw CalendarProblem.unreachable }
-        let reply = try? JSONSerialization.jsonObject(with: data)
-        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if code == 401 { throw CalendarProblem.signedOut }
-        guard (200..<300).contains(code) else {
-            throw CalendarProblem.refused((reply as? [String: Any])?["error"] as? String ?? "Upshow refused that (\(code)).")
-        }
-        return reply ?? NSNull()
-    }
-
-    private static func rows(_ reply: Any) -> [[String: Any]] {
-        (reply as? [String: Any])?["data"] as? [[String: Any]] ?? reply as? [[String: Any]] ?? []
-    }
-
-    static func meeting(_ row: [String: Any]) -> UpshowMeeting? {
-        guard let id = row["id"] as? String, let start = (row["start_time"] as? String).flatMap(parse) else { return nil }
-        let guest = row["prospect_name"] as? String ?? ""
-        return UpshowMeeting(id: id, title: row["meeting_title"] as? String ?? guest, guest: guest,
-                             guestEmail: row["prospect_email"] as? String ?? "",
-                             company: row["prospect_company"] as? String ?? "", start: start,
-                             end: (row["end_time"] as? String).flatMap(parse) ?? start.addingTimeInterval(1800),
-                             link: (row["meeting_link"] as? String).flatMap(URL.init(string:)))
-    }
-
-    func meetings(from: Date, to: Date) async throws -> [UpshowMeeting] {
-        let reply = try await call("GET", "api/meetings", query: [
-            "from": Self.stamp(from), "to": Self.stamp(to), "status": "confirmed", "limit": "200",
-        ])
-        return Self.rows(reply).compactMap(Self.meeting).sorted { $0.start < $1.start }
-    }
-
-    func busy(from: Date, to: Date) async throws -> [UpshowBusy] {
-        let reply = try await call("GET", "api/calendar/busy", query: ["from": Self.stamp(from), "to": Self.stamp(to)])
-        return Self.rows(reply).compactMap { row in
-            guard let start = (row["start_time"] as? String).flatMap(Self.parse),
-                  let end = (row["end_time"] as? String).flatMap(Self.parse) else { return nil }
-            return UpshowBusy(id: "\(row["provider_event_id"] ?? UUID().uuidString)", start: start, end: end,
-                              allDay: row["is_all_day"] as? Bool ?? false)
-        }
-    }
-
-    func calendars() async throws -> [UpshowCalendarSource] {
-        Self.rows(try await call("GET", "api/calendar/sources")).compactMap { row in
-            guard let id = row["id"] as? String, let name = row["name"] as? String else { return nil }
-            return UpshowCalendarSource(id: id, calendarID: row["calendarId"] as? String ?? "", name: name,
-                                        primary: row["isPrimary"] as? Bool ?? false)
-        }
-    }
-
-    func meetingTypes() async throws -> [UpshowMeetingType] {
-        Self.rows(try await call("GET", "api/meeting-types")).compactMap { row in
-            guard let id = row["id"] as? String else { return nil }
-            return UpshowMeetingType(id: id, name: row["name"] as? String ?? "Untitled")
-        }
-    }
-
-    func book(_ booking: UpshowBooking) async throws -> UpshowMeeting {
-        var place: [String: Any] = ["kind": booking.place.rawValue]
-        let detail = booking.placeDetail.trimmingCharacters(in: .whitespaces)
-        if !detail.isEmpty { place[booking.place == .zoom || booking.place == .custom ? "url" : "label"] = detail }
-        var body: [String: Any] = [
-            "client_booking_id": booking.clientID.uuidString.lowercased(),
-            "attendees": [["name": booking.guestName, "email": booking.guestEmail]],
-            "meeting_type_id": booking.meetingTypeID ?? NSNull(),
-            "start_time": Self.stamp(booking.start),
-            "duration_minutes": booking.minutes,
-            "timezone": booking.timeZone,
-            "where": place,
-            "notify_guests": booking.notifyGuests,
-        ]
-        if !booking.title.isEmpty { body["meeting_title"] = booking.title }
-        if !booking.note.isEmpty { body["note"] = booking.note }
-        let reply = try await call("POST", "api/meetings/manual", body: body)
-        guard let row = (reply as? [String: Any])?["data"] as? [String: Any], let made = Self.meeting(row) else {
-            throw CalendarProblem.refused("Upshow did not confirm the booking. Check the calendar before trying again.")
-        }
-        return made
-    }
-
-    func reschedule(_ id: String, to start: Date, minutes: Int) async throws {
-        _ = try await call("POST", "api/meetings/\(id)/reschedule",
-                           body: ["start_time": Self.stamp(start), "duration_minutes": minutes])
-    }
-
-    func cancel(_ id: String, sendSequence: Bool) async throws {
-        _ = try await call("POST", "api/meetings/\(id)/cancel", body: ["send_cancellation_sequence": sendSequence])
+    static func parse(_ text: String) -> Date? {
+        let fine = ISO8601DateFormatter()
+        fine.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let whole = ISO8601DateFormatter()
+        whole.formatOptions = [.withInternetDateTime]
+        return fine.date(from: text) ?? whole.date(from: text)
     }
 }
 
@@ -298,14 +234,17 @@ final class SampleCalendar: UpshowCalendarService {
     }
 
     func meetingTypes() async throws -> [UpshowMeetingType] {
-        [UpshowMeetingType(id: "sample-type", name: "Sample sequence")]
+        [UpshowMeetingType(id: "sample-type", name: "Sample sequence", isDefault: true)]
     }
 
+    func parse(_ text: String) async throws -> UpshowParsed? { nil }
+
     func book(_ booking: UpshowBooking) async throws -> UpshowMeeting {
-        let meeting = UpshowMeeting(id: booking.clientID.uuidString, title: booking.title.isEmpty ? "Meeting" : booking.title,
-                                    guest: booking.guestName, guestEmail: booking.guestEmail, company: "", start: booking.start,
-                                    end: booking.start.addingTimeInterval(Double(booking.minutes) * 60), link: nil)
-        if !made.contains(where: { $0.id == meeting.id }) { made.append(meeting) }
+        let start = booking.start ?? Date()
+        let meeting = UpshowMeeting(id: UUID().uuidString, title: booking.title.isEmpty ? "Meeting" : booking.title,
+                                    guest: booking.guests.first?.label ?? "", guestEmail: booking.guests.first?.email ?? "",
+                                    company: "", start: start, end: start.addingTimeInterval(Double(booking.minutes) * 60), link: nil)
+        made.append(meeting)
         return meeting
     }
 
@@ -349,53 +288,242 @@ final class CalendarStore {
 
     var days: [Date] { (0..<7).compactMap { Calendar.current.date(byAdding: .day, value: $0, to: week) } }
 
+    @MainActor
     func move(weeks: Int) {
         guard let next = Calendar.current.date(byAdding: .day, value: weeks * 7, to: week) else { return }
-        week = next
-        selectedDay = next
-        Task { await refresh() }
+        jump(to: next, day: next)
     }
 
+    @MainActor
     func goToToday() {
-        week = Self.monday(of: Date())
-        selectedDay = Calendar.current.startOfDay(for: Date())
+        jump(to: Self.monday(of: Date()), day: Calendar.current.startOfDay(for: Date()))
+    }
+
+    /// Opens the week holding a day, for a meeting just booked on another week.
+    @MainActor
+    func reveal(_ day: Date) {
+        let monday = Self.monday(of: day)
+        if monday == week { selectedDay = Calendar.current.startOfDay(for: day) } else { jump(to: monday, day: Calendar.current.startOfDay(for: day)) }
+    }
+
+    /// What each week looked like when it was last loaded, kept on disk, so the tab opens on the
+    /// real diary at once and only refreshes it behind the scenes.
+    private struct Saved: Codable {
+        var weeks: [Date: Week] = [:]
+        var types: [UpshowMeetingType] = []
+        var calendars: [UpshowCalendarSource] = []
+    }
+    private struct Week: Codable {
+        var meetings: [UpshowMeeting]
+        var busy: [UpshowBusy]
+    }
+    private var saved = Saved()
+    private static let file = URL(fileURLWithPath: "\(Shell.home)/.perch/calendar.json")
+    private var timer: Timer?
+
+    /// Called once at launch: puts last time's diary on screen and keeps it fresh every few
+    /// minutes, whether or not the tab is open.
+    @MainActor
+    func start() {
+        if UpshowAccess.service.live, let data = try? Data(contentsOf: Self.file),
+           let old = try? JSONDecoder().decode(Saved.self, from: data) {
+            saved = old
+            live = true
+            types = old.types
+            calendars = old.calendars
+            show(week)
+        }
         Task { await refresh() }
+        timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in
+            Task { @MainActor in await CalendarStore.shared.refresh() }
+        }
+        timer?.tolerance = 30
+    }
+
+    /// The saved copy of a week, if there is one.
+    @MainActor
+    private func show(_ monday: Date) {
+        guard let kept = saved.weeks[monday] else { return }
+        meetings = kept.meetings
+        busy = kept.busy
+        phase = .ready
+    }
+
+    private func store() {
+        // Only the weeks around now are worth keeping.
+        let near = Date().addingTimeInterval(-60 * 86400)...Date().addingTimeInterval(120 * 86400)
+        saved.weeks = saved.weeks.filter { near.contains($0.key) }
+        saved.types = types
+        saved.calendars = calendars
+        let copy = saved
+        DispatchQueue.global(qos: .utility).async {
+            try? FileManager.default.createDirectory(at: Self.file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? JSONEncoder().encode(copy).write(to: Self.file, options: .atomic)
+        }
     }
 
     @MainActor
     func refresh() async {
         let service = UpshowAccess.service
         // Just connected (or signed out): the sample's meetings, types and calendars go.
-        if live != service.live { meetings = []; busy = []; types = []; calendars = [] }
+        if live != service.live {
+            meetings = []; busy = []; types = []; calendars = []
+            saved = Saved()
+            if !service.live { try? FileManager.default.removeItem(at: Self.file) }
+        }
         live = service.live
         let from = week
         let to = Calendar.current.date(byAdding: .day, value: 7, to: from) ?? from
         // What is on screen stays while it updates. On failure the tab says so, and never shows
         // an empty week that would read as free time.
-        if meetings.isEmpty { phase = .loading }
+        if saved.weeks[from] != nil { show(from) } else { phase = .loading }
         do {
             async let meetingRows = service.meetings(from: from, to: to)
             async let busyRows = service.busy(from: from, to: to)
+            async let typeRows = try? service.meetingTypes()
+            async let calendarRows = try? service.calendars()
             let (loaded, blocks) = try await (meetingRows, busyRows)
+            if let fresh = await typeRows, !fresh.isEmpty { types = fresh }
+            if let fresh = await calendarRows, !fresh.isEmpty { calendars = fresh }
+            if service.live { saved.weeks[from] = Week(meetings: loaded, busy: blocks); store() }
             guard from == week else { return }
             meetings = loaded
             busy = blocks
             phase = .ready
         } catch {
             guard from == week else { return }
+            // A saved copy is still better than nothing, as long as the tab says it may be stale.
+            if saved.weeks[from] != nil { stale = error.localizedDescription; return }
             meetings = []
             busy = []
             phase = .failed(error.localizedDescription)
+            return
         }
-        if types.isEmpty { types = (try? await service.meetingTypes()) ?? [] }
-        if calendars.isEmpty { calendars = (try? await service.calendars()) ?? [] }
+        stale = nil
+    }
+
+    /// Set when the last refresh failed but a saved copy is on screen.
+    private(set) var stale: String?
+
+    /// Meetings in a week other than the one on screen show from the saved copy straight away.
+    @MainActor
+    private func jump(to monday: Date, day: Date) {
+        week = monday
+        selectedDay = day
+        if saved.weeks[monday] != nil { show(monday) } else { meetings = []; busy = []; phase = .loading }
+        Task { await refresh() }
+    }
+
+    /// A booking waiting out its undo window. Nothing reaches Upshow until it ends, so Undo
+    /// costs nothing; closing the tab does not stop it.
+    struct Staged: Equatable {
+        let booking: UpshowBooking
+        let sendAt: Date
+        var state = State.waiting
+        enum State: Equatable { case waiting, sending, booked(UpshowMeeting), awaitingApproval, failed(String) }
+    }
+    private(set) var staged: Staged?
+    /// A sentence to book from, handed in from elsewhere in Perch: the tab opens a booking and
+    /// reads it as if it had been typed.
+    var handedSentence: String?
+    private var sendTask: Task<Void, Never>?
+    static let undoSeconds = 7.0
+
+    @MainActor
+    func stage(_ booking: UpshowBooking) {
+        staged = Staged(booking: booking, sendAt: Date().addingTimeInterval(Self.undoSeconds))
+        sendTask?.cancel()
+        sendTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(Self.undoSeconds))
+            guard !Task.isCancelled else { return }
+            await self.sendStaged()
+        }
+    }
+
+    /// Undo inside the window: the booking never left the Mac.
+    @MainActor
+    func undoStaged() -> UpshowBooking? {
+        guard let staged, staged.state == .waiting else { return nil }
+        sendTask?.cancel()
+        self.staged = nil
+        return staged.booking
+    }
+
+    /// "Send now", or the window ran out.
+    @MainActor
+    func sendStaged() async {
+        guard var current = staged, current.state == .waiting else { return }
+        sendTask?.cancel()
+        current.state = .sending
+        staged = current
+        do {
+            let made = try await UpshowAccess.service.book(current.booking)
+            staged?.state = .booked(made)
+        } catch CalendarProblem.awaitingApproval {
+            staged?.state = .awaitingApproval
+        } catch {
+            staged?.state = .failed(error.localizedDescription)
+        }
+        await refresh()
+    }
+
+    /// After a failure: send exactly the same booking again. Upshow books a repeat only once.
+    @MainActor
+    func retryStaged() {
+        guard let staged, case .failed = staged.state else { return }
+        self.staged?.state = .waiting
+        Task { await sendStaged() }
+    }
+
+    /// After a failure: back to the ticket to change something.
+    @MainActor
+    func reopenStaged() -> UpshowBooking? {
+        guard let staged, case .failed = staged.state else { return nil }
+        self.staged = nil
+        return staged.booking
+    }
+
+    func sequenceName(_ id: String?) -> String? {
+        guard let id else { return nil }
+        return types.first { $0.id == id }?.name
+    }
+
+    /// What a booking would overlap, in the words the ticket shows, or nil when the slot is free.
+    func clash(for booking: UpshowBooking) -> String? {
+        guard booking.hasTime, let start = booking.start, let end = booking.end else { return nil }
+        var seen = Set<String>()
+        let all = (meetings + saved.weeks.values.flatMap(\.meetings)).filter { seen.insert($0.id).inserted }
+        if let hit = all.first(where: { $0.start < end && $0.end > start }) {
+            let who = hit.guest.isEmpty ? "" : " with \(hit.guest)"
+            return "Overlaps \(hit.title)\(who) at \(CalendarText.time(hit.start))"
+        }
+        let blocks = busy + saved.weeks.values.flatMap(\.busy)
+        if let hit = blocks.first(where: { !$0.allDay && $0.start < end && $0.end > start }) {
+            return "Overlaps something on your calendar at \(CalendarText.time(hit.start))"
+        }
+        return nil
     }
 
     @MainActor
-    func book(_ booking: UpshowBooking) async throws -> UpshowMeeting {
-        let made = try await UpshowAccess.service.book(booking)
-        await refresh()
-        return made
+    func clearStaged() {
+        if staged?.state == .waiting { return }
+        staged = nil
+    }
+
+    /// Asks Upshow's parser about a sentence. Never throws: a failure just leaves the local read.
+    @MainActor
+    func parse(_ text: String) async -> UpshowParsed? {
+        try? await UpshowAccess.service.parse(text)
+    }
+
+    /// Guests from meetings Perch has seen, for suggestions while typing a name.
+    var knownGuests: [UpshowGuest] {
+        var seen = Set<String>(), out: [UpshowGuest] = []
+        let all = saved.weeks.values.flatMap(\.meetings) + meetings
+        for m in all.sorted(by: { $0.start > $1.start }) where !m.guestEmail.isEmpty && seen.insert(m.guestEmail.lowercased()).inserted {
+            out.append(UpshowGuest(name: m.guest == m.guestEmail ? "" : m.guest, email: m.guestEmail, company: m.company))
+        }
+        return out
     }
 
     @MainActor

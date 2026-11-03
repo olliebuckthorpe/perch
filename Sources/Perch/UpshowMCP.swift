@@ -32,16 +32,37 @@ final class UpshowOAuth: UpshowSignIn {
     }
 
     /// A token that still works, refreshed first when it is about to run out.
+    ///
+    /// Upshow's refresh tokens work once each. The calendar asks for several things at the same
+    /// moment, so every caller waits on the one refresh in flight instead of each spending the
+    /// same refresh token (the second would be refused, and used to sign Perch out).
     func token(forceRefresh: Bool = false) async throws -> String {
         let expires = Double(Keychain.get(Self.service, "expires") ?? "") ?? 0
         if !forceRefresh, let access, Date().timeIntervalSince1970 < expires - 60 { return access }
+        lock.lock()
+        if let running = refreshing {
+            lock.unlock()
+            return try await running.value
+        }
+        let task = Task { try await self.refreshNow() }
+        refreshing = task
+        lock.unlock()
+        defer { lock.lock(); refreshing = nil; lock.unlock() }
+        return try await task.value
+    }
+
+    private let lock = NSLock()
+    private var refreshing: Task<String, Error>?
+
+    private func refreshNow() async throws -> String {
         guard let refresh, let client = Keychain.get(Self.service, "client") else { throw CalendarProblem.signedOut }
         let reply = try await Self.form("oauth/token", ["grant_type": "refresh_token", "refresh_token": refresh, "client_id": client,
                                                         "resource": Self.mcp.absoluteString])
         guard let fresh = reply["access_token"] as? String else {
-            // Revoked or expired: signed out, rather than failing quietly forever.
-            signOut()
-            throw CalendarProblem.signedOut
+            // Only a refusal of the grant itself means signed out. Anything else (Upshow busy, a
+            // bad gateway) keeps the keys, so the next try can still work.
+            if reply["error"] as? String == "invalid_grant" { signOut(); throw CalendarProblem.signedOut }
+            throw CalendarProblem.unreachable
         }
         save(reply)
         return fresh
@@ -213,30 +234,37 @@ private final class Callback {
 struct UpshowMCP: UpshowCalendarService {
     var live: Bool { true }
 
-    private static let parse: (String) -> Date? = { text in
-        let fine = ISO8601DateFormatter()
-        fine.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let whole = ISO8601DateFormatter()
-        whole.formatOptions = [.withInternetDateTime]
-        return fine.date(from: text) ?? whole.date(from: text)
-    }
+    private static let parse = UpshowTime.parse
+
+    /// The list as last fetched, so flicking between weeks does not page through it again.
+    nonisolated(unsafe) private static var recent: (at: Date, rows: [[String: Any]], complete: Date)?
 
     func meetings(from: Date, to: Date) async throws -> [UpshowMeeting] {
-        // Newest first, a page at a time, until the pages are older than the week asked for.
-        var found: [UpshowMeeting] = []
-        for page in 0..<5 {
-            let reply = try await tool("list_meetings", ["limit": 100, "offset": page * 100])
-            let rows = reply["meetings"] as? [[String: Any]] ?? []
-            let meetings = rows.compactMap(Self.meeting)
-            found += meetings.filter { $0.start < to && $0.end > from && !Self.cancelled(rows, $0.id) }
-            if rows.count < 100 || (meetings.map(\.start).min() ?? .distantPast) < from { break }
+        // Upshow lists newest first with no date filter, so pages are read until they reach back
+        // past the week asked for. A list fetched in the last minute that already reaches that
+        // far is reused.
+        var rows: [[String: Any]]
+        if let kept = Self.recent, Date().timeIntervalSince(kept.at) < 60, kept.complete <= from {
+            rows = kept.rows
+        } else {
+            rows = []
+            var oldest = Date.distantFuture
+            for page in 0..<5 {
+                let reply = try await tool("list_meetings", ["limit": 100, "offset": page * 100])
+                let batch = reply["meetings"] as? [[String: Any]] ?? []
+                rows += batch
+                oldest = batch.compactMap { ($0["start_time"] as? String).flatMap(Self.parse) }.min() ?? oldest
+                if batch.count < 100 { oldest = .distantPast; break }
+                if oldest < from { break }
+            }
+            Self.recent = (Date(), rows, oldest)
         }
-        return found.sorted { $0.start < $1.start }
-    }
-
-    private static func cancelled(_ rows: [[String: Any]], _ id: String) -> Bool {
-        let status = rows.first { $0["id"] as? String == id }?["status"] as? String ?? ""
-        return status == "cancelled" || status == "canceled"
+        return rows.compactMap { row in
+            guard let meeting = Self.meeting(row), meeting.start < to, meeting.end > from,
+                  !["cancelled", "canceled"].contains(row["status"] as? String ?? "") else { return nil }
+            return meeting
+        }
+        .sorted { $0.start < $1.start }
     }
 
     private static func meeting(_ row: [String: Any]) -> UpshowMeeting? {
@@ -246,11 +274,11 @@ struct UpshowMCP: UpshowCalendarService {
         return UpshowMeeting(id: id, title: row["meeting_title"] as? String ?? "Meeting",
                              guest: (row["prospect_name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? email,
                              guestEmail: email, company: row["prospect_company"] as? String ?? "",
-                             start: start, end: end, link: nil)
+                             start: start, end: end, link: nil, sequenceID: row["meeting_type_id"] as? String)
     }
 
     func busy(from: Date, to: Date) async throws -> [UpshowBusy] {
-        let reply = try await tool("get_calendar_info", ["action": "busy_times", "from": UpshowAPI.stamp(from), "to": UpshowAPI.stamp(to)])
+        let reply = try await tool("get_calendar_info", ["action": "busy_times", "from": UpshowTime.stamp(from), "to": UpshowTime.stamp(to)])
         return (reply["busy"] as? [[String: Any]] ?? []).enumerated().compactMap { i, row in
             guard let start = (row["start_time"] as? String).flatMap(Self.parse),
                   let end = (row["end_time"] as? String).flatMap(Self.parse) else { return nil }
@@ -271,31 +299,88 @@ struct UpshowMCP: UpshowCalendarService {
         let reply = try await tool("get_meeting_types", ["action": "list"])
         return (reply["meetingTypes"] as? [[String: Any]] ?? []).compactMap { row in
             guard let id = row["id"] as? String else { return nil }
-            return UpshowMeetingType(id: id, name: row["name"] as? String ?? "Sequence")
+            return UpshowMeetingType(id: id, name: row["name"] as? String ?? "Sequence", isDefault: row["is_default"] as? Bool ?? false,
+                                     defaultMinutes: (row["default_duration_minutes"] as? NSNumber)?.intValue)
         }
     }
 
+    func parse(_ text: String) async throws -> UpshowParsed? {
+        let now = Date()
+        let day = DateFormatter(), time = DateFormatter()
+        day.dateFormat = "yyyy-MM-dd"
+        time.dateFormat = "HH:mm"
+        for f in [day, time] { f.locale = Locale(identifier: "en_US_POSIX") }
+        let reply = try await tool("parse_meeting_text", [
+            "text": text, "today": day.string(from: now), "now": time.string(from: now),
+            "host_timezone": TimeZone.current.identifier,
+        ])
+        var out = UpshowParsed()
+        out.title = (reply["title"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        for person in reply["people"] as? [[String: Any]] ?? [] {
+            out.guests.append(UpshowGuest(name: person["name"] as? String ?? "", email: person["email"] as? String ?? "",
+                                          phone: person["phone"] as? String ?? ""))
+            if out.sequenceID == nil { out.sequenceID = person["sequence_id"] as? String }
+            if person["no_reminders"] as? Bool == true { out.noReminders = true }
+        }
+        if let date = reply["date"] as? String {
+            let zone = (reply["time_zone"] as? String).flatMap(TimeZone.init(identifier:)) ?? .current
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = zone
+            if let clock = reply["time"] as? String {
+                f.dateFormat = "yyyy-MM-dd HH:mm"
+                out.start = f.date(from: "\(date) \(clock)")
+                out.hasTime = out.start != nil
+            } else {
+                f.dateFormat = "yyyy-MM-dd"
+                out.start = f.date(from: date)
+            }
+        }
+        out.minutes = (reply["duration_minutes"] as? NSNumber)?.intValue
+        if let place = reply["where"] as? [String: Any], let kind = (place["kind"] as? String).flatMap(UpshowPlace.init(rawValue:)) {
+            out.place = kind
+            out.placeDetail = place["place"] as? String ?? place["url"] as? String
+        }
+        return out
+    }
+
     func book(_ booking: UpshowBooking) async throws -> UpshowMeeting {
+        guard let start = booking.start else { throw CalendarProblem.refused("Pick a time first.") }
+        let attendees: [[String: Any]] = booking.guests.map { guest in
+            var row: [String: Any] = ["name": guest.name.isEmpty ? guest.email : guest.name]
+            if !guest.email.isEmpty { row["email"] = guest.email }
+            if !guest.phone.isEmpty { row["phone"] = guest.phone }
+            return row
+        }
         var args: [String: Any] = [
-            "prospect_name": booking.guestName, "prospect_email": booking.guestEmail,
-            "meeting_type_id": booking.meetingTypeID ?? NSNull(), "start_time": UpshowAPI.stamp(booking.start),
-            "duration_minutes": booking.minutes, "timezone": booking.timeZone, "notify_guests": booking.notifyGuests,
+            "attendees": attendees, "meeting_type_id": (booking.sequence ?? nil) ?? NSNull(),
+            "start_time": UpshowTime.stamp(start), "duration_minutes": booking.minutes,
         ]
-        var place: [String: Any] = ["kind": booking.place.rawValue]
-        if !booking.placeDetail.isEmpty { place[booking.place == .custom ? "url" : "label"] = booking.placeDetail }
-        args["where"] = place
-        if !booking.title.isEmpty { args["meeting_title"] = booking.title }
-        if !booking.note.isEmpty { args["note"] = booking.note }
+        // As Upshow's own app sends it: Meet and Teams make their own link.
+        if let place = booking.place {
+            let detail = booking.placeDetail.trimmingCharacters(in: .whitespaces)
+            var row: [String: Any] = ["kind": place.rawValue]
+            switch place {
+            case .zoom, .custom: if !detail.isEmpty { row["url"] = detail }
+            case .phone: row["label"] = "Phone call"
+            case .inPerson: row["label"] = detail.isEmpty ? "In person" : detail
+            case .meet, .teams: break
+            }
+            args["where"] = row
+        }
+        let title = booking.title.trimmingCharacters(in: .whitespaces)
+        if !title.isEmpty { args["meeting_title"] = title }
         let reply = try await outbound("create_manual_meeting", args)
         let row = (reply["data"] as? [String: Any]) ?? (reply["meeting"] as? [String: Any]) ?? reply
         return Self.meeting(row) ?? UpshowMeeting(
-            id: row["id"] as? String ?? booking.clientID.uuidString, title: booking.title.isEmpty ? "Meeting" : booking.title,
-            guest: booking.guestName, guestEmail: booking.guestEmail, company: "", start: booking.start,
-            end: booking.start.addingTimeInterval(Double(booking.minutes) * 60), link: nil)
+            id: row["id"] as? String ?? UUID().uuidString, title: title.isEmpty ? "Meeting" : title,
+            guest: booking.guests.first?.label ?? "", guestEmail: booking.guests.first?.email ?? "", company: "",
+            start: start, end: start.addingTimeInterval(Double(booking.minutes) * 60), link: nil,
+            sequenceID: booking.sequence ?? nil)
     }
 
     func reschedule(_ id: String, to start: Date, minutes: Int) async throws {
-        _ = try await outbound("reschedule_meeting", ["meetingId": id, "start_time": UpshowAPI.stamp(start), "duration_minutes": minutes])
+        _ = try await outbound("reschedule_meeting", ["meetingId": id, "start_time": UpshowTime.stamp(start), "duration_minutes": minutes])
     }
 
     func cancel(_ id: String, sendSequence: Bool) async throws {
@@ -305,6 +390,8 @@ struct UpshowMCP: UpshowCalendarService {
     /// A call that messages a guest. The user has already reviewed it in Perch, so a confirmation
     /// Upshow asks for is given straight away; an approval in the Upshow app is said plainly.
     private func outbound(_ name: String, _ args: [String: Any]) async throws -> [String: Any] {
+        Self.recent = nil
+        defer { Self.recent = nil }
         let first = try await tool(name, args)
         switch first["status"] as? String {
         case "confirmation_required":

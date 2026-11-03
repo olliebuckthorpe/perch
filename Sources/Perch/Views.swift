@@ -4450,7 +4450,17 @@ private struct FileCard: View {
         if let saved, FileManager.default.fileExists(atPath: saved.path) { NSWorkspace.shared.open(saved); return }
         guard !fetching else { return }
         fetching = true
+        fetch(tries: 3)
+    }
+
+    /// A box that was asleep, or the bridge restarting with Perch, fails the first try; the
+    /// file is fine a few seconds later, so it is asked for again before saying it failed.
+    private func fetch(tries: Int) {
         GrokSource.shared.download(path, name: name) { url in
+            if url == nil, tries > 1 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { fetch(tries: tries - 1) }
+                return
+            }
             fetching = false
             guard let url else { failed = true; return }
             failed = false

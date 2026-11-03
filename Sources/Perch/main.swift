@@ -78,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CallWatch.shared.start()
         MeetingWatch.shared.start()
         WhatsAppSource.shared.start()
+        CalendarStore.shared.start()
         SidePanel.shared.restore()
         Clips.shared.start()
         // Control+Option+V: the clipboard. Control+Option+R: the pinned bot (Remmi).
@@ -171,6 +172,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "tasks":
             ui.expand()
             ui.showingTasks = true
+        case "calendar":
+            ui.expand()
+            ui.showingTasks = false
+            ui.showingCalendar = true
+            // calendar:<sentence> opens a booking read from it. Nothing is sent without Book meeting.
+            if parts.count > 1 { CalendarStore.shared.handedSentence = parts[1] }
         case "peek" where parts.count > 1:
             ui.expand()
             ui.peek(parts[1])
