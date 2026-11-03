@@ -597,6 +597,16 @@ final class WhatsAppSource {
     }
 
     /// Opens the WhatsApp app itself.
+    /// Opens this chat in WhatsApp itself. WhatsApp can only be sent to a person's chat by their
+    /// number; a group just opens the app.
+    func openChat(_ id: String) {
+        if id.hasSuffix("@s.whatsapp.net"), let number = id.split(separator: "@").first?.split(separator: ":").first,
+           let url = URL(string: "whatsapp://send?phone=\(number)") {
+            return NSWorkspace.shared.open(url) ? () : openApp()
+        }
+        openApp()
+    }
+
     func openApp() {
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "net.whatsapp.WhatsApp") {
             NSWorkspace.shared.openApplication(at: url, configuration: .init())

@@ -5582,6 +5582,11 @@ private struct SlackRailRow: View {
         .background(.white.opacity(selected ? 0.14 : hovered ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onTapGesture { ui.openSlack(target) }
+        // Double-click: straight to the chat in WhatsApp or Slack itself.
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            SlackSource.shared.open(target)
+            ui.collapse()
+        })
         .onHover { hovered = $0 }
         .contextMenu { SidebarActionButtons(chat: .conversation(target)) }
         .modifier(SidebarSwipeRow(chat: .conversation(target)))
@@ -7347,7 +7352,7 @@ private struct SlackFileView: View {
             // The preview first, swapped for the full picture once it has downloaded.
             ui.enlarge(image, name: file.name, side: false)
             download { data in
-                if let data, let full = NSImage(data: data), ui.enlarged?.name == file.name {
+                if let data, let full = NSImage(data: data), ImageViewer.shared.name == file.name {
                     ui.enlarge(full, name: file.name, side: false)
                 }
             }
@@ -8246,7 +8251,7 @@ private func saveToDownloads(path: String) {
     guard (try? FileManager.default.copyItem(at: source, to: target)) != nil else { return NSSound.beep() }
 }
 
-private func saveToDownloads(image: NSImage, name: String) {
+func saveToDownloads(image: NSImage, name: String) {
     guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
           let png = rep.representation(using: .png, properties: [:]) else { return NSSound.beep() }
     let base = (name as NSString).deletingPathExtension

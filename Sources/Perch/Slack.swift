@@ -338,7 +338,7 @@ final class SlackSource {
 
     /// Opens a conversation in the Slack app.
     func open(_ target: SlackTarget) {
-        if target.workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.openApp() }
+        if target.workspace == WhatsAppSource.workspace { return WhatsAppSource.shared.openChat(target.id) }
         links.values.first(where: { $0.name == target.workspace })?.open(target)
     }
 

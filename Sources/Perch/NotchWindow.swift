@@ -566,7 +566,8 @@ final class NotchUI {
     var enlarged: Enlarged?
 
     func enlarge(_ image: NSImage, name: String, side: Bool) {
-        withAnimation(.easeOut(duration: 0.18)) { enlarged = Enlarged(image: image, name: name, side: side) }
+        // Its own big window over Perch: the chat pane was too small to see a picture properly.
+        ImageViewer.shared.show(image, name: name)
     }
 
     /// Pictures pasted into a chat open in the side panel go to that chat.
