@@ -5992,6 +5992,13 @@ private struct SlackComposer: View {
                         }
                     }
                 }
+                // Earlier messages arriving above (a fuller reload) push the view up: if the user
+                // was at the end, or it only just opened, it goes back to where it was landed.
+                .onChange(of: lines?.first?.viewKey) { old, new in
+                    guard landed, old != nil, new != old else { return }
+                    if Date().timeIntervalSince(landedAt) < 4 { return land(proxy) }
+                    if following, let last = lines?.last?.viewKey { proxy.scrollTo(last, anchor: .bottom) }
+                }
                 .onChange(of: lines?.last?.viewKey) { _, id in
                     guard let id else { return }
                     // The first load lands on the first unread message; later ones follow the newest,
@@ -6216,7 +6223,9 @@ private struct SlackComposer: View {
             left -= 1
             if left == 0 { return line.viewKey }
         }
-        return lines.first { !$0.mine }?.viewKey
+        // More unread than is loaded (a busy group): the first of them is not here, and opening
+        // at the top of an old page reads as broken. Open at the newest instead.
+        return nil
     }
 
     /// Opens at the first unread message, with the ones before it just above; otherwise at
