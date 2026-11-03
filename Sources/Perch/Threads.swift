@@ -136,13 +136,15 @@ struct ChatMessage: Identifiable, Equatable {
     var form: GrokForm?
     /// A bot asking for an app to be linked so one of its triggers can fire (Slack, say), and why.
     var listener: (platform: String, reason: String)?
+    /// A bot asking for one of Grok Bot's connectors (DigitalOcean, say) to be signed in to.
+    var connector: (name: String, serverID: String)?
 
     static func == (a: ChatMessage, b: ChatMessage) -> Bool {
         a.id == b.id && a.fromUser == b.fromUser && a.text == b.text && a.reactions == b.reactions && a.email == b.email
             && a.choice == b.choice && a.approval == b.approval && a.fileName == b.fileName && a.filePath == b.filePath
             && a.peerName == b.peerName && a.peerOutbound == b.peerOutbound && a.secret?.label == b.secret?.label && a.secret?.provided == b.secret?.provided
             && a.boxImages == b.boxImages && a.handoff?.instruction == b.handoff?.instruction && a.handoff?.resolution == b.handoff?.resolution
-            && a.listener?.platform == b.listener?.platform && a.form == b.form
+            && a.listener?.platform == b.listener?.platform && a.form == b.form && a.connector?.serverID == b.connector?.serverID
     }
     /// Set when this is one agent talking to another, not part of the conversation with the user.
     /// A file the agent attached: its name, and where it lives on the agent's own computer.

@@ -3068,6 +3068,8 @@ struct ChatView: View {
                 FormCard(form: form, entry: message.id, agent: agent)
             } else if let listener = message.listener {
                 ListenerCard(platform: listener.platform, reason: listener.reason)
+            } else if let connector = message.connector {
+                ConnectorCard(name: connector.name, serverID: connector.serverID, entry: message.id, agent: agent)
             } else if let secret = message.secret {
                 SecretCard(label: secret.label, detail: secret.detail, entry: message.id, agent: agent, provided: secret.provided)
             } else if let approval = message.approval {
@@ -4149,6 +4151,78 @@ private struct ListenerCard: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 3) {
                     if connected != true { check() }
                 }
+            }
+        }
+    }
+}
+
+/// A bot asking for one of Grok Bot's connectors (DigitalOcean, say) to be signed in to. Connect
+/// opens that service's own sign-in page; the card turns green once Grok Bot reports it linked.
+private struct ConnectorCard: View {
+    let name: String
+    let serverID: String
+    let entry: String
+    let agent: Agent
+    @State private var connected: Bool?
+    @State private var opening = false
+    @State private var note: String?
+    @State private var watching = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 7) {
+                    Image(systemName: connected == true ? "checkmark.circle.fill" : "powerplug")
+                        .font(.system(size: 13)).foregroundStyle(connected == true ? Palette.green : .white.opacity(0.7))
+                    Text(connected == true ? "\(name) connected" : "Connect \(name)")
+                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white)
+                }
+                if connected != true {
+                    Text("\(agent.name) needs \(name) signed in to carry on.")
+                        .font(.system(size: 12)).foregroundStyle(.white.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        Button(opening ? "Opening…" : "Connect \(name)", action: connect)
+                            .buttonStyle(ChipButton(fill: .white)).disabled(opening)
+                        if let note {
+                            Text(note).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.5))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+            .padding(11)
+            .background(Color(white: 0.17), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .opacity(connected == true ? 0.75 : 1)
+            Spacer(minLength: 28)
+        }
+        .animation(.easeOut(duration: 0.2), value: connected)
+        .task(id: serverID) { check() }
+    }
+
+    private func check() {
+        GrokSource.shared.connectorReady(serverID) { connected = $0 }
+    }
+
+    private func connect() {
+        opening = true
+        note = nil
+        GrokSource.shared.connectConnector(serverID, card: entry, in: agent) { result in
+            opening = false
+            switch result {
+            case .opened:
+                note = "Approve it in your browser, this updates by itself"
+                guard !watching else { return }
+                watching = true
+                for i in 1...60 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 3) { if connected != true { check() } }
+                }
+            case .already:
+                connected = true
+            case .busy(let minutes):
+                note = "\(name) is turning sign-ins away for now. Try again in \(minutes == 1 ? "a minute" : "\(minutes) minutes")."
+            case .refused(let reason):
+                note = reason
+                NSSound.beep()
             }
         }
     }

@@ -507,6 +507,11 @@ final class GrokSource {
                         return ChatMessage(id: id, fromUser: false, text: "", reactions: reactions,
                                            listener: (platform, message["reason"] as? String ?? ""))
                     }
+                    if message["type"] as? String == "connector", let server = message["serverId"] as? String ?? (message["serverId"] as? NSNumber)?.stringValue {
+                        var m = ChatMessage(id: id, fromUser: false, text: "", reactions: reactions)
+                        m.connector = (message["connector"] as? String ?? "the connector", server)
+                        return m
+                    }
                     // Some other kind of card the notch cannot draw yet: say so, do not hide it.
                     guard let type = message["type"] as? String else { return nil }
                     return ChatMessage(id: id, fromUser: false, text: "_Sent a \(type.replacingOccurrences(of: "-", with: " ")). Open Grok Bot to see it._", reactions: reactions)
@@ -676,6 +681,44 @@ final class GrokSource {
             let list = (reply as? [String: Any])?["integrations"] as? [[String: Any]]
             let row = list?.first { $0["platform"] as? String == platform }
             DispatchQueue.main.async { done(row.map { $0["isConnected"] as? Bool == true }) }
+        }
+    }
+
+    /// Whether one of Grok Bot's connectors is signed in: nil when it cannot be told.
+    func connectorReady(_ serverID: String, done: @escaping (Bool?) -> Void) {
+        request("getMcpState") { reply in
+            let servers = (reply as? [String: Any])?["servers"] as? [[String: Any]] ?? []
+            let row = servers.first { "\($0["id"] ?? "")" == serverID }
+            DispatchQueue.main.async { done(row.map { ($0["status"] as? String).map { $0 != "needsAuth" && $0 != "error" } ?? false }) }
+        }
+    }
+
+    enum ConnectorStart { case opened, already, busy(minutes: Int), refused(String) }
+
+    /// What Grok Bot's own Connect button does: asks the host for the connector's sign-in page and
+    /// opens it in the browser. Nothing is linked until the user approves it there.
+    func connectConnector(_ serverID: String, card: String, in agent: Agent, done: @escaping (ConnectorStart) -> Void) {
+        request("authenticateMcpServer", ["serverId": serverID, "grokBotAgentId": agent.sessionID, "entryPoint": "chat_card",
+                                           "cardId": card, "cardAgentId": agent.sessionID]) { reply in
+            let r = reply as? [String: Any] ?? [:]
+            DispatchQueue.main.async {
+                switch r["status"] as? String {
+                case "started":
+                    guard let url = (r["authorizationUrl"] as? String).flatMap(URL.init(string:)) else {
+                        return done(.refused("Grok Bot gave no sign-in page."))
+                    }
+                    NSWorkspace.shared.open(url)
+                    done(.opened)
+                case "already-authenticated":
+                    done(.already)
+                default:
+                    let reason = r["reason"] as? [String: Any]
+                    if let wait = (reason?["signInBackoff"] as? [String: Any])?["retryAfterSeconds"] as? Int {
+                        return done(.busy(minutes: max(1, Int((Double(wait) / 60).rounded(.up)))))
+                    }
+                    done(.refused(reason?["technicalDetail"] as? String ?? "Grok Bot could not start the sign-in."))
+                }
+            }
         }
     }
 
