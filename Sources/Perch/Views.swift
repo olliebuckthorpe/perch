@@ -7666,7 +7666,24 @@ private struct SlackBanner: View {
     private var thread: [SlackLine] {
         guard alert.workspace == WhatsAppSource.workspace else { return [] }
         let store = SlackConversations.shared
-        return Array((store.lines[store.key(alert.workspace, alert.target.id)] ?? []).suffix(6))
+        return store.lines[store.key(alert.workspace, alert.target.id)] ?? []
+    }
+
+    @State private var previewHeight: CGFloat = 36
+    private static let chatHeight: CGFloat = 230
+    private var chatOpen: Bool { !thread.isEmpty && (hovered || focused || !sent.isEmpty) }
+
+    /// The notification as it arrives: any earlier lines in a burst, then the newest message.
+    @ViewBuilder private var preview: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if !alert.earlier.isEmpty {
+                ForEach(Array(alert.earlier.enumerated()), id: \.offset) { _, text in
+                    Text(WhatsAppText.styled(oneLine(text, max: 200))).font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.6)).lineLimit(hovered && thread.isEmpty ? 4 : 1)
+                }
+            }
+            NotificationMessagePreview(alert: alert, expanded: hovered && thread.isEmpty)
+        }
     }
 
     private var unlanded: [NotchUI.BannerMessage] {
@@ -7749,24 +7766,32 @@ private struct SlackBanner: View {
                         }
                         .buttonStyle(Press()).help(alert.workspace == WhatsAppSource.workspace ? "Open the chat" : "Open in Slack")
                     }
-                    // WhatsApp reads as the chat itself: the last few messages as bubbles, yours
-                    // included, and anything new from them arriving in place.
-                    // Arriving, it is just the notification. The chat opens out once the user
-                    // comes to it: pointing at it, typing in it, or having sent something.
-                    if !thread.isEmpty && (hovered || focused || !sent.isEmpty) {
-                        BannerThread(lines: Array(thread.suffix(5)), group: alert.channel.hasSuffix("@g.us"))
-                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    if thread.isEmpty {
+                        preview
                     } else {
-                    // A burst from the same person: the earlier ones first, then the newest.
-                    if !alert.earlier.isEmpty {
-                        VStack(alignment: .leading, spacing: 3) {
-                            ForEach(Array(alert.earlier.enumerated()), id: \.offset) { _, text in
-                                Text(WhatsAppText.styled(oneLine(text, max: 200))).font(.system(size: 12))
-                                    .foregroundStyle(.white.opacity(0.6)).lineLimit(hovered ? 4 : 1)
+                        // WhatsApp: it arrives as the notification, then grows into the chat itself
+                        // (bubbles, yours included, scrollable) when the user comes to it. One
+                        // block changes height while the two fade across, so it opens in one smooth
+                        // movement rather than swapping layouts.
+                        ZStack(alignment: .top) {
+                            preview
+                                .fixedSize(horizontal: false, vertical: true)
+                                .background(GeometryReader { g in
+                                    Color.clear.onAppear { previewHeight = g.size.height }
+                                        .onChange(of: g.size.height) { _, h in previewHeight = h }
+                                })
+                                .opacity(chatOpen ? 0 : 1)
+                            ScrollView(.vertical, showsIndicators: false) {
+                                BannerThread(lines: Array(thread.suffix(40)), group: alert.channel.hasSuffix("@g.us"))
+                                    .padding(.vertical, 2)
                             }
+                            .defaultScrollAnchor(.bottom)
+                            .frame(height: Self.chatHeight)
+                            .opacity(chatOpen ? 1 : 0)
+                            .allowsHitTesting(chatOpen)
                         }
-                    }
-                    NotificationMessagePreview(alert: alert, expanded: hovered)
+                        .frame(height: chatOpen ? Self.chatHeight : previewHeight, alignment: .top)
+                        .clipped()
                     }
                 }
             }
@@ -7820,8 +7845,9 @@ private struct SlackBanner: View {
         }
         .padding(10)
         .background(.white.opacity(hovered ? 0.1 : 0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .onHover { over in withAnimation(.spring(response: 0.36, dampingFraction: 0.9)) { hovered = over } }
+        .onHover { over in withAnimation(.smooth(duration: 0.34)) { hovered = over } }
         .animation(.easeOut(duration: 0.15), value: sent.count)
+        .animation(.smooth(duration: 0.34), value: focused)
     }
 
     /// Whatever came in meanwhile, so nothing is missed while replying. Click one to see it.
