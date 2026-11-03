@@ -140,6 +140,13 @@ final class SlackConversations {
                 waiting.append(local)
             }
         }
+        // Earlier messages already on screen stay: a reload of the newest page would otherwise
+        // drop the oldest ones and shift everything above the end.
+        if let first = fresh.first?.id, let at = old.firstIndex(where: { $0.id == first }) {
+            let have = Set(fresh.map(\.id))
+            fresh = old[..<at].filter { !$0.id.hasPrefix("local-") && !have.contains($0.id) } + fresh
+        }
+        guard fresh + waiting != old else { return }
         lines[key] = fresh + waiting
     }
 
@@ -173,7 +180,8 @@ final class SlackConversations {
             withTransaction(transaction) { lines[key]![first] = real }
             return
         }
-        lines[key]?.append(line)
+        // In with the same spring the chat follows on, so the two move together.
+        withAnimation(.sendSpring) { lines[key]?.append(line) }
     }
 
     /// A message the user just sent, shown at once while it goes.

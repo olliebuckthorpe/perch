@@ -5829,7 +5829,7 @@ private struct SlackComposer: View {
                                              react: { name, add in SlackSource.shared.react(target, ts: line.id, name: name, add: add) },
                                              target: target, highlighted: threadTS == line.id)
                                         .id(line.viewKey)
-                                        .transition(line.mine ? .sent : .opacity)
+                                        .transition(line.mine ? .sent : .arrived)
                                         .reportsTop(line.viewKey == lines.last?.viewKey)
                                 } else {
                                 // As in WhatsApp, a run of messages from one person shows their
@@ -5879,7 +5879,7 @@ private struct SlackComposer: View {
                                     }
                                 }
                                 .id(line.viewKey)
-                                .transition(line.mine ? .sent : .opacity)
+                                .transition(line.mine ? .sent : .arrived)
                                 .reportsTop(line.viewKey == lines.last?.viewKey)
                                 }
                             }
@@ -5916,7 +5916,7 @@ private struct SlackComposer: View {
                         withAnimation(.easeOut(duration: 0.2)) { newBelow = true; newCount += 1 }
                         return
                     }
-                    follow(proxy, to: id)
+                    glide(proxy, to: id) { following }
                 }
                 .onAppear {
                     if lines?.isEmpty == false { land(proxy) }
@@ -6998,6 +6998,13 @@ struct SendRise: ViewModifier {
     }
 }
 
+struct ArriveRise: ViewModifier {
+    let away: Bool
+    func body(content: Content) -> some View {
+        content.offset(y: away ? 10 : 0).opacity(away ? 0 : 1)
+    }
+}
+
 /// Takes a chat to its newest message and keeps it there while that message lands: straight
 /// away, once it has been laid out, and again after the reply box has shrunk back, all on the
 /// send spring. A single scroll at the moment of sending lands short, under the typing bar.
@@ -7007,6 +7014,17 @@ func follow(_ proxy: ScrollViewProxy, to id: String, anchor: UnitPoint = .bottom
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { withAnimation(.sendSpring) { proxy.scrollTo(id, anchor: anchor) } }
 }
 
+/// The same for a conversation (Slack or WhatsApp): one smooth glide, once the new message has
+/// been laid out, and a quiet correction only if a picture then pushed the end further down.
+/// Three springs started on top of each other were what made the chat jolt.
+func glide(_ proxy: ScrollViewProxy, to id: String, stillFollowing: @escaping () -> Bool) {
+    DispatchQueue.main.async { withAnimation(.sendSpring) { proxy.scrollTo(id, anchor: .bottom) } }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+        guard !stillFollowing() else { return }
+        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
+    }
+}
+
 extension Animation {
     /// One spring for a message going out: it carries the bubble up and the chat along with it,
     /// so the two move as one.
@@ -7014,6 +7032,11 @@ extension Animation {
 }
 
 extension AnyTransition {
+    /// Someone else's message coming in: a short rise from just below, fading up.
+    static var arrived: AnyTransition {
+        .asymmetric(insertion: .modifier(active: ArriveRise(away: true), identity: ArriveRise(away: false)), removal: .opacity)
+    }
+
     static var sent: AnyTransition {
         .asymmetric(insertion: .modifier(active: SendRise(away: true), identity: SendRise(away: false)), removal: .opacity)
     }
