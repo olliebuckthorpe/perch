@@ -149,6 +149,7 @@ private struct ExpandedBody: View {
             } else if ui.cardsOnly, let alert = ui.slackAlert {
                 // One per chat: nothing typed or sent for one person carries onto the next.
                 SlackBanner(alert: alert).id(NotchUI.bannerKey(alert))
+                    .transition(.opacity)
             } else if ui.cardsOnly, let id = ui.noticeID, let agent = store.find(id) {
                 NoticeView(agent: agent)
             } else if ui.showingShelf {
@@ -7708,7 +7709,7 @@ private struct SlackBanner: View {
 
     @State private var previewHeight: CGFloat = 36
     private static let chatHeight: CGFloat = 230
-    private var chatOpen: Bool { !thread.isEmpty && (hovered || focused || !sent.isEmpty) }
+    private var chatOpen: Bool { !thread.isEmpty && !ui.bannerFolding && (hovered || focused || !sent.isEmpty) }
 
     /// The notification as it arrives: any earlier lines in a burst, then the newest message.
     @ViewBuilder private var preview: some View {
@@ -7774,6 +7775,8 @@ private struct SlackBanner: View {
         .task(id: alert.target.id) {
             if alert.workspace == WhatsAppSource.workspace { SlackSource.shared.history(for: alert.target) }
         }
+        .onChange(of: chatOpen, initial: true) { _, open in ui.bannerChatOpen = open }
+        .onDisappear { ui.bannerChatOpen = false }
         // Replying here is reading: what arrives while the box has the keyboard is read too.
         .onChange(of: thread.last?.viewKey) {
             guard ui.controller?.panel.isKeyWindow == true, thread.last?.mine == false else { return }

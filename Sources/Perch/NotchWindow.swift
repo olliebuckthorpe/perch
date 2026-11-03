@@ -748,7 +748,27 @@ final class NotchUI {
         if let id = selectedID, isDrafting(id) { controller?.panel.makeKey() }
     }
 
+    /// A banner opened out into its chat folds back down first when the island closes, then the
+    /// island closes, so the two do not happen at once and jolt.
+    var bannerFolding = false
+    /// Whether the banner showing has its chat open, as the banner reports it.
+    @ObservationIgnored var bannerChatOpen = false
+
     func collapse() {
+        if expanded, cardsOnly, slackAlert != nil, bannerChatOpen, !bannerFolding {
+            withAnimation(.smooth(duration: 0.3)) { bannerFolding = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self, self.bannerFolding else { return }
+                // Back on it meanwhile: keep it open.
+                if self.hovering {
+                    withAnimation(.smooth(duration: 0.3)) { self.bannerFolding = false }
+                    return
+                }
+                self.collapse()
+            }
+            return
+        }
+        defer { bannerFolding = false }
         enlarged = nil
         toast = nil
         guard expanded else { return }
