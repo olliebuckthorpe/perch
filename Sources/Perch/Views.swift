@@ -7754,7 +7754,9 @@ private struct SlackBanner: View {
             }
         }
         for message in waiting {
-            var line = SlackLine(id: "banner-\(message.id)", sender: "", mine: true, text: message.text)
+            let label = message.files.isEmpty ? message.text
+                : [message.files.count == 1 ? "📷 Photo" : "📷 \(message.files.count) photos", message.text].filter { !$0.isEmpty }.joined(separator: " ")
+            var line = SlackLine(id: "banner-\(message.id)", sender: "", mine: true, text: label)
             line.time = Date()
             line.ticks = message.sent ? 1 : 0
             lines.append(line)
@@ -7911,6 +7913,27 @@ private struct SlackBanner: View {
             if let reacted {
                 Text("Reacted \(reacted)").font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.green)
             } else {
+                if !pictures.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(pictures) { picture in
+                                Image(nsImage: picture.thumbnail).resizable().aspectRatio(contentMode: .fill)
+                                    .frame(width: 44, height: 44)
+                                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                    .overlay(alignment: .topTrailing) {
+                                        Button { ui.bannerFiles[key]?.removeAll { $0.id == picture.id } } label: {
+                                            Image(systemName: "xmark.circle.fill").font(.system(size: 13))
+                                                .foregroundStyle(.white, .black.opacity(0.6))
+                                        }
+                                        .buttonStyle(Press(reach: 1)).offset(x: 4, y: -4)
+                                    }
+                            }
+                        }
+                        .padding(.top, 4).padding(.trailing, 4)
+                    }
+                    .padding(.bottom, 4)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
                 HStack(spacing: 6) {
                     TextField(failed ? "Did not send. Try again, or open Slack" : sent.isEmpty ? "Reply to \(alert.sender)" : "Send another",
                               text: reply)
@@ -7919,9 +7942,9 @@ private struct SlackBanner: View {
                     EmojiButton { reply.wrappedValue += $0 }
                     Button(action: send) {
                         Image(systemName: "arrow.up.circle.fill").font(.system(size: 15))
-                            .foregroundStyle(reply.wrappedValue.isEmpty ? .white.opacity(0.25) : .white)
+                            .foregroundStyle(reply.wrappedValue.isEmpty && pictures.isEmpty ? .white.opacity(0.25) : .white)
                     }
-                    .buttonStyle(Press()).disabled(reply.wrappedValue.isEmpty)
+                    .buttonStyle(Press()).disabled(reply.wrappedValue.isEmpty && pictures.isEmpty)
                 }
                 .padding(.horizontal, 9).padding(.vertical, 6)
                 .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -7975,13 +7998,18 @@ private struct SlackBanner: View {
 
     private func send() {
         let text = reply.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let files = pictures.map { URL(fileURLWithPath: $0.path) }
+        guard !text.isEmpty || !files.isEmpty else { return }
         reply.wrappedValue = ""
+        ui.bannerFiles[key] = nil
         Settings.sentFeel()
         ui.touch(alert.target)
-        ui.sendFromBanner(alert, text: text)
+        ui.sendFromBanner(alert, text: text, files: files)
         focused = true
     }
+
+    /// Pictures pasted into the reply box with Cmd+V.
+    private var pictures: [Attachment] { ui.bannerFiles[key] ?? [] }
 
     /// Why the reply did not go, in Slack's words where it gave any.
     private var failure: String {

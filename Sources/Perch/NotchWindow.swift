@@ -595,6 +595,14 @@ final class NotchUI {
     func touch(_ t: SlackTarget) { conversationTouched["\(t.workspace):\(t.id)"] = Date() }
 
     func pasteImages() -> Bool {
+        // A banner being replied to: the picture waits in its reply box. (Not in a thread banner:
+        // a file would land in the channel instead of the thread.)
+        if expanded, cardsOnly, let alert = slackAlert, alert.threadParent == nil {
+            let images = Attachment.fromPasteboard()
+            guard !images.isEmpty else { return false }
+            bannerFiles[Self.bannerKey(alert), default: []].append(contentsOf: images)
+            return true
+        }
         if expanded, !cardsOnly, !showingClips, !showingShelf, !showingTasks && !showingCalendar, let t = slackTarget { return pasteImages(into: t) }
         // The chat on screen is the one being written to. (Going by which box last had the
         // cursor could point at a chat that is no longer showing, and the picture vanished.)
@@ -957,8 +965,11 @@ final class NotchUI {
     struct BannerMessage: Identifiable {
         let id = UUID()
         let text: String
+        var files: [URL] = []
         var sent = false
     }
+    /// Pictures pasted into a banner's reply box, by its draft key, waiting to go with the reply.
+    var bannerFiles: [String: [Attachment]] = [:]
     /// Sent from each banner, by its draft key. Kept per chat, so replying to one person never
     /// shows on the next person's banner.
     private(set) var bannerSent: [String: [BannerMessage]] = [:]
@@ -975,12 +986,12 @@ final class NotchUI {
 
     /// Sends a reply from a banner. The box clears at once for the next message; replies go one
     /// at a time so they arrive in the order they were written.
-    func sendFromBanner(_ alert: SlackAlert, text: String) {
+    func sendFromBanner(_ alert: SlackAlert, text: String, files: [URL] = []) {
         let key = Self.bannerKey(alert)
         bannerFailed.remove(key)
         settleWork?.cancel()
         collapseWork?.cancel()
-        bannerSent[key, default: []].append(BannerMessage(text: text))
+        bannerSent[key, default: []].append(BannerMessage(text: text, files: files))
         pumpBanner(alert, key)
     }
 
@@ -990,14 +1001,15 @@ final class NotchUI {
         bannerSending.insert(key)
         // A send that fails is tried once more before saying so: most failures are a blip.
         func attempt(_ tries: Int) {
-            SlackSource.shared.reply(to: alert, text: next.text) { [self] ok in
+            let done: (Bool) -> Void = { [self] ok in
                 DispatchQueue.main.async { [self] in
                     if !ok && tries > 0 {
                         return DispatchQueue.main.asyncAfter(deadline: .now() + 1) { attempt(tries - 1) }
                     }
                     bannerSending.remove(key)
                     if let i = bannerSent[key]?.firstIndex(where: { $0.id == next.id }) {
-                        if ok { bannerSent[key]![i].sent = true } else { bannerSent[key]!.remove(at: i) }
+                        // A picture shows in the chat once it lands, as the real message.
+                        if ok && next.files.isEmpty { bannerSent[key]![i].sent = true } else { bannerSent[key]!.remove(at: i) }
                     }
                     if ok {
                         // Answered, so it no longer waits in the sidebar, nor shows unread in Slack or WhatsApp.
@@ -1007,9 +1019,17 @@ final class NotchUI {
                         bannerFailed.insert(key)
                         let draft = drafts[key] ?? ""
                         drafts[key] = draft.isEmpty ? next.text : "\(next.text) \(draft)"
+                        // The pictures go back in the box too, so nothing is lost.
+                        let back = next.files.map { Attachment(path: $0.path, name: $0.lastPathComponent, thumbnail: NSImage(contentsOf: $0) ?? NSImage()) }
+                        if !back.isEmpty { bannerFiles[key, default: []].insert(contentsOf: back, at: 0) }
                     }
                     pumpBanner(alert, key)
                 }
+            }
+            if next.files.isEmpty {
+                SlackSource.shared.reply(to: alert, text: next.text, done: done)
+            } else {
+                SlackSource.shared.send(to: alert.target, text: next.text, files: next.files, done: done)
             }
         }
         attempt(1)
