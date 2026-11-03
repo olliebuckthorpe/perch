@@ -7154,8 +7154,9 @@ private struct BannerThread: View {
                             Text(line.sender).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Palette.colors[3])
                         }
                         HStack(alignment: .lastTextBaseline, spacing: 6) {
+                            // In full: a long message cut to a few lines lost its ending.
                             Text(WhatsAppText.styled(words(line))).font(.system(size: 12)).foregroundStyle(.white.opacity(0.95))
-                                .lineLimit(4).fixedSize(horizontal: false, vertical: true)
+                                .fixedSize(horizontal: false, vertical: true)
                             HStack(spacing: 3) {
                                 if let time = line.time {
                                     Text(time.formatted(.dateTime.hour().minute())).font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
@@ -7754,6 +7755,7 @@ private struct SlackBanner: View {
                     // comes to it: pointing at it, typing in it, or having sent something.
                     if !thread.isEmpty && (hovered || focused || !sent.isEmpty) {
                         BannerThread(lines: Array(thread.suffix(5)), group: alert.channel.hasSuffix("@g.us"))
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                     } else {
                     // A burst from the same person: the earlier ones first, then the newest.
                     if !alert.earlier.isEmpty {
@@ -7818,7 +7820,7 @@ private struct SlackBanner: View {
         }
         .padding(10)
         .background(.white.opacity(hovered ? 0.1 : 0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .onHover { hovered = $0 }
+        .onHover { over in withAnimation(.spring(response: 0.36, dampingFraction: 0.9)) { hovered = over } }
         .animation(.easeOut(duration: 0.15), value: sent.count)
     }
 
