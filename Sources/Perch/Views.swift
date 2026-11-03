@@ -7691,6 +7691,40 @@ private struct SlackBanner: View {
         return sent.filter { !$0.sent || !mine.contains($0.text) }
     }
 
+    /// The chat as bubbles, with what the user has just sent already in it as their own bubble
+    /// (a clock until it goes). The real message takes over the same bubble when it lands, so
+    /// nothing changes style or jumps.
+    private var bubbles: [SlackLine] {
+        var lines = Array(thread.suffix(40))
+        var waiting = sent
+        // Newest first, so the copy that landed is matched to the message just sent.
+        for i in lines.indices.reversed() where lines[i].mine {
+            let text = lines[i].text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let j = waiting.lastIndex(where: { $0.sent && $0.text == text }) {
+                lines[i].viewID = "banner-\(waiting[j].id)"
+                waiting.remove(at: j)
+            }
+        }
+        for message in waiting {
+            var line = SlackLine(id: "banner-\(message.id)", sender: "", mine: true, text: message.text)
+            line.time = Date()
+            line.ticks = message.sent ? 1 : 0
+            lines.append(line)
+        }
+        return lines
+    }
+
+    /// Hover in and out with a short pause, so brushing the edge does not flick the chat open
+    /// and shut.
+    @State private var hoverWork: DispatchWorkItem?
+    private func hover(_ over: Bool) {
+        hoverWork?.cancel()
+        guard over != hovered else { return }
+        let work = DispatchWorkItem { withAnimation(.smooth(duration: 0.34)) { hovered = over } }
+        hoverWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + (over ? 0.15 : 0.45), execute: work)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             card
@@ -7781,11 +7815,18 @@ private struct SlackBanner: View {
                                         .onChange(of: g.size.height) { _, h in previewHeight = h }
                                 })
                                 .opacity(chatOpen ? 0 : 1)
-                            ScrollView(.vertical, showsIndicators: false) {
-                                BannerThread(lines: Array(thread.suffix(40)), group: alert.channel.hasSuffix("@g.us"))
-                                    .padding(.vertical, 2)
+                            ScrollViewReader { reader in
+                                ScrollView(.vertical, showsIndicators: false) {
+                                    BannerThread(lines: bubbles, group: alert.channel.hasSuffix("@g.us"))
+                                        .padding(.vertical, 2)
+                                    Color.clear.frame(height: 1).id("end")
+                                }
+                                .defaultScrollAnchor(.bottom)
+                                // A new message slides the chat up smoothly rather than jumping.
+                                .onChange(of: bubbles.last?.viewKey) {
+                                    withAnimation(.smooth(duration: 0.3)) { reader.scrollTo("end", anchor: .bottom) }
+                                }
                             }
-                            .defaultScrollAnchor(.bottom)
                             .frame(height: Self.chatHeight)
                             .opacity(chatOpen ? 1 : 0)
                             .allowsHitTesting(chatOpen)
@@ -7801,7 +7842,7 @@ private struct SlackBanner: View {
             // Reply straight from here; it posts as you, in the same conversation or thread.
             // What has gone so far, with the box still open underneath for another message. In a
             // WhatsApp chat shown as bubbles, only what has not yet landed in it.
-            if !unlanded.isEmpty {
+            if thread.isEmpty && !unlanded.isEmpty {
                 VStack(alignment: .trailing, spacing: 3) {
                     ForEach(unlanded) { message in
                         HStack(alignment: .firstTextBaseline, spacing: 5) {
@@ -7845,8 +7886,8 @@ private struct SlackBanner: View {
         }
         .padding(10)
         .background(.white.opacity(hovered ? 0.1 : 0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .onHover { over in withAnimation(.smooth(duration: 0.34)) { hovered = over } }
-        .animation(.easeOut(duration: 0.15), value: sent.count)
+        .onHover(perform: hover)
+        .animation(.easeOut(duration: 0.15), value: thread.isEmpty ? sent.count : 0)
         .animation(.smooth(duration: 0.34), value: focused)
     }
 
