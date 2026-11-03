@@ -7750,8 +7750,10 @@ private struct SlackBanner: View {
                     }
                     // WhatsApp reads as the chat itself: the last few messages as bubbles, yours
                     // included, and anything new from them arriving in place.
-                    if !thread.isEmpty {
-                        BannerThread(lines: thread, group: alert.channel.hasSuffix("@g.us"))
+                    // Arriving, it is just the notification. The chat opens out once the user
+                    // comes to it: pointing at it, typing in it, or having sent something.
+                    if !thread.isEmpty && (hovered || focused || !sent.isEmpty) {
+                        BannerThread(lines: Array(thread.suffix(5)), group: alert.channel.hasSuffix("@g.us"))
                     } else {
                     // A burst from the same person: the earlier ones first, then the newest.
                     if !alert.earlier.isEmpty {
