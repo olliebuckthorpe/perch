@@ -1,4 +1,5 @@
 import AppKit
+import Network
 import ImageIO
 import SwiftUI
 import Observation
@@ -368,6 +369,36 @@ final class SlackSource {
             self?.links.values.forEach { $0.warmAll() }
         }
         rewarm.tolerance = 120
+        // Slack never says when something is read in the Slack app, so ask about the
+        // conversations still unread here.
+        let reads = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.syncReads() }
+        reads.tolerance = 10
+        // The network coming back: reconnect at once rather than waiting out the backoff.
+        path.pathUpdateHandler = { [weak self] update in
+            guard update.status == .satisfied else { return }
+            DispatchQueue.main.async { self?.links.values.forEach { $0.reconnectIfDown() } }
+        }
+        path.start(queue: .global(qos: .utility))
+    }
+
+    private let path = NWPathMonitor()
+
+    /// Clears conversations read in Slack itself: Slack's read marker is at or past the newest
+    /// message Perch counted as unread.
+    private func syncReads() {
+        let ui = NotchUI.shared
+        for (key, count) in ui.slackUnread where count > 0 {
+            guard let link = links.values.first(where: { key.hasPrefix("\($0.name):") }),
+                  let newest = ui.slackUnreadNewest[key] else { continue }
+            let id = String(key.dropFirst(link.name.count + 1))
+            let target = ui.slackRecent.first { $0.workspace == link.name && $0.id == id }
+                ?? SlackTarget(workspace: link.name, id: id, name: "", channel: id.hasPrefix("C") || id.hasPrefix("G"))
+            link.lastRead(target) { read in
+                guard let read, read >= newest - 0.000001, (ui.slackUnread[key] ?? 0) > 0 else { return }
+                ui.slackUnread[key] = nil
+                ui.slackUnreadNewest[key] = nil
+            }
+        }
     }
 
     /// Where the keys live: one Keychain item per workspace and kind ("expox.app", "expox.user").
@@ -978,7 +1009,8 @@ private final class Workspace {
         }
     }
 
-    private func api(_ method: String, token: String, _ params: [String: String] = [:], done: @escaping ([String: Any]?) -> Void) {
+    private func api(_ method: String, token: String, _ params: [String: String] = [:], timeout: TimeInterval = 60,
+                     done: @escaping ([String: Any]?) -> Void) {
         var parts = URLComponents(string: "https://slack.com/api/\(method)")!
         if !params.isEmpty {
             parts.queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) }
@@ -988,6 +1020,7 @@ private final class Workspace {
         }
         var req = URLRequest(url: parts.url!)
         req.httpMethod = "POST"
+        req.timeoutInterval = timeout
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         URLSession.shared.dataTask(with: req) { data, _, _ in
             let o = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
@@ -1025,13 +1058,20 @@ private final class Workspace {
             }
             return
         }
-        api("apps.connections.open", token: appToken) { [weak self] o in
-            guard let self, let url = (o?["url"] as? String).flatMap(URL.init(string:)) else {
-                SlackSource.status[self?.name ?? "?"] = "could not open a connection"
-                self?.later()
+        // One connection at a time. Two open at once and Slack splits the messages between them,
+        // and the ones sent to a connection Perch has stopped reading arrive minutes late.
+        guard !connecting else { return }
+        connecting = true
+        api("apps.connections.open", token: appToken, timeout: 15) { [weak self] o in
+            guard let self else { return }
+            self.connecting = false
+            guard !self.stopped, let url = (o?["url"] as? String).flatMap(URL.init(string:)) else {
+                SlackSource.status[self.name] = "could not open a connection"
+                self.later()
                 return
             }
             SlackSource.status[self.name] = "connected"
+            self.socket?.cancel()
             let socket = URLSession.shared.webSocketTask(with: url)
             self.socket = socket
             self.retry = 2
@@ -1100,10 +1140,27 @@ private final class Workspace {
         connect()
     }
 
+    private var connecting = false
+    /// A retry waiting to run, so several failures do not each schedule their own.
+    private var pending = false
+
+    /// Reconnects when there is no live connection (the network just came back).
+    func reconnectIfDown() {
+        guard socket == nil, !connecting, !stopped else { return }
+        retry = 2
+        connect()
+    }
+
     private func later() {
+        guard !pending else { return }
+        pending = true
         let wait = retry
-        retry = min(retry * 2, 300)
-        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in self?.connect() }
+        // Capped low: Slack holds messages while Perch is away, so a long wait is a late message.
+        retry = min(retry * 2, 30)
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            self?.pending = false
+            self?.connect()
+        }
     }
 
     private func receive(_ socket: URLSessionWebSocketTask) {
@@ -1136,6 +1193,12 @@ private final class Workspace {
             return
         }
         if let type = o["type"] as? String { SlackSource.status[name + " last"] = type }
+        // More than one means another copy is connected with the same key and is taking a share
+        // of the messages.
+        if o["type"] as? String == "hello", let count = o["num_connections"] as? Int {
+            SlackSource.status[name + " connections"] = "\(count)"
+            if count > 1 { Self.logError("\(name) hello: \(count) connections open") }
+        }
         guard o["type"] as? String == "events_api",
               let event = (o["payload"] as? [String: Any])?["event"] as? [String: Any] else { return }
         if event["type"] as? String == "reaction_added" { return reacted(event, add: true) }

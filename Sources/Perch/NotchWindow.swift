@@ -123,6 +123,13 @@ final class NotchUI {
         slackRecent.removeAll { $0.id == t.id && $0.workspace == t.workspace }
         slackRecent.insert(t, at: 0)
         slackUnread[key, default: 0] += 1
+        if let ts = Double(alert.ts), ts > (slackUnreadNewest[key] ?? 0) { slackUnreadNewest[key] = ts }
+    }
+
+    /// The newest unread message in each conversation, as Slack's own time, so reading it in
+    /// Slack itself can clear it here too.
+    var slackUnreadNewest: [String: Double] = (UserDefaults.standard.dictionary(forKey: "slackUnreadNewest") as? [String: Double]) ?? [:] {
+        didSet { UserDefaults.standard.set(slackUnreadNewest, forKey: "slackUnreadNewest") }
     }
 
     /// Reading a conversation somewhere other than the notch (a floating window).
