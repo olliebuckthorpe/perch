@@ -408,7 +408,7 @@ final class SlackSource {
     /// the Keychain. A file still holding keys (the old way) has them moved there and removed.
     private func scan() {
         let files = (try? FileManager.default.contentsOfDirectory(atPath: dir))?.filter { $0.hasSuffix(".json") } ?? []
-        for file in files where links[file] == nil {
+        for file in files where links[file] == nil && !reading.contains(file) {
             let path = "\(dir)/\(file)"
             guard let data = FileManager.default.contents(atPath: path),
                   var o = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
@@ -423,17 +423,31 @@ final class SlackSource {
                 o["user"] = nil
                 Self.writeSettings(o, to: path)
             }
-            guard let app = Keychain.get(Self.keychainService, "\(name).app"),
-                  let user = Keychain.get(Self.keychainService, "\(name).user") else {
-                SlackSource.status[name] = "no keys in the Keychain"
-                continue
+            // Off the main thread: the Keychain can stop to ask for the Mac password, and the
+            // whole notch froze behind that prompt.
+            reading.insert(file)
+            let priority = o["priority"] as? Int ?? 9, apps = (o["alerts"] as? String ?? "apps") == "apps"
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let app = Keychain.get(Self.keychainService, "\(name).app")
+                let user = Keychain.get(Self.keychainService, "\(name).user")
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.reading.remove(file)
+                    guard self.links[file] == nil else { return }
+                    guard let app, let user else {
+                        SlackSource.status[name] = "no keys in the Keychain"
+                        return
+                    }
+                    let w = Workspace(name: name, priority: priority, apps: apps, appToken: app, userToken: user)
+                    self.links[file] = w
+                    w.connect()
+                }
             }
-            let w = Workspace(name: name, priority: o["priority"] as? Int ?? 9,
-                              apps: (o["alerts"] as? String ?? "apps") == "apps", appToken: app, userToken: user)
-            links[file] = w
-            w.connect()
         }
     }
+
+    /// Workspaces whose keys are being read from the Keychain.
+    private var reading = Set<String>()
 
     /// A workspace's keys handed over by `slack/add-workspace.sh` through Perch's own socket: into
     /// the Keychain, its settings into its file, and connected at once (replacing an old link).
