@@ -54,13 +54,36 @@ struct CalendarView: View {
         .buttonStyle(Press())
     }
 
+    @State private var connecting = false
+    @State private var connectProblem: String?
+
+    /// Until Upshow is connected: sample meetings, and the button that connects it.
     private var sampleBanner: some View {
-        Label("Sample diary. Sign-in to Upshow is not connected yet, so nothing here is real and nothing is sent.",
-              systemImage: "info.circle")
-            .font(.system(size: 11)).foregroundStyle(Palette.colors[4])
-            .padding(.horizontal, 10).padding(.vertical, 5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.colors[4].opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        HStack(spacing: 8) {
+            Label(connectProblem ?? (connecting ? "Finish signing in to Upshow in your browser…"
+                                     : "Sample diary: nothing here is real and nothing is sent."),
+                  systemImage: connectProblem == nil ? "info.circle" : "exclamationmark.triangle")
+                .font(.system(size: 11)).foregroundStyle(connectProblem == nil ? Palette.colors[4] : Palette.red)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(connecting ? "Waiting…" : "Connect Upshow") { connect() }
+                .buttonStyle(CalendarButton(strong: true)).disabled(connecting)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(Palette.colors[4].opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func connect() {
+        connecting = true
+        connectProblem = nil
+        Task { @MainActor in
+            do {
+                try await UpshowAccess.signIn?.signIn()
+                await CalendarStore.shared.refresh()
+            } catch {
+                connectProblem = error.localizedDescription
+            }
+            connecting = false
+        }
     }
 
     @ViewBuilder private var side: some View {

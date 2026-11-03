@@ -7873,6 +7873,9 @@ private struct SlackBanner: View {
                         }
                         .frame(height: chatOpen ? Self.chatHeight : previewHeight, alignment: .top)
                         .clipped()
+                        // Open, the chat takes the banner's full width, so their messages start
+                        // at the left edge as in WhatsApp rather than indented past the picture.
+                        .padding(.leading, chatOpen ? -40 : 0)
                     }
                 }
             }

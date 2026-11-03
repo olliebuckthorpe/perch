@@ -83,12 +83,15 @@ enum CalendarProblem: LocalizedError {
     case signedOut
     case refused(String)
     case unreachable
+    /// Sent to Upshow, where it waits for someone to approve it in the app.
+    case awaitingApproval
 
     var errorDescription: String? {
         switch self {
         case .signedOut: return "Perch is not signed in to Upshow."
         case .refused(let reason): return reason
         case .unreachable: return "Could not reach Upshow."
+        case .awaitingApproval: return "Sent to Upshow. It happens once you approve it in the Upshow app."
         }
     }
 }
@@ -120,10 +123,10 @@ protocol UpshowSignIn: AnyObject {
 
 enum UpshowAccess {
     /// The one place sign-in plugs in.
-    nonisolated(unsafe) static var signIn: UpshowSignIn?
+    nonisolated(unsafe) static var signIn: UpshowSignIn? = UpshowOAuth.shared
 
     static var service: UpshowCalendarService {
-        if let connection = signIn?.connection { return UpshowAPI(connection: connection) }
+        if signIn?.connection != nil { return UpshowMCP() }
         return SampleCalendar.shared
     }
 }
@@ -362,6 +365,8 @@ final class CalendarStore {
     @MainActor
     func refresh() async {
         let service = UpshowAccess.service
+        // Just connected (or signed out): the sample's meetings, types and calendars go.
+        if live != service.live { meetings = []; busy = []; types = []; calendars = [] }
         live = service.live
         let from = week
         let to = Calendar.current.date(byAdding: .day, value: 7, to: from) ?? from
