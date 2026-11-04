@@ -231,11 +231,13 @@ final class WhatsAppSource {
             guard let chat = o["chat"] as? String, let ids = o["ids"] as? [String], let tick = o["status"] as? Int else { break }
             let store = SlackConversations.shared
             let key = store.key(Self.workspace, chat)
+            // Only a tick that moves redraws anything: a busy group sends these constantly.
             if var lines = store.lines[key] {
-                for i in lines.indices where ids.contains(lines[i].id) { lines[i].ticks = max(lines[i].ticks ?? 1, tick) }
-                store.lines[key] = lines
+                var moved = false
+                for i in lines.indices where ids.contains(lines[i].id) && (lines[i].ticks ?? 1) < tick { lines[i].ticks = tick; moved = true }
+                if moved { store.lines[key] = lines }
             }
-            if let i = chats.firstIndex(where: { $0.id == chat }), chats[i].lastMine { chats[i].lastTicks = max(chats[i].lastTicks, tick) }
+            if let i = chats.firstIndex(where: { $0.id == chat }), chats[i].lastMine, chats[i].lastTicks < tick { chats[i].lastTicks = tick }
         case "error":
             if case .ready = state { break }
             state = .failed(o["message"] as? String ?? "WhatsApp stopped")

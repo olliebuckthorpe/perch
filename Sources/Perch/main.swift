@@ -311,6 +311,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? "cardsOnly=\(ui.cardsOnly) expanded=\(ui.expanded) target=\(ui.slackTarget?.label ?? "nil") calendar=\(ui.showingCalendar) links=\(ui.pendingLinks.count) justOpened=\(ui.justOpened != nil) clips=\(ui.showingClips)/\(ui.clipsInline) shelf=\(ui.showingShelf)"
                     .write(toFile: "/tmp/perch-testbanner.txt", atomically: true, encoding: .utf8)
             }
+        case "waopen" where parts.count > 1:
+            // waopen:<n>|<file>: opens the nth most recent WhatsApp chat in the notch, as a click
+            // in the sidebar would, and writes the recent chats' names. Nothing is sent or read.
+            let bits = parts[1].split(separator: "|", maxSplits: 1).map(String.init)
+            let chats = WhatsAppSource.shared.chats.sorted { $0.ts > $1.ts }
+            if bits.count > 1 {
+                try? chats.prefix(15).enumerated().map { "\($0.offset) \($0.element.name)" }.joined(separator: "\n")
+                    .write(toFile: bits[1], atomically: true, encoding: .utf8)
+            }
+            if let n = Int(bits[0]), chats.indices.contains(n) {
+                ui.expand()
+                ui.openConversation(chats[n].target)
+            }
         case "drafttest":
             // drafttest or drafttest:<text>: puts text in the open chat's box (or clears it),
             // to check how a long message lays out. Nothing is sent.

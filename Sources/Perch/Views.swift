@@ -5898,7 +5898,14 @@ private struct SlackComposer: View {
                                 Text("No messages yet.").font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.4))
                             }
                             let newDays = Self.dayStarts(lines)
-                            ForEach(lines, id: \.viewKey) { line in
+                            let newKey = newMessages
+                            let lastKey = lines.last?.viewKey
+                            // One view per message, its neighbour taken by position. Searching for the one before
+                            // made each redraw of a long chat square in its length, and a varying number of views
+                            // per message made the lazy stack build every row just to count them.
+                            ForEach(Array(lines.enumerated()), id: \.element.viewKey) { i, line in
+                                let prev = i > 0 ? lines[i - 1] : nil
+                                VStack(alignment: .leading, spacing: 8) {
                                 if newDays.contains(line.viewKey), let time = line.time {
                                     // Each day starts with its date, as in WhatsApp.
                                     Text(Self.dayLabel(time)).font(.system(size: 10.5, weight: .medium))
@@ -5907,24 +5914,21 @@ private struct SlackComposer: View {
                                         .background(Color(white: 0.14), in: Capsule())
                                         .frame(maxWidth: .infinity).padding(.vertical, 2)
                                 }
-                                if newMessages == line.viewKey {
+                                if newKey == line.viewKey {
                                     NewMessagesMark(whatsapp: target.workspace == WhatsAppSource.workspace, count: unreadAtOpen)
                                 }
                                 if target.workspace != WhatsAppSource.workspace {
                                     // Slack looks like Slack: flat rows, a square picture, name and
                                     // time, and follow-ups from the same person tucked under.
                                     SlackRow(line: line, workspace: target.workspace,
-                                             continued: Self.continues(line, after: lines.prevLine(line)),
+                                             continued: Self.continues(line, after: prev),
                                              onThread: { showThread(threadTS == line.id ? nil : line.id) },
                                              react: { name, add in SlackSource.shared.react(target, ts: line.id, name: name, add: add) },
                                              target: target, highlighted: threadTS == line.id)
-                                        .id(line.viewKey)
-                                        .transition(line.mine ? .sent : .arrived)
-                                        .reportsTop(line.viewKey == lines.last?.viewKey)
                                 } else {
                                 // As in WhatsApp, a run of messages from one person shows their
                                 // name and picture once, with the rest stacked close underneath.
-                                let run = Self.sameSender(line, after: lines.prevLine(line))
+                                let run = Self.sameSender(line, after: prev)
                                 HStack(alignment: .top, spacing: 8) {
                                     if line.mine { Spacer(minLength: 50) }
                                     if !line.mine && !(target.workspace == WhatsAppSource.workspace && !target.id.hasSuffix("@g.us")) {
@@ -5968,10 +5972,11 @@ private struct SlackComposer: View {
                                         Button("Reply") { ui.lineReply[replyKey] = line }
                                     }
                                 }
-                                .id(line.viewKey)
-                                .transition(line.mine ? .sent : .arrived)
-                                .reportsTop(line.viewKey == lines.last?.viewKey)
                                 }
+                            }
+                            .id(line.viewKey)
+                            .transition(line.mine ? .sent : .arrived)
+                            .reportsTop(line.viewKey == lastKey)
                             }
                         } else {
                             ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(.top, 30)
