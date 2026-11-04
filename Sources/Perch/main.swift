@@ -311,6 +311,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? "cardsOnly=\(ui.cardsOnly) expanded=\(ui.expanded) target=\(ui.slackTarget?.label ?? "nil") calendar=\(ui.showingCalendar) links=\(ui.pendingLinks.count) justOpened=\(ui.justOpened != nil) clips=\(ui.showingClips)/\(ui.clipsInline) shelf=\(ui.showingShelf)"
                     .write(toFile: "/tmp/perch-testbanner.txt", atomically: true, encoding: .utf8)
             }
+        case "drafttest":
+            // drafttest or drafttest:<text>: puts text in the open chat's box (or clears it),
+            // to check how a long message lays out. Nothing is sent.
+            let text = parts.count > 1 ? parts[1] : ""
+            if let t = ui.slackTarget { ui.drafts["conversation:\(t.workspace):\(t.id)"] = text }
+            else if let id = ui.selectedID { ui.drafts[id] = text }
         case "accessory":
             NSApp.setActivationPolicy(.accessory)
         case "select" where parts.count > 1: ui.show(parts[1])

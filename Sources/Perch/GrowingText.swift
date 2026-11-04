@@ -10,7 +10,9 @@ struct GrowingText: NSViewRepresentable {
     var onFocus: (Bool) -> Void
     var onSubmit: () -> Void
     var onTab: () -> Bool
-    var maxHeight: CGFloat = 150
+    var maxHeight: CGFloat = 120
+    /// The text's own height as it wraps, for a box that lays itself out around it.
+    var onHeight: ((CGFloat) -> Void)?
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: GrowingText
@@ -41,8 +43,10 @@ struct GrowingText: NSViewRepresentable {
     }
 
     final class Box: NSScrollView {
-        var maxHeight: CGFloat = 150
+        var maxHeight: CGFloat = 120
+        var onHeight: ((CGFloat) -> Void)?
         private var reportedHeight: CGFloat = 18
+        private var toldHeight: CGFloat = 0
 
         func textHeightMayHaveChanged() {
             let previous = reportedHeight
@@ -59,6 +63,10 @@ struct GrowingText: NSViewRepresentable {
             layout.ensureLayout(for: container)
             let h = layout.usedRect(for: container).height
             reportedHeight = min(max(h, 17), maxHeight)
+            if let onHeight, abs(h - toldHeight) > 0.5 {
+                toldHeight = h
+                DispatchQueue.main.async { onHeight(h) }
+            }
             return NSSize(width: NSView.noIntrinsicMetric, height: reportedHeight)
         }
     }
@@ -115,6 +123,7 @@ struct GrowingText: NSViewRepresentable {
 
     func updateBox(_ box: Box, coordinator: Coordinator) {
         coordinator.parent = self
+        box.onHeight = onHeight
         guard let view = coordinator.view else { return }
         if view.string != text {
             // Changed from outside (dictation, a suggestion, sending): keep the cursor at the end.
@@ -145,12 +154,13 @@ struct DraftText: NSViewRepresentable {
     var onFocus: (Bool) -> Void
     var onSubmit: () -> Void
     var onTab: () -> Bool
-    var maxHeight: CGFloat = 150
+    var maxHeight: CGFloat = 120
+    var onHeight: ((CGFloat) -> Void)?
 
     private var configuration: GrowingText {
         GrowingText(text: Binding(get: { store.snapshot(id) }, set: { store[id] = $0 }),
                     placeholder: placeholder, focusAsk: focusAsk, onFocus: onFocus,
-                    onSubmit: onSubmit, onTab: onTab, maxHeight: maxHeight)
+                    onSubmit: onSubmit, onTab: onTab, maxHeight: maxHeight, onHeight: onHeight)
     }
 
     final class Coordinator {
@@ -199,5 +209,46 @@ struct DraftText: NSViewRepresentable {
     static func dismantleNSView(_ box: GrowingText.Box, coordinator: Coordinator) {
         coordinator.disconnect()
         (box.documentView as? NSTextView)?.delegate = nil
+    }
+}
+
+
+/// A message box's row: the text, then its buttons. While the message fits on one line they sit
+/// beside it; once it wraps, the text takes the full width and the buttons drop to a row under
+/// it, as in Messages or Slack. One layout for both, so the text view (and the cursor in it) is
+/// never rebuilt when it changes over.
+struct ComposerLayout: Layout {
+    var tall: Bool
+    var spacing: CGFloat = 6
+
+    private func tools(_ subviews: Subviews) -> (sizes: [CGSize], width: CGFloat, height: CGFloat) {
+        let sizes = subviews.dropFirst().map { $0.sizeThatFits(.unspecified) }
+        let width = sizes.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(sizes.count - 1, 0))
+        return (sizes, width, sizes.map(\.height).max() ?? 0)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let text = subviews.first else { return .zero }
+        let width = proposal.width ?? 320
+        let row = tools(subviews)
+        if tall {
+            let t = text.sizeThatFits(ProposedViewSize(width: width, height: nil))
+            return CGSize(width: width, height: t.height + spacing + row.height)
+        }
+        let t = text.sizeThatFits(ProposedViewSize(width: max(width - row.width - spacing, 40), height: nil))
+        return CGSize(width: width, height: max(t.height, row.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let text = subviews.first else { return }
+        let row = tools(subviews)
+        let textWidth = tall ? bounds.width : max(bounds.width - row.width - spacing, 40)
+        let textHeight = tall ? bounds.height - spacing - row.height : bounds.height
+        text.place(at: CGPoint(x: bounds.minX, y: bounds.minY), proposal: ProposedViewSize(width: textWidth, height: textHeight))
+        var x = bounds.maxX - row.width
+        for (view, size) in zip(subviews.dropFirst(), row.sizes) {
+            view.place(at: CGPoint(x: x, y: bounds.maxY - (row.height + size.height) / 2), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+        }
     }
 }

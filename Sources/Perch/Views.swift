@@ -20,7 +20,7 @@ struct NotchContent: View {
         let left = Array(store.grokBots.filter { ui.inPill($0) && !ui.isDismissed($0) }.prefix(maxFaces))
         // Every chat that is in the sidebar sits in the notch too, idle ones included (they just
         // sit still). Only chats the user has cleared are left out.
-        let right = Array(store.sessions.filter { !ui.isDismissed($0) }.prefix(maxFaces))
+        let right = Array(store.sessions.filter { ui.inAIChats($0) }.prefix(maxFaces))
         // A small usage dial sits at the outer end of each side: Grok Bot's by the bots, Claude's
         // by the chats.
         let usage = Usage.shared
@@ -1026,8 +1026,7 @@ private struct Rail: View {
         // last few hours. Nothing older is pulled in to fill the space, so a chat swiped away
         // is not replaced by another.
         let kept = sessions.filter { $0.status == .idle && $0.kept }
-        let lately = sessions.filter { $0.status == .idle && !$0.kept
-            && Date().timeIntervalSince($0.lastTurnAt ?? $0.lastActivity) < 6 * 3600 }
+        let lately = sessions.filter { $0.status == .idle && !$0.kept && NotchUI.recentlyBusy($0) }
         let quiet = kept + lately
         // Remmi leads, then any other bot with something to say, then pinned chats, then the rest.
         let lead = store.grokBots.filter { ui.pinned.contains($0.name) }
@@ -3176,6 +3175,8 @@ private struct ReplyField: View {
     @Environment(NotchUI.self) private var ui
     @Environment(\.sideWindow) private var sideWindow
     @State private var focused = false
+    /// The message has wrapped: its buttons sit under it.
+    @State private var tall = false
     /// Bumped to put the cursor in the box.
     @State private var focusAsk = 0
     /// Bumped on each send, for the button's little bounce.
@@ -3260,15 +3261,15 @@ private struct ReplyField: View {
             .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.1)).frame(height: 1) }
             .transition(.opacity.combined(with: .offset(y: 4)))
         }
-        HStack(alignment: .bottom, spacing: 6) {
-            // A real text view: it grows with what is written, up to about eight lines, then
+        ComposerLayout(tall: tall) {
+            // A real text view: it grows with what is written, up to about seven lines, then
             // scrolls smoothly. Return sends; Shift+Return starts a new line.
             DraftText(store: ui.drafts, id: agent.id, placeholder: placeholder, focusAsk: focusAsk,
                         onFocus: { focused = $0 }, onSubmit: send, onTab: {
                             guard let first = offers.first else { return false }
                             ui.drafts[agent.id] = "/\(first.id) "
                             return true
-                        })
+                        }, onHeight: { if $0 > 26 { tall = true } })
                 .fixedSize(horizontal: false, vertical: true)
                 .overlay(alignment: .topLeading) {
                     if !ui.drafts.hasText(agent.id) {
@@ -3301,6 +3302,8 @@ private struct ReplyField: View {
         .background(Color(white: 0.15), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
             .stroke(.white.opacity(focused ? 0.38 : 0.2), lineWidth: 1))
+        // A long message has the buttons under it; sent or cleared, they go back beside it.
+        .onChange(of: ui.drafts.hasText(agent.id)) { _, has in if !has { tall = false } }
         // The text line itself is thin. A click anywhere in the box starts typing.
         .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         .simultaneousGesture(TapGesture().onEnded {
@@ -6086,9 +6089,9 @@ private struct SlackComposer: View {
                         }
                     }
                 }
-                HStack(alignment: .bottom, spacing: 6) {
+                ComposerLayout(tall: tall) {
                     DraftText(store: ui.drafts, id: draftKey, placeholder: "Message \(liveName(target))", focusAsk: ask,
-                                onFocus: { _ in }, onSubmit: send, onTab: { false })
+                                onFocus: { _ in }, onSubmit: send, onTab: { false }, onHeight: { if $0 > 26 { tall = true } })
                         .fixedSize(horizontal: false, vertical: true)
                         .overlay(alignment: .topLeading) {
                             if !ui.drafts.hasText(draftKey) {
@@ -6130,6 +6133,7 @@ private struct SlackComposer: View {
             .padding(.horizontal, 11).padding(.vertical, 8)
             .background(Color(white: 0.15), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(.white.opacity(0.2), lineWidth: 1))
+            .onChange(of: ui.drafts.hasText(draftKey)) { _, has in if !has { tall = false } }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 for provider in providers {
                     _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -6200,6 +6204,8 @@ private struct SlackComposer: View {
 
     private var replyKey: String { "\(target.workspace):\(target.id)" }
 
+    /// The message has wrapped: its buttons sit under it.
+    @State private var tall = false
     @State private var landed = false
     /// Hidden until it has come to rest, so opening never shows it jumping.
     @State private var ready = false
@@ -8591,5 +8597,22 @@ private func freeDownloadsURL(_ name: String) -> URL {
     renderer.scale = 2
     if let image = renderer.nsImage, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) {
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+}
+
+
+extension NotchUI {
+    /// Quiet for under six hours: a chat still in hand, so it stays in the sidebar unasked.
+    static func recentlyBusy(_ agent: Agent) -> Bool {
+        Date().timeIntervalSince(agent.lastTurnAt ?? agent.lastActivity) < 6 * 3600
+    }
+
+    /// Whether a coding chat is in the sidebar's AI chats, by the sidebar's own rules: not swiped
+    /// away, and working, waiting, added on purpose, pinned, open, or busy lately. The faces in
+    /// the notch follow this, so they always match the list.
+    func inAIChats(_ agent: Agent) -> Bool {
+        guard !isDismissed(agent) else { return false }
+        return agent.status != .idle || agent.kept || pinnedChats.contains(agent.id) || selectedID == agent.id
+            || Self.recentlyBusy(agent)
     }
 }
