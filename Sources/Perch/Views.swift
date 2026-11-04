@@ -8233,6 +8233,8 @@ final class SidePanel {
         window?.close()
         let panel = SidePanelWindow(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel, .resizable],
                                     backing: .buffered, defer: false)
+        // A click into it brings Perch forward, so dictation tools can paste into its box.
+        panel.letClicksActivate(true)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true

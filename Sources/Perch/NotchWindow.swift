@@ -29,11 +29,28 @@ enum FrontApp {
         take(for: window)
     }
 
+    /// Whether Perch came forward this time, for the debug log.
+    static var isFront: Bool { NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier }
+
     static func giveBack() {
         defer { previous = nil }
         // Already somewhere else (the user clicked another app): leave them there.
         guard NSApp.isActive, let previous, !previous.isTerminated else { return }
         previous.activate()
+    }
+}
+
+extension NSWindow {
+    /// Whether a click in this window brings Perch to the front. Perch's panels are made not to,
+    /// so hovering and glancing never take focus from the app you are in. The window server
+    /// decides this at the click itself, before Perch hears about it, so asking to come forward
+    /// afterwards is refused; this switches the window's own setting instead (the same private
+    /// call Granola uses for its floating window). Does nothing if macOS ever drops it.
+    func letClicksActivate(_ yes: Bool) {
+        let selector = NSSelectorFromString("_setPreventsActivation:")
+        guard responds(to: selector) else { return }
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        unsafeBitCast(method(for: selector), to: Setter.self)(self, selector, !yes)
     }
 }
 
@@ -721,6 +738,8 @@ final class NotchUI {
 
     func expand() {
         expanded = true
+        // Open, a click into the island brings Perch forward, so dictation tools see its boxes.
+        controller?.panel.letClicksActivate(true)
         // Back within a few minutes: the same chat as before, ahead of anything else.
         if let last = lastOpen, Date().timeIntervalSince(last.at) < 300, selectedID == nil, slackTarget == nil, !browsing {
             lastOpen = nil
@@ -793,6 +812,7 @@ final class NotchUI {
         enlarged = nil
         toast = nil
         guard expanded else { return }
+        controller?.panel.letClicksActivate(false)
         // Not if the cursor is in the side panel: that is still in use.
         if controller?.panel.isKeyWindow == true { FrontApp.giveBack() }
         // What was open, so going off and straight back on lands on the same chat.
