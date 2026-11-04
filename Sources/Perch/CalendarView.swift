@@ -60,6 +60,17 @@ struct CalendarView: View {
     @State private var draft: UpshowBooking?
 
     var body: some View {
+        // Upshow's own calendar, when it has been built for Perch; otherwise Perch's version.
+        if UpshowWebServer.shared.built {
+            UpshowWeb()
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .frame(height: 452)
+        } else {
+            native
+        }
+    }
+
+    private var native: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !store.live { sampleBanner }
             heading
