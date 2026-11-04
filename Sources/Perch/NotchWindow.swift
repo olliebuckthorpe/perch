@@ -25,12 +25,27 @@ enum FrontApp {
     /// asking from focus changes afterwards was quietly refused and the app behind stayed in
     /// front. This runs inside the click or key press itself, once it has put the cursor in a box.
     static func takeAfter(_ event: NSEvent, in window: NSWindow) {
-        guard [.leftMouseDown, .keyDown].contains(event.type), window.firstResponder is NSTextView else { return }
+        // A modifier on its own counts too: dictation shortcuts start with one (fn, say), and the
+        // cursor is often already in the box with no click, when a chat opens on hover.
+        guard [.leftMouseDown, .keyDown, .flagsChanged].contains(event.type), window.firstResponder is NSTextView else { return }
         take(for: window)
     }
 
     /// Whether Perch came forward this time, for the debug log.
     static var isFront: Bool { NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier }
+
+    /// Perch runs without a Dock icon or menu bar, and macOS never counts an app like that as
+    /// the front app, even while the user types in it. Granola asks for the front app before
+    /// pasting, so while Perch is active it becomes an ordinary app (its icon shows in the Dock
+    /// for that time), and goes back to hiding the moment it is not.
+    static func watch() {
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
+            if NSApp.activationPolicy() != .accessory { NSApp.setActivationPolicy(.accessory) }
+        }
+    }
 
     static func giveBack() {
         defer { previous = nil }
@@ -51,6 +66,14 @@ extension NSWindow {
         guard responds(to: selector) else { return }
         typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
         unsafeBitCast(method(for: selector), to: Setter.self)(self, selector, !yes)
+    }
+
+    /// The setting as macOS holds it, for checking from the debug socket.
+    var clicksActivate: Bool? {
+        let selector = NSSelectorFromString("_preventsActivation")
+        guard responds(to: selector) else { return nil }
+        typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
+        return !unsafeBitCast(method(for: selector), to: Getter.self)(self, selector)
     }
 }
 
@@ -738,8 +761,6 @@ final class NotchUI {
 
     func expand() {
         expanded = true
-        // Open, a click into the island brings Perch forward, so dictation tools see its boxes.
-        controller?.panel.letClicksActivate(true)
         // Back within a few minutes: the same chat as before, ahead of anything else.
         if let last = lastOpen, Date().timeIntervalSince(last.at) < 300, selectedID == nil, slackTarget == nil, !browsing {
             lastOpen = nil
@@ -812,7 +833,6 @@ final class NotchUI {
         enlarged = nil
         toast = nil
         guard expanded else { return }
-        controller?.panel.letClicksActivate(false)
         // Not if the cursor is in the side panel: that is still in use.
         if controller?.panel.isKeyWindow == true { FrontApp.giveBack() }
         // What was open, so going off and straight back on lands on the same chat.
@@ -1304,6 +1324,10 @@ final class NotchController {
     init(store: AgentStore) {
         panel = NotchPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                            backing: .buffered, defer: false)
+        // A click into the island brings Perch forward, so dictation tools (Granola) see its
+        // boxes. Set once: switching it off and on again as the island closed and opened only
+        // held the first time, since the window is never put away for macOS to read it again.
+        panel.letClicksActivate(true)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false

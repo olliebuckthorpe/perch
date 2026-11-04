@@ -466,7 +466,10 @@ func record(e *events.Message, live bool, status int) map[string]any {
 	}
 	chat := key(e.Info.Chat)
 	sender := key(e.Info.Sender)
-	senderName := e.Info.PushName
+	senderName := savedName(e.Info.Sender)
+	if senderName == "" {
+		senderName = e.Info.PushName
+	}
 	if senderName == "" {
 		senderName = nameOf(e.Info.Sender)
 	}
@@ -665,10 +668,9 @@ func describe(m *waE2E.Message) (text, kind, mimeType, filename string) {
 }
 
 // nameOf finds the best name for a person: theirs in the contact list, or what they call themselves.
-func nameOf(j types.JID) string {
+// ids is everyone the same person can be on file as: their number and their anonymous id.
+func ids(j types.JID) []types.JID {
 	j = j.ToNonAD()
-	// The same person can be on file under their number and their anonymous id, with the name
-	// they gave WhatsApp kept under either: look under both.
 	look := []types.JID{j}
 	if j.Server == types.HiddenUserServer {
 		if pn, err := client.Store.LIDs.GetPNForLID(ctx, j); err == nil && !pn.IsEmpty() {
@@ -679,6 +681,28 @@ func nameOf(j types.JID) string {
 			look = append(look, lid)
 		}
 	}
+	return look
+}
+
+// savedName is the name the user has them under in their phone's contacts, or "" if they are
+// not saved there. It wins over whatever the person calls themselves on WhatsApp.
+func savedName(j types.JID) string {
+	for _, id := range ids(j) {
+		if c, err := client.Store.Contacts.GetContact(ctx, id); err == nil && c.Found {
+			for _, n := range []string{c.FullName, c.FirstName} {
+				if n != "" {
+					return n
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// nameOf is someone's best name: saved in the contacts, then their business or WhatsApp name,
+// then their number.
+func nameOf(j types.JID) string {
+	look := ids(j)
 	for _, id := range look {
 		if c, err := client.Store.Contacts.GetContact(ctx, id); err == nil && c.Found {
 			for _, n := range []string{c.FullName, c.FirstName, c.BusinessName, c.PushName} {
@@ -693,7 +717,7 @@ func nameOf(j types.JID) string {
 			return "+" + id.User
 		}
 	}
-	return j.User
+	return j.ToNonAD().User
 }
 
 // personName is someone's name for their chat: as saved in the contacts, or what they call
@@ -720,6 +744,13 @@ func personName(j types.JID, chat string) string {
 // chatName is a person's name for a direct chat, or the group's subject.
 func chatName(j types.JID) string {
 	k := key(j)
+	// A person saved in the contacts is called what they are saved as, ahead of any name kept
+	// from before (which may be what they call themselves on WhatsApp).
+	if j.Server != types.GroupServer {
+		if saved := savedName(j); saved != "" {
+			return saved
+		}
+	}
 	var name string
 	db.QueryRow(`SELECT name FROM chats WHERE jid = ?`, k).Scan(&name)
 	if name != "" {
@@ -885,6 +916,12 @@ func history(chat string, limit int) (any, error) {
 		var thumb []byte
 		var reactions, quote string
 		rows.Scan(&id, &sender, &senderName, &fromMe, &ts, &text, &kind, &mimeType, &filename, &status, &thumb, &reactions, &quote)
+		// Names were kept as they arrived; someone saved in the contacts since shows as that.
+		if jid, err := types.ParseJID(sender); err == nil && fromMe == 0 {
+			if saved := savedName(jid); saved != "" {
+				senderName = saved
+			}
+		}
 		all := map[string]string{}
 		json.Unmarshal([]byte(reactions), &all)
 		list = append(list, map[string]any{"id": id, "sender": sender, "senderName": senderName, "fromMe": fromMe == 1,
