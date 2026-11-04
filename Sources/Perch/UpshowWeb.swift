@@ -13,7 +13,7 @@ final class UpshowWebServer {
     static let port: UInt16 = 53690
     static let root = URL(fileURLWithPath: "\(Shell.home)/.perch/upshow-web")
     static let api = URL(string: "https://api.upshow.co.uk")!
-    static var home: URL { URL(string: "http://127.0.0.1:\(port)/app/meetings")! }
+    static var home: URL { URL(string: "http://127.0.0.1:\(port)/meetings")! }
 
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "perch.upshow-web", qos: .userInitiated, attributes: .concurrent)
@@ -140,9 +140,11 @@ final class UpshowWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         // Only the calendar: Upshow's own side bar and top bar are left out, so it fits the island.
+        // Upshow's calendar as designed; only the floating help button is left out. Dark comes
+        // from Upshow's own colours once it has a dark set, not from turning these round.
         let fit = """
         (function(){var s=document.createElement('style');s.id='perch-fit';s.textContent=`
-          html,body{background:transparent!important}
+          button[aria-label="Support"],.support-widget-panel{display:none!important}
         `;document.documentElement.appendChild(s);})();
         """
         config.userContentController.addUserScript(WKUserScript(source: fit, injectionTime: .atDocumentStart, forMainFrameOnly: true))
