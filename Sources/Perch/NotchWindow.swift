@@ -1391,7 +1391,10 @@ final class NotchController {
             }
         }) { monitors.append(m) }
         if let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
-            self?.ui.outsideClick()
+            // A click that brings Perch to the front (so dictation can paste into it) can arrive
+            // here too, as if it were outside: one on the island itself never closes it.
+            guard let self, !self.onIsland(NSEvent.mouseLocation) else { return }
+            self.ui.outsideClick()
         }) { monitors.append(m) }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: { [weak self] event in
             self?.ui.scrolled(event) == true ? nil : event
@@ -1469,6 +1472,13 @@ final class NotchController {
     func openShapeChanged(width: CGFloat, offset: CGFloat) {
         openWidth = width
         openOffset = offset
+    }
+
+    /// Whether a point on screen is on the island as it is drawn now.
+    private func onIsland(_ point: NSPoint) -> Bool {
+        let frame = panel.frame
+        return CGRect(x: frame.minX + liveRect.minX, y: frame.maxY - liveRect.maxY,
+                      width: liveRect.width, height: liveRect.height).insetBy(dx: -3, dy: -3).contains(point)
     }
 
     private func trackMouse() {
