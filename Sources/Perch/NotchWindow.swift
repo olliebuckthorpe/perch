@@ -15,9 +15,16 @@ enum FrontApp {
     nonisolated(unsafe) private static var previous: NSRunningApplication?
 
     static func take(for window: NSWindow) {
-        guard window.isKeyWindow, !NSApp.isActive else { return }
+        guard window.isKeyWindow else { return }
         let front = NSWorkspace.shared.frontmostApplication
-        if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier { previous = front }
+        let me = ProcessInfo.processInfo.processIdentifier
+        guard front?.processIdentifier != me || NSApp.activationPolicy() != .regular else { return }
+        if front?.processIdentifier != me { previous = front }
+        // Perch runs with no Dock icon or menu bar, and macOS never counts an app like that as
+        // the front app, even while the user types in it. Granola pastes only into the front
+        // app, so while a Perch box has the cursor Perch is an ordinary app; it goes back to
+        // hiding when the island closes.
+        if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
         NSApp.activate()
     }
 
@@ -35,7 +42,10 @@ enum FrontApp {
     static var isFront: Bool { NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier }
 
     static func giveBack() {
-        defer { previous = nil }
+        defer {
+            previous = nil
+            if NSApp.activationPolicy() != .accessory { NSApp.setActivationPolicy(.accessory) }
+        }
         // Already somewhere else (the user clicked another app): leave them there.
         guard NSApp.isActive, let previous, !previous.isTerminated else { return }
         previous.activate()

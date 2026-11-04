@@ -7855,7 +7855,12 @@ private struct SlackBanner: View {
         // Coming to it opens the chat itself, the same one the island shows, with its pictures
         // and everything else, rather than a second, smaller copy of it inside the banner.
         if over {
-            let work = DispatchWorkItem { [ui] in ui.openConversation(alert.target, thread: alert.threadParent) }
+            let work = DispatchWorkItem { [ui] in
+                ui.openConversation(alert.target, thread: alert.threadParent)
+                // Coming out of the banner the island kept the banner's width until something
+                // redrew it; opening it again straight after lays it out at its full size.
+                DispatchQueue.main.async { ui.expand() }
+            }
             hoverWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
             return

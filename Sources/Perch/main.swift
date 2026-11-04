@@ -297,6 +297,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? "after regular: active=\(NSApp.isActive) policy=\(NSApp.activationPolicy().rawValue) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "nil")"
                     .write(toFile: parts[1], atomically: true, encoding: .utf8)
             }
+        case "testbanner" where parts.count > 1:
+            // testbanner:<WhatsApp chat name>: a banner as if they had just written, then the
+            // chat opened from it the way hovering does. Nothing is sent or marked read.
+            guard let t = WhatsAppSource.shared.chats.first(where: { $0.name == parts[1] })?.target else {
+                try? "no chat called \(parts[1])".write(toFile: "/tmp/perch-testbanner.txt", atomically: true, encoding: .utf8)
+                return
+            }
+            ui.slack(SlackAlert(id: UUID().uuidString, workspace: t.workspace, priority: 9, team: "", channel: t.id, place: "WhatsApp",
+                                sender: parts[1], text: "Test banner", ts: "\(Date().timeIntervalSince1970)"))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                ui.openConversation(t)
+                try? "cardsOnly=\(ui.cardsOnly) expanded=\(ui.expanded) target=\(ui.slackTarget?.label ?? "nil") calendar=\(ui.showingCalendar) links=\(ui.pendingLinks.count) justOpened=\(ui.justOpened != nil) clips=\(ui.showingClips)/\(ui.clipsInline) shelf=\(ui.showingShelf)"
+                    .write(toFile: "/tmp/perch-testbanner.txt", atomically: true, encoding: .utf8)
+            }
         case "accessory":
             NSApp.setActivationPolicy(.accessory)
         case "select" where parts.count > 1: ui.show(parts[1])
