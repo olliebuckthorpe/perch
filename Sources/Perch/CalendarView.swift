@@ -58,10 +58,71 @@ struct CalendarView: View {
     @State private var chosen: UpshowMeeting?
     /// The booking being made, while its panel is open on the right.
     @State private var draft: UpshowBooking?
+    /// A meeting dropped on a new time, waiting for "Move meeting".
+    @State private var moving: (meeting: UpshowMeeting, start: Date, end: Date)?
+    @State private var movingNow = false
+    @State private var moveProblem: String?
+    /// The meeting being rescheduled: everything else in the week steps back.
+    @State private var focusID: String?
+
+    private var peekCard: AnyView? {
+        guard let chosen, let current = store.meetings.first(where: { $0.id == chosen.id }) else { return nil }
+        return AnyView(CalendarPeek(meeting: current, close: { withAnimation(.smooth(duration: 0.15)) { self.chosen = nil } },
+                                    reschedule: {
+                                        withAnimation(.easeInOut(duration: 0.36)) { focusID = current.id; self.chosen = nil }
+                                    }).id(current.id))
+    }
+
+    private func focusBanner(_ meeting: UpshowMeeting) -> some View {
+        HStack(spacing: 10) {
+            Text("RESCHEDULE").font(.system(size: 10, weight: .medium)).kerning(1.6).foregroundStyle(UpshowInk.tertiary)
+            Text("Drag \(meeting.title.isEmpty ? meeting.guest : meeting.title) to its new time.").font(.system(size: 13)).foregroundStyle(UpshowInk.text)
+            Spacer()
+            Button("Done") { withAnimation(.easeInOut(duration: 0.36)) { focusID = nil } }.buttonStyle(CalendarButton(outlined: true))
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        .background(UpshowInk.softGreen, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .transition(.opacity.combined(with: .offset(y: -6)))
+    }
+
+    @ViewBuilder private var moveDialog: some View {
+        if let moving {
+            ZStack {
+                Color.black.opacity(0.35).onTapGesture { if !movingNow { withAnimation(.smooth(duration: 0.18)) { self.moving = nil } } }
+                VStack(spacing: 8) {
+                    CalendarMoveDialog(meeting: moving.meeting, start: moving.start, end: moving.end,
+                                       keep: { withAnimation(.smooth(duration: 0.18)) { self.moving = nil; moveProblem = nil } },
+                                       confirm: confirmMove, working: movingNow)
+                    if let moveProblem {
+                        Text(moveProblem).font(.system(size: 12)).foregroundStyle(UpshowInk.red).frame(width: 360)
+                    }
+                }
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.97)))
+        }
+    }
+
+    private func confirmMove() {
+        guard let moving else { return }
+        movingNow = true
+        moveProblem = nil
+        Task { @MainActor in
+            do {
+                try await store.reschedule(moving.meeting.id, to: moving.start, minutes: Int(moving.end.timeIntervalSince(moving.start) / 60))
+                withAnimation(.smooth(duration: 0.2)) { self.moving = nil; focusID = nil }
+            } catch CalendarProblem.awaitingApproval {
+                moveProblem = CalendarProblem.awaitingApproval.localizedDescription
+            } catch {
+                await store.refresh()
+                moveProblem = "Couldn't move the meeting. It has been put back."
+            }
+            movingNow = false
+        }
+    }
 
     var body: some View {
         // Upshow's own calendar, when it has been built for Perch; otherwise Perch's version.
-        if UpshowWebServer.shared.built {
+        if UserDefaults.standard.bool(forKey: "calendarWeb"), UpshowWebServer.shared.built {
             UpshowWeb()
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .frame(height: 452)
@@ -74,10 +135,21 @@ struct CalendarView: View {
         VStack(alignment: .leading, spacing: 8) {
             if !store.live { sampleBanner }
             heading
-            CalendarWeekGrid(chosen: chosen?.id, draft: $draft,
-                             choose: { meeting in withAnimation(.smooth(duration: 0.18)) { chosen = meeting; draft = nil } },
-                             book: startBooking)
+            if let id = focusID, let meeting = store.meetings.first(where: { $0.id == id }) {
+                focusBanner(meeting)
+            }
+            CalendarGrid(chosen: chosen?.id, draft: $draft,
+                         open: { meeting in
+                             withAnimation(.timingCurve(0.2, 0.8, 0.2, 1, duration: 0.17)) { chosen = chosen?.id == meeting.id ? nil : meeting; draft = nil }
+                         },
+                         book: { start, minutes in startBooking(at: start, minutes: minutes) },
+                         move: { meeting, start, end in withAnimation(.smooth(duration: 0.2)) { moving = (meeting, start, end) } },
+                         focus: focusID,
+                         peek: peekCard)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.white.opacity(0.08)) }
                 .overlay(alignment: .topTrailing) { sheet.padding(8) }
+                .overlay { moveDialog }
         }
         .padding(.horizontal, 4)
         .frame(height: 452, alignment: .top)
@@ -100,10 +172,6 @@ struct CalendarView: View {
             .overlay { if store.staged != nil { CalendarBooked(undo: { b in draft = b }, done: finishBooked) } }
             .shadow(color: .black.opacity(0.5), radius: 17, y: 10)
             .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topTrailing)))
-        } else if let chosen, let current = store.meetings.first(where: { $0.id == chosen.id }) {
-            CalendarPeek(meeting: current) { withAnimation(.smooth(duration: 0.16)) { self.chosen = nil } }
-                .id(current.id)
-                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topTrailing)))
         } else if store.staged != nil {
             CalendarBooked(undo: { b in withAnimation { draft = b } }, done: finishBooked)
                 .frame(width: 340, height: 360)
@@ -136,12 +204,13 @@ struct CalendarView: View {
         .buttonStyle(Press(reach: 1)).help(help)
     }
 
-    private func startBooking(at start: Date?) {
+    private func startBooking(at start: Date?, minutes: Int? = nil) {
         var booking = draft ?? CalendarView.freshBooking()
         if let start {
             booking.start = start
             booking.hasTime = true
         }
+        if let minutes { booking.minutes = minutes }
         withAnimation(.smooth(duration: 0.2)) { chosen = nil; draft = booking }
     }
 
@@ -199,366 +268,6 @@ struct CalendarView: View {
     }
 }
 
-// MARK: The week
-
-private struct CalendarWeekGrid: View {
-    let chosen: String?
-    @Binding var draft: UpshowBooking?
-    let choose: (UpshowMeeting) -> Void
-    /// A click on empty time: book a meeting starting there.
-    let book: (Date) -> Void
-    private var store: CalendarStore { CalendarStore.shared }
-
-    static let hourHeight: CGFloat = 48
-    static let pad: CGFloat = 14
-    static let gutter: CGFloat = 48
-
-    var body: some View {
-        VStack(spacing: 0) {
-            dayHeads
-            Rectangle().fill(UpshowInk.line).frame(height: 1)
-            if case .failed(let reason) = store.phase {
-                CalendarUnavailable(reason: reason).padding(16)
-                Spacer(minLength: 0)
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView(.vertical, showsIndicators: false) {
-                        HStack(alignment: .top, spacing: 0) {
-                            hours
-                            ForEach(store.days, id: \.self) { day in
-                                CalendarDayColumn(day: day, chosen: chosen, draft: $draft, choose: choose, book: book)
-                                    .overlay(alignment: .trailing) { Rectangle().fill(Color.white.opacity(0.04)).frame(width: 1) }
-                            }
-                        }
-                        .frame(height: Self.hourHeight * 24 + Self.pad * 2)
-                        .background(alignment: .top) {
-                            VStack(spacing: 0) {
-                                ForEach(0..<24, id: \.self) { hour in Color.clear.frame(height: Self.hourHeight).id(hour) }
-                            }
-                            .padding(.top, Self.pad)
-                        }
-                    }
-                    .onAppear { anchor(proxy) }
-                    .onChange(of: store.week) { anchor(proxy) }
-                    .onChange(of: draft?.start) { _, start in
-                        if let start { withAnimation(.smooth) { proxy.scrollTo(max(Calendar.current.component(.hour, from: start) - 2, 0), anchor: .top) } }
-                    }
-                }
-            }
-        }
-        .background(UpshowInk.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(UpshowInk.line) }
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    /// Now, an hour from the top, in this week; otherwise the working day, or its first meeting.
-    private func anchor(_ proxy: ScrollViewProxy) {
-        let now = Date()
-        let hour: Int
-        if store.days.contains(where: { Calendar.current.isDate($0, inSameDayAs: now) }) {
-            hour = max(Calendar.current.component(.hour, from: now) - 1, 0)
-        } else {
-            let first = store.meetings.map { Calendar.current.component(.hour, from: $0.start) }.min() ?? 8
-            hour = min(8, first)
-        }
-        proxy.scrollTo(hour, anchor: .top)
-    }
-
-    private var dayHeads: some View {
-        HStack(spacing: 0) {
-            Text(TimeZone.current.abbreviation() ?? "").font(.system(size: 10, weight: .medium)).foregroundStyle(UpshowInk.tertiary)
-                .frame(width: Self.gutter)
-                .help(TimeZone.current.localizedName(for: .generic, locale: .current) ?? TimeZone.current.identifier)
-            ForEach(store.days, id: \.self) { day in
-                let today = Calendar.current.isDateInToday(day)
-                HStack(spacing: 5) {
-                    Text(CalendarText.weekday(day)).font(.system(size: 13, weight: today ? .medium : .regular))
-                        .foregroundStyle(today ? UpshowInk.text : UpshowInk.muted)
-                    Text(CalendarText.dayNumber(day)).font(.system(size: 13, weight: .medium).monospacedDigit())
-                        .foregroundStyle(today ? Color.white : UpshowInk.muted)
-                        .padding(.horizontal, today ? 6 : 0).padding(.vertical, 1)
-                        .background(today ? UpshowInk.green : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-                .frame(maxWidth: .infinity).padding(.vertical, 8)
-            }
-        }
-    }
-
-    private var hours: some View {
-        ZStack(alignment: .topTrailing) {
-            ForEach(1..<24, id: \.self) { hour in
-                Text(String(format: "%02d:00", hour)).font(.system(size: 10, weight: .medium).monospacedDigit())
-                    .foregroundStyle(UpshowInk.tertiary)
-                    .padding(.trailing, 6)
-                    .frame(height: 12)
-                    .offset(y: Self.pad + CGFloat(hour) * Self.hourHeight - 6)
-            }
-            if store.days.contains(where: { Calendar.current.isDateInToday($0) }) {
-                TimelineView(.periodic(from: .now, by: 60)) { context in
-                    let start = Calendar.current.startOfDay(for: context.date)
-                    Text(CalendarText.time(context.date)).font(.system(size: 9, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 4).padding(.vertical, 2)
-                        .background(UpshowInk.green, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                        .padding(.trailing, 3)
-                        .offset(y: Self.pad + CGFloat(context.date.timeIntervalSince(start) / 3600) * Self.hourHeight - 8)
-                }
-            }
-        }
-        .frame(width: Self.gutter, height: Self.hourHeight * 24 + Self.pad * 2, alignment: .topTrailing)
-    }
-}
-
-private struct CalendarDayColumn: View {
-    let day: Date
-    let chosen: String?
-    @Binding var draft: UpshowBooking?
-    let choose: (UpshowMeeting) -> Void
-    let book: (Date) -> Void
-    private var store: CalendarStore { CalendarStore.shared }
-    private var hourHeight: CGFloat { CalendarWeekGrid.hourHeight }
-    private var pad: CGFloat { CalendarWeekGrid.pad }
-    @State private var dragStart: Date?
-
-    private var start: Date { Calendar.current.startOfDay(for: day) }
-    private var next: Date { start.addingTimeInterval(86400) }
-
-    private func y(_ date: Date) -> CGFloat {
-        CGFloat(min(max(date.timeIntervalSince(start) / 3600, 0), 24)) * hourHeight + pad
-    }
-
-    /// The time at a height in the day, to the quarter hour.
-    private func time(at y: CGFloat) -> Date {
-        let quarters = ((y - pad) / hourHeight * 4).rounded(.down)
-        return start.addingTimeInterval(Double(min(max(quarters, 0), 95)) * 900)
-    }
-
-    var body: some View {
-        let meetings = store.meetings.filter { $0.start < next && $0.end > start }
-        let layers = CalendarLayers.make(meetings)
-        GeometryReader { box in
-            // The right-hand twelve points stay clear, for clicking a new meeting in beside one.
-            let width = box.size.width - 2 - 12
-            ZStack(alignment: .topLeading) {
-                lines(width: box.size.width)
-                Color.clear.contentShape(Rectangle())
-                    .onTapGesture(coordinateSpace: .local) { point in book(time(at: point.y)) }
-                ForEach(Array(store.busy.filter { !$0.allDay && $0.start < next && $0.end > start }.enumerated()), id: \.offset) { _, block in
-                    CalendarBusy(minutes: block.end.timeIntervalSince(block.start) / 60)
-                        .frame(width: box.size.width - 4, height: max(y(block.end) - y(block.start), 4))
-                        .offset(x: 2, y: y(block.start))
-                        .allowsHitTesting(false)
-                }
-                ForEach(meetings) { meeting in
-                    let layer = layers[meeting.id] ?? CalendarLayers.Place(x: 0, width: 1, depth: 0)
-                    CalendarBlock(meeting: meeting, height: max(y(meeting.end) - y(meeting.start) - 2, 26),
-                                  picked: meeting.id == chosen, layered: layer.depth > 0) { choose(meeting) }
-                        .frame(width: max(width * layer.width - 2, 20))
-                        .offset(x: 2 + width * layer.x, y: y(meeting.start))
-                        .zIndex(meeting.id == chosen ? 6 : Double(1 + min(layer.depth, 2)))
-                }
-                if let booking = draft, let begin = booking.start, booking.hasTime,
-                   Calendar.current.isDate(begin, inSameDayAs: day), let end = booking.end {
-                    ghost(booking, height: max(y(end) - y(begin), 26))
-                        .frame(width: width)
-                        .offset(x: 2, y: y(begin))
-                        .zIndex(8)
-                }
-                if Calendar.current.isDateInToday(day) { now }
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func lines(width: CGFloat) -> some View {
-        ZStack(alignment: .topLeading) {
-            ForEach(1..<24, id: \.self) { hour in
-                Rectangle().fill(Color.white.opacity(0.05)).frame(width: width, height: 1)
-                    .offset(y: CGFloat(hour) * hourHeight + pad)
-            }
-        }
-        .allowsHitTesting(false)
-    }
-
-    /// The meeting being booked, where it would go: solid green, rust on a clash. Drag it to move it.
-    private func ghost(_ booking: UpshowBooking, height: CGFloat) -> some View {
-        let clash = store.clash(for: booking) != nil
-        return VStack(alignment: .leading, spacing: 1) {
-            Text("New · \(booking.guests.first?.label ?? "meeting")").font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
-            if let begin = booking.start, let end = booking.end, height >= 38 {
-                Text("\(CalendarText.time(begin)) to \(CalendarText.time(end))").font(.system(size: 10).monospacedDigit()).opacity(0.75)
-            }
-        }
-        .foregroundStyle(UpshowInk.onGreen)
-        .padding(.horizontal, 7).padding(.vertical, 3)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .frame(height: height, alignment: .topLeading)
-        .background(clash ? UpshowInk.red.opacity(0.85) : UpshowInk.green, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(UpshowInk.green2.opacity(0.5), lineWidth: 1) }
-        .shadow(color: .black.opacity(0.4), radius: 8, y: 3)
-        .gesture(DragGesture(minimumDistance: 3)
-            .onChanged { drag in
-                guard let begin = draft?.start else { return }
-                if dragStart == nil { dragStart = begin }
-                let moved = (dragStart ?? begin).addingTimeInterval((drag.translation.height / hourHeight * 4).rounded() * 900)
-                if Calendar.current.isDate(moved, inSameDayAs: day), moved != begin { draft?.start = moved }
-            }
-            .onEnded { _ in dragStart = nil })
-        .onHover { inside in if inside { NSCursor.openHand.push() } else { NSCursor.pop() } }
-        .animation(.smooth(duration: 0.12), value: booking.start)
-    }
-
-    private var now: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            HStack(spacing: 0) {
-                Circle().fill(UpshowInk.green2).frame(width: 7, height: 7)
-                Rectangle().fill(UpshowInk.green2).frame(height: 1)
-            }
-            .offset(x: -3, y: y(context.date) - 3.5)
-        }
-        .allowsHitTesting(false)
-        .zIndex(4)
-    }
-}
-
-/// Busy time from the other calendars: hatched, marked BUSY when there is room.
-private struct CalendarBusy: View {
-    let minutes: Double
-
-    var body: some View {
-        ZStack(alignment: .leading) {
-            UpshowInk.busyA
-            Hatch().stroke(UpshowInk.busyB, lineWidth: 5)
-            if minutes >= 30 {
-                Text("BUSY").font(.system(size: 10, weight: .medium)).kerning(0.6).foregroundStyle(UpshowInk.busyText).padding(.horizontal, 6)
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(UpshowInk.busyBorder) }
-    }
-
-    private struct Hatch: Shape {
-        func path(in rect: CGRect) -> Path {
-            Path { path in
-                var x = -rect.height
-                while x < rect.width {
-                    path.move(to: CGPoint(x: x, y: rect.height))
-                    path.addLine(to: CGPoint(x: x + rect.height, y: 0))
-                    x += 10
-                }
-            }
-        }
-    }
-}
-
-/// One meeting, as Upshow draws it: its title, then the time, on a green wash; the chevron when
-/// Upshow is sending its reminders.
-private struct CalendarBlock: View {
-    let meeting: UpshowMeeting
-    let height: CGFloat
-    let picked: Bool
-    let layered: Bool
-    let action: () -> Void
-    @State private var hovered = false
-
-    private var ink: Color {
-        switch meeting.status ?? "confirmed" {
-        case "completed", "attended_by_colleague": return UpshowInk.completed
-        case "no_show": return UpshowInk.noShow
-        case "rescheduled": return UpshowInk.rescheduled
-        default: return UpshowInk.text
-        }
-    }
-
-    var body: some View {
-        let past = meeting.end < Date()
-        let minutes = meeting.end.timeIntervalSince(meeting.start) / 60
-        let name = meeting.title.isEmpty ? "Meeting" : meeting.title
-        Button(action: action) {
-            Group {
-                if minutes < 45 {
-                    HStack(spacing: 5) {
-                        Text(name).font(.system(size: 12, weight: .medium)).foregroundStyle(ink).lineLimit(1)
-                        Text(CalendarText.time(meeting.start)).font(.system(size: 10.5).monospacedDigit())
-                            .foregroundStyle(ink == UpshowInk.text ? UpshowInk.muted : ink).opacity(0.75)
-                            .layoutPriority(-1)
-                        Spacer(minLength: 0)
-                    }
-                } else {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(name).font(.system(size: 12, weight: .medium)).foregroundStyle(ink)
-                            .lineLimit(minutes >= 120 ? 4 : minutes >= 90 ? 3 : 2)
-                        Text("\(CalendarText.time(meeting.start))–\(CalendarText.time(meeting.end))")
-                            .font(.system(size: 10.5).monospacedDigit()).foregroundStyle(ink == UpshowInk.text ? UpshowInk.muted : ink).opacity(0.75)
-                    }
-                }
-            }
-            .padding(.leading, 7).padding(.trailing, meeting.protected ? 20 : 7).padding(.vertical, 3)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .frame(height: height)
-            .background(picked ? UpshowInk.blockSelected : hovered ? UpshowInk.blockHover : UpshowInk.block,
-                        in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .overlay(alignment: .topTrailing) {
-                if meeting.protected { UpshowChevron().frame(width: 14, height: 14).padding(3).help("Protected by Upshow: it is sending this meeting's reminders, so the people booked in turn up.") }
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(picked ? UpshowInk.blockBorder : layered ? UpshowInk.card : .clear, lineWidth: 1)
-            }
-            .overlay {
-                if hovered && !picked {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(UpshowInk.green2.opacity(0.45), lineWidth: 1).padding(-1)
-                }
-            }
-            .opacity(past ? (meeting.protected ? 0.75 : 0.6) : 1)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovered = $0 }
-        .animation(.easeOut(duration: 0.14), value: hovered)
-    }
-}
-
-/// Upshow's mark: two chevrons, the lower one faint.
-struct UpshowChevron: View {
-    var color = UpshowInk.green2
-
-    var body: some View {
-        Canvas { context, size in
-            let s = size.width / 32
-            func chevron(_ top: CGFloat) -> Path {
-                Path { p in
-                    p.move(to: CGPoint(x: 16 * s, y: top * s))
-                    p.addLine(to: CGPoint(x: 7 * s, y: (top + 11) * s))
-                    p.addLine(to: CGPoint(x: 25 * s, y: (top + 11) * s))
-                    p.closeSubpath()
-                }
-            }
-            context.fill(chevron(6.5), with: .color(color))
-            context.fill(chevron(13.5), with: .color(color.opacity(0.4)))
-        }
-    }
-}
-
-/// Overlapping meetings, layered as Upshow does: one that starts while another is running sits on
-/// top of it, stepped in, and runs to the right edge.
-enum CalendarLayers {
-    struct Place { let x: CGFloat; let width: CGFloat; let depth: Int }
-
-    static func make(_ meetings: [UpshowMeeting]) -> [String: Place] {
-        var out: [String: Place] = [:]
-        var running: [(end: Date, depth: Int)] = []
-        for meeting in meetings.sorted(by: { ($0.start, $1.end) < ($1.start, $0.end) }) {
-            running.removeAll { $0.end <= meeting.start }
-            let depth = min((running.map(\.depth).max() ?? -1) + 1, 4)
-            let x = running.isEmpty ? 0 : min(CGFloat(depth) * 0.14, 0.7)
-            out[meeting.id] = Place(x: x, width: 1 - x, depth: running.isEmpty ? 0 : depth)
-            running.append((meeting.end, running.isEmpty ? 0 : depth))
-        }
-        return out
-    }
-}
-
 /// A fetch that failed must not look like an empty, free week.
 private struct CalendarUnavailable: View {
     let reason: String
@@ -582,6 +291,8 @@ private struct CalendarUnavailable: View {
 private struct CalendarPeek: View {
     let meeting: UpshowMeeting
     let close: () -> Void
+    /// Reschedule: the week steps back around this meeting, to be dragged to its new time.
+    var reschedule: (() -> Void)?
     private enum Mode { case view, moving, cancelling }
     @State private var mode = Mode.view
     @State private var newStart = Date()
@@ -725,6 +436,7 @@ private struct CalendarPeek: View {
             section {
                 HStack(spacing: 6) {
                     Button("Reschedule") {
+                        if let reschedule { return reschedule() }
                         newStart = max(meeting.start, Date().addingTimeInterval(900))
                         minutes = max(5, Int(meeting.end.timeIntervalSince(meeting.start) / 60))
                         withAnimation(.smooth(duration: 0.18)) { mode = .moving }
@@ -991,6 +703,18 @@ enum CalendarText {
     private static let yearOnly = format("yyyy")
 
     static func time(_ date: Date) -> String { timeFormat.string(from: date) }
+    /// "7pm", "12am": the hour column, as Upshow labels it.
+    static func hourLabel(_ hour: Int) -> String {
+        let h = ((hour % 24) + 24) % 24
+        if h == 0 { return "12am" }
+        if h == 12 { return "12pm" }
+        return h > 12 ? "\(h - 12)pm" : "\(h)am"
+    }
+    private static let clock12Format: DateFormatter = { let f = DateFormatter(); f.dateFormat = "h:mma"; f.amSymbol = "am"; f.pmSymbol = "pm"; return f }()
+    /// "2:05pm", on the now line's pill.
+    static func clock12(_ date: Date) -> String { clock12Format.string(from: date) }
+    /// "09:00" from minutes after midnight.
+    static func clockLabel(_ minutes: Int) -> String { String(format: "%02d:%02d", (minutes / 60) % 24, minutes % 60) }
     static func time(_ date: Date, in zone: TimeZone) -> String {
         let f = format("HHmm")
         f.timeZone = zone
