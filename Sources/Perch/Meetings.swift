@@ -83,6 +83,23 @@ final class MeetingWatch {
         .sorted { $0.start < $1.start }
     }
 
+    /// The join link for an Upshow meeting, taken from the same meeting on the Mac's calendars:
+    /// the event starting within five minutes of it, preferring one the guest is invited to.
+    /// Upshow's own connection does not carry the link.
+    func joinLink(start: Date, guestEmail: String) -> (URL, String)? {
+        guard allowed == true else { return nil }
+        let predicate = store.predicateForEvents(withStart: start.addingTimeInterval(-300), end: start.addingTimeInterval(300), calendars: nil)
+        let near = store.events(matching: predicate).filter { abs($0.startDate.timeIntervalSince(start)) <= 300 && $0.status != .canceled }
+        let email = guestEmail.lowercased()
+        let invited = near.first { e in
+            !email.isEmpty && (e.attendees ?? []).contains { $0.url.absoluteString.lowercased().replacingOccurrences(of: "mailto:", with: "") == email }
+        }
+        for e in [invited].compactMap({ $0 }) + near {
+            if let link = Self.joinLink(e) { return link }
+        }
+        return nil
+    }
+
     /// The video link in an event: its URL, location or notes.
     static func joinLink(_ e: EKEvent) -> (URL, String)? {
         let text = [e.url?.absoluteString, e.location, e.notes].compactMap { $0 }.joined(separator: " ")

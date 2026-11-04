@@ -814,8 +814,9 @@ private struct UsageDial: View {
         .frame(width: 14, height: 14)
         .reach(4, 9)
         .onHover { hovered = $0 }
-        // The figure appears beside the dial, on the outer side where there is room.
-        .overlay(alignment: labelOnLeft ? .trailing : .leading) {
+        // The figure hangs just under the dial and reaches in towards the notch, so it stays on
+        // screen however far out the dial sits (with many chats open it is near the edge).
+        .overlay(alignment: labelOnLeft ? .topLeading : .topTrailing) {
             if hovered {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(lines, id: \.self) { Text($0) }
@@ -824,7 +825,8 @@ private struct UsageDial: View {
                     .foregroundStyle(.white.opacity(0.9)).fixedSize()
                     .padding(.horizontal, 7).padding(.vertical, 3)
                     .background(Color(white: 0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .offset(x: labelOnLeft ? -20 : 20)
+                    .alignmentGuide(labelOnLeft ? .leading : .trailing) { d in labelOnLeft ? d[.leading] : d[.trailing] }
+                    .offset(y: 20)
                     .transition(.opacity)
                     .allowsHitTesting(false)
             }
