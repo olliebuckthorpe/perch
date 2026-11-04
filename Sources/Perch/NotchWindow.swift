@@ -18,7 +18,15 @@ enum FrontApp {
         guard window.isKeyWindow, !NSApp.isActive else { return }
         let front = NSWorkspace.shared.frontmostApplication
         if front?.processIdentifier != ProcessInfo.processInfo.processIdentifier { previous = front }
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
+    }
+
+    /// macOS only lets an app come forward while it is handling something the user just did, so
+    /// asking from focus changes afterwards was quietly refused and the app behind stayed in
+    /// front. This runs inside the click or key press itself, once it has put the cursor in a box.
+    static func takeAfter(_ event: NSEvent, in window: NSWindow) {
+        guard [.leftMouseDown, .keyDown].contains(event.type), window.firstResponder is NSTextView else { return }
+        take(for: window)
     }
 
     static func giveBack() {
@@ -32,6 +40,11 @@ enum FrontApp {
 final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    override func sendEvent(_ event: NSEvent) {
+        super.sendEvent(event)
+        FrontApp.takeAfter(event, in: self)
+    }
 
     override func becomeKey() {
         super.becomeKey()

@@ -8137,6 +8137,7 @@ final class SidePanelWindow: NSPanel {
             makeKey()
         }
         super.sendEvent(event)
+        FrontApp.takeAfter(event, in: self)
     }
 
     override var canBecomeMain: Bool { false }
