@@ -1369,6 +1369,9 @@ final class NotchController {
                     return nil
                 }
             }
+            if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v" {
+                Attachment.addPlainText()
+            }
             if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v",
                event.window is SidePanelWindow, let id = SidePanel.shared.agentID {
                 return self?.ui.pasteImages(into: id) == true ? nil : event

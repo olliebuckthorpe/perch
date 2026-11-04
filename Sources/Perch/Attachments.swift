@@ -54,6 +54,22 @@ struct Attachment: Identifiable {
     var note: String { isImage ? "[Image attached, saved at \(path)]" : "[File attached, saved at \(path)]" }
 
     /// Images on the clipboard, unless it also holds text (then it is an ordinary paste).
+    /// Some apps (Granola, for one) copy only formatted text, with no plain version. Perch's boxes
+    /// take plain text, so such a paste did nothing, or was even read as a picture. This adds the
+    /// plain text alongside what is there, keeping the formatted copy for other apps.
+    static func addPlainText() {
+        let pb = NSPasteboard.general
+        guard pb.string(forType: .string) == nil, let item = pb.pasteboardItems?.first else { return }
+        var text: String?
+        if let html = item.data(forType: .html),
+           let s = NSAttributedString(html: html, documentAttributes: nil) { text = s.string }
+        else if let rtf = item.data(forType: .rtf), let s = NSAttributedString(rtf: rtf, documentAttributes: nil) { text = s.string }
+        else if let rtfd = item.data(forType: .rtfd), let s = NSAttributedString(rtfd: rtfd, documentAttributes: nil) { text = s.string }
+        else if let raw = item.string(forType: NSPasteboard.PasteboardType("public.utf16-plain-text")) { text = raw }
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return }
+        item.setString(text, forType: .string)
+    }
+
     static func fromPasteboard() -> [Attachment] {
         let pb = NSPasteboard.general
         let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingContentsConformToTypes: [UTType.image.identifier]]
