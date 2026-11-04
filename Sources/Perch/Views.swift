@@ -7852,6 +7852,14 @@ private struct SlackBanner: View {
     @State private var hoverWork: DispatchWorkItem?
     private func hover(_ over: Bool) {
         hoverWork?.cancel()
+        // Coming to it opens the chat itself, the same one the island shows, with its pictures
+        // and everything else, rather than a second, smaller copy of it inside the banner.
+        if over {
+            let work = DispatchWorkItem { [ui] in ui.openConversation(alert.target, thread: alert.threadParent) }
+            hoverWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+            return
+        }
         guard over != hovered else { return }
         let work = DispatchWorkItem { withAnimation(.smooth(duration: 0.34)) { hovered = over } }
         hoverWork = work

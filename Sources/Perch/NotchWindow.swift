@@ -34,19 +34,6 @@ enum FrontApp {
     /// Whether Perch came forward this time, for the debug log.
     static var isFront: Bool { NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier }
 
-    /// Perch runs without a Dock icon or menu bar, and macOS never counts an app like that as
-    /// the front app, even while the user types in it. Granola asks for the front app before
-    /// pasting, so while Perch is active it becomes an ordinary app (its icon shows in the Dock
-    /// for that time), and goes back to hiding the moment it is not.
-    static func watch() {
-        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
-            if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
-        }
-        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
-            if NSApp.activationPolicy() != .accessory { NSApp.setActivationPolicy(.accessory) }
-        }
-    }
-
     static func giveBack() {
         defer { previous = nil }
         // Already somewhere else (the user clicked another app): leave them there.

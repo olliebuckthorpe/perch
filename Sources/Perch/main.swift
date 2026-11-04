@@ -79,7 +79,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MeetingWatch.shared.start()
         WhatsAppSource.shared.start()
         CalendarStore.shared.start()
-        FrontApp.watch()
         SidePanel.shared.restore()
         Clips.shared.start()
         // Control+Option+V: the clipboard. Control+Option+R: the pinned bot (Remmi).
@@ -288,8 +287,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "front" where parts.count > 1:
             // front:<file>: whether Perch is the front app and whether clicks bring it there.
             let panel = controller?.panel
-            try? "active=\(NSApp.isActive) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "nil") clicksActivate=\(String(describing: panel?.clicksActivate)) key=\(panel?.isKeyWindow ?? false) expanded=\(ui.expanded)"
+            try? "active=\(NSApp.isActive) policy=\(NSApp.activationPolicy().rawValue) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "nil") clicksActivate=\(String(describing: panel?.clicksActivate)) key=\(panel?.isKeyWindow ?? false) expanded=\(ui.expanded)"
                 .write(toFile: parts[1], atomically: true, encoding: .utf8)
+        case "regular" where parts.count > 1:
+            // regular:<file>: tries being an ordinary app, then reports whether macOS counts it as in front.
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                try? "after regular: active=\(NSApp.isActive) policy=\(NSApp.activationPolicy().rawValue) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "nil")"
+                    .write(toFile: parts[1], atomically: true, encoding: .utf8)
+            }
+        case "accessory":
+            NSApp.setActivationPolicy(.accessory)
         case "select" where parts.count > 1: ui.show(parts[1])
         case "answer" where parts.count > 1:
             if let agent = AgentStore.shared.find(parts[1]), let answers = json["answers"] as? [String: String] {
