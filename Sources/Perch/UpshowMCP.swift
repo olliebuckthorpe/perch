@@ -274,7 +274,12 @@ struct UpshowMCP: UpshowCalendarService {
         return UpshowMeeting(id: id, title: row["meeting_title"] as? String ?? "Meeting",
                              guest: (row["prospect_name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? email,
                              guestEmail: email, company: row["prospect_company"] as? String ?? "",
-                             start: start, end: end, link: nil, sequenceID: row["meeting_type_id"] as? String)
+                             start: start, end: end, link: nil, sequenceID: row["meeting_type_id"] as? String,
+                             status: row["status"] as? String, remindersOff: row["reminders_disabled"] as? Bool,
+                             sequencePaused: !(row["sequence_paused_at"] is NSNull || row["sequence_paused_at"] == nil),
+                             guestReplied: !(row["prospect_responded_at"] is NSNull || row["prospect_responded_at"] == nil),
+                             wonBack: !(row["recovered_at"] is NSNull || row["recovered_at"] == nil),
+                             platform: row["booking_platform"] as? String, guestTimeZone: row["prospect_timezone"] as? String)
     }
 
     func busy(from: Date, to: Date) async throws -> [UpshowBusy] {

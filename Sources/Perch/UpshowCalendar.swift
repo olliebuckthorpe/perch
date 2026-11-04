@@ -19,6 +19,21 @@ struct UpshowMeeting: Identifiable, Equatable, Codable {
     var link: URL?
     /// The sequence (meeting type) running on it, if any.
     var sequenceID: String?
+    /// confirmed, rescheduled, completed, no_show and so on.
+    var status: String?
+    var remindersOff: Bool?
+    var sequencePaused: Bool?
+    var guestReplied: Bool?
+    var wonBack: Bool?
+    /// manual, cal_com, calendly, google, outlook: where the booking itself lives.
+    var platform: String?
+    var guestTimeZone: String?
+
+    /// Upshow is sending this meeting's reminders: what the chevron on its block says.
+    var protected: Bool {
+        ["confirmed", "rescheduled"].contains(status ?? "confirmed") && remindersOff != true
+            && sequencePaused != true && guestReplied != true
+    }
 }
 
 /// Time taken on a connected calendar by something that is not an Upshow meeting.
