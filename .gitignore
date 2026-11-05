@@ -3,3 +3,4 @@
 *.xcodeproj
 .DS_Store
 whatsapp/perch-whatsapp
+dist/

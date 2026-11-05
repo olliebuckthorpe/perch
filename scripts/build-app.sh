@@ -5,7 +5,8 @@ cd "$(dirname "$0")/.."
 
 swift build -c release -j 4
 
-APP="$HOME/Applications/Perch.app"
+# PERCH_APP builds somewhere else (scripts/release.sh), leaving the installed copy running.
+APP="${PERCH_APP:-$HOME/Applications/Perch.app}"
 # Quit the running copy. Matched by its full path: matching by name has silently missed it,
 # leaving an old build running while the new one sat unused on disk.
 for pid in $(ps -Ao pid=,command= | awk -v app="$APP/Contents/MacOS/Perch" '$2 == app {print $1}'); do
@@ -35,7 +36,7 @@ if command -v go >/dev/null; then
 fi
 [ -f whatsapp/perch-whatsapp ] && cp whatsapp/perch-whatsapp "$APP/Contents/Resources/perch-whatsapp"
 cp .build/release/Perch "$APP/Contents/MacOS/Perch"
-cat > "$APP/Contents/Info.plist" <<'EOF'
+cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -45,7 +46,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
   <key>CFBundleIdentifier</key><string>app.perch.notch</string>
   <key>CFBundleExecutable</key><string>Perch</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>${PERCH_VERSION:-0.1.0}</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>

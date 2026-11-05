@@ -7,6 +7,36 @@ island opens by itself with just that prompt.
 
 A personal build inspired by Look Alive.
 
+## Install (no building needed)
+
+Needs an Apple Silicon Mac on macOS 14 or later, and the GitHub CLI signed in to an account
+with access to this repo.
+
+```sh
+brew install gh && gh auth login
+gh repo clone Buckie2912/perch ~/perch && ~/perch/scripts/install.sh
+```
+
+That puts the newest release in `~/Applications/Perch.app`, adds the Claude Code and Codex
+hooks (your existing settings are backed up first) and opens Perch. To update later, run
+`~/perch/scripts/install.sh` again.
+
+After the first open:
+
+- **Accessibility and microphone:** macOS asks. Allow both; Perch needs them for typing into
+  the notch and for dictation.
+- **WhatsApp:** gear menu, Connect WhatsApp, then scan the QR code with your phone
+  (Settings, Linked devices).
+- **Slack (optional):** `slack/add-workspace.sh` walks through making your own Slack app
+  from `slack/manifest.json`.
+- **Notion to-dos (optional):** put a Notion integration token in `~/.perch/notion-token`.
+  The board shows the shared tasks database's cards that are yours or unowned, going by your
+  Mac's user name.
+- **Grok Bot (optional):** needs the Grok Bot app and the grokbot Claude Code plugin.
+- **Voice messages:** `brew install ffmpeg`.
+
+New releases are made from this Mac with `./scripts/release.sh`.
+
 ## Build and run
 
 ```sh

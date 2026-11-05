@@ -25,6 +25,15 @@ final class NotionTasks {
     /// "✅ Jonny & Ollie Tasks".
     private static let database = UserDefaults.standard.string(forKey: "notionDatabase") ?? "65dc48ca8b7c4f3db300cdf1e87dafd2"
     static let tokenPath = "\(Shell.home)/.perch/notion-token"
+    /// Whose board this is, by the Owner names the shared database uses: the Mac's own user name
+    /// decides, so the same build shows Ollie his cards and Jonny his. `notionOwner` overrides it.
+    static let owner: String = {
+        if let set = UserDefaults.standard.string(forKey: "notionOwner"), !set.isEmpty { return set }
+        let name = NSFullUserName().lowercased()
+        return name.hasPrefix("oll") || name.hasPrefix("oliver") ? "Ollie" : "Jonny"
+    }()
+    /// The other person's cards are the ones left off.
+    static var otherOwner: String { owner == "Ollie" ? "Jonny" : "Ollie" }
     /// The board's columns. My to-dos leads because it is the one in daily use.
     static let columns = ["My to-dos", "Upshow to-dos", "Waiting On"]
 
@@ -86,11 +95,11 @@ final class NotionTasks {
         guard connected, !loading else { return }
         loading = true
         let requestedRevision = revision
-        // The same filter as the "Jonny's board" view.
+        // The same filter as the board views in Notion: not done, and not the other person's.
         let filter: [String: Any] = ["and": [
             ["property": "Column", "select": ["does_not_equal": "Done"]],
             ["or": [
-                ["property": "Owner", "select": ["does_not_equal": "Ollie"]],
+                ["property": "Owner", "select": ["does_not_equal": Self.otherOwner]],
                 ["property": "Owner", "select": ["is_empty": true]],
             ]],
         ]]
@@ -193,7 +202,7 @@ final class NotionTasks {
             "Name": ["title": [["text": ["content": name]]]],
             "Column": ["select": ["name": column]],
             "Status": ["select": ["name": "To do"]],
-            "Owner": ["select": ["name": "Jonny"]],
+            "Owner": ["select": ["name": Self.owner]],
             "Source": ["select": ["name": "Manual"]],
         ]
         // On the board straight away, at the top of its list; Notion's copy replaces it when it arrives.
