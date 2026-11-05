@@ -6821,7 +6821,7 @@ private struct SlackThreadView: View {
                                 NewMessagesMark(whatsapp: false, count: unreadAtOpen).id("new")
                             }
                             SlackRow(line: line, workspace: target.workspace,
-                                     continued: SlackComposer.continues(line, after: replies.prevLine(line)),
+                                     continued: SlackComposer.continues(line, after: i > 0 ? replies[i - 1] : nil),
                                      react: { name, add in SlackSource.shared.react(target, ts: line.id, name: name, add: add) },
                                      target: target)
                                 .id(line.viewKey)

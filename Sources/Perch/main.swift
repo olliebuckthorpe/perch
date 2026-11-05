@@ -79,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MeetingWatch.shared.start()
         WhatsAppSource.shared.start()
         CalendarStore.shared.start()
+        HangWatch.shared.start()
         SidePanel.shared.restore()
         Clips.shared.start()
         // Control+Option+V: the clipboard. Control+Option+R: the pinned bot (Remmi).
