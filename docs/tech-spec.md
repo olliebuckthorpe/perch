@@ -55,7 +55,13 @@ The notch UI is one `NSPanel` that never becomes the key window and never resize
 - **Open:** a left rail with search, the pinned lead bot as a tile at the top, then chats
   ordered by most recent activity (bots, coding sessions, and unread Slack and WhatsApp
   conversations). The right side shows the selected chat with a composer.
-- **Tabs:** Chats and To-dos (the Notion board).
+- **Tabs:** Chats, Calendar, To-dos (the Notion board) and Music.
+- **Music:** whatever is in Control Center's Now Playing (Spotify, Music, a browser tab), read
+  by the bundled mediaremote-adapter running under `/usr/bin/perl` (`NowPlaying.swift`,
+  `vendor/mediaremote-adapter`). While it plays, the closed notch shows the cover and,
+  beside it, bouncing bars in the cover's colour, both at the far left, lingering 20 seconds after a
+  pause. The Music tab has the cover large (click to open the player), a draggable progress
+  bar, and previous / play-pause / next.
 - **Side panels:** any chat can be popped out into a floating side panel. Open panels are
   saved and restored after a relaunch, restored without scrolling animation and without taking
   keyboard focus. Double-clicking a panel's header closes it and opens the real chat in the

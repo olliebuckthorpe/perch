@@ -94,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         codex.start()
         GrokSource.shared.start()
         NotionTasks.shared.start()
+        NowPlaying.shared.start()
 
         pruneTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in AgentStore.shared.prune() }
         // A restart can come without warning, so the list is written out as it changes.
@@ -106,6 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Let go of every held hook so no agent is left waiting on a notch that is gone.
         for agent in AgentStore.shared.agents { agent.pending?.finish() }
         GrokSource.shared.stop()
+        NowPlaying.shared.stop()
         server?.stop()
     }
 
@@ -173,9 +175,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "tasks":
             ui.expand()
             ui.showingTasks = true
+        case "music":
+            ui.showMusic()
         case "calendar":
             ui.expand()
             ui.showingTasks = false
+            ui.showingMusic = false
             ui.showingCalendar = true
             // calendar:<sentence> opens a booking read from it. Nothing is sent without Book meeting.
             if parts.count > 1 { CalendarStore.shared.handedSentence = parts[1] }

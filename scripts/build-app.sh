@@ -35,6 +35,12 @@ if command -v go >/dev/null; then
   fi
 fi
 [ -f whatsapp/perch-whatsapp ] && cp whatsapp/perch-whatsapp "$APP/Contents/Resources/perch-whatsapp"
+# Now Playing for the Music tab: the adapter framework, and the Perl script that loads it
+# (vendor/mediaremote-adapter/README.md says why it runs under /usr/bin/perl).
+sh vendor/mediaremote-adapter/build.sh "$PWD/.build/mediaremote"
+mkdir -p "$APP/Contents/Resources/mediaremote"
+cp -R .build/mediaremote/MediaRemoteAdapter.framework "$APP/Contents/Resources/mediaremote/"
+cp vendor/mediaremote-adapter/bin/mediaremote-adapter.pl "$APP/Contents/Resources/mediaremote/"
 cp .build/release/Perch "$APP/Contents/MacOS/Perch"
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -68,9 +74,14 @@ cat > "$APP/Contents/Info.plist" <<EOF
 EOF
 # Sign with the permanent local certificate when it exists, so macOS sees every build as the
 # same app and permissions (Accessibility, microphone) survive a rebuild. Ad-hoc otherwise.
-if security find-certificate -c "Perch Signing" >/dev/null 2>&1 && codesign --force --sign "Perch Signing" "$APP" >/dev/null 2>&1; then
+# The adapter framework is nested code, so it is signed first, with the same identity.
+ADAPTER="$APP/Contents/Resources/mediaremote/MediaRemoteAdapter.framework"
+if security find-certificate -c "Perch Signing" >/dev/null 2>&1 \
+  && codesign --force --sign "Perch Signing" "$ADAPTER" >/dev/null 2>&1 \
+  && codesign --force --sign "Perch Signing" "$APP" >/dev/null 2>&1; then
   echo "Signed with Perch Signing"
 else
+  codesign --force --sign - "$ADAPTER" >/dev/null 2>&1
   codesign --force --sign - "$APP" >/dev/null 2>&1
   echo "Signed ad hoc"
 fi

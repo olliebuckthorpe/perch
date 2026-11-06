@@ -28,14 +28,18 @@ struct NotchContent: View {
         // stays as small as it can be.
         let dials = ui.expanded && !ui.cardsOnly && ui.pendingLinks.isEmpty && ui.justOpened == nil && !(ui.showingClips && !ui.clipsInline) && !ui.showingShelf
         let grokDial = dials && usage.grok.week != nil, claudeDial = dials && (usage.claude.short != nil || usage.claude.week != nil)
-        let l = earWidth(left.count) + (grokDial ? dialWidth : 0), r = earWidth(right.count) + (claudeDial ? dialWidth : 0)
+        // While music plays, the closed notch carries the cover and bars together at the far
+        // left, outside the faces. Open, the Music tab has them instead.
+        let music = !ui.expanded && NowPlaying.shared.inNotch
+        let l = earWidth(left.count) + (grokDial ? dialWidth : 0) + (music ? MusicCoverEar.width + MusicBarsEar.width : 0)
+        let r = earWidth(right.count) + (claudeDial ? dialWidth : 0)
         // Opened, the island is at least 340 wide; the extra is shared between both sides
         // so the gap always stays lined up with the hardware notch.
         // A chat needs more room than the roster.
         let chatting = ui.selectedID != nil || ui.composing
         // A Slack thread opens beside its conversation, as in Slack, so the island widens for it.
         let threadBeside = ui.slackTarget.map { t in t.workspace != WhatsAppSource.workspace && ui.openThreads["\(t.workspace):\(t.id)"] != nil } == true
-            && !ui.browsing && !ui.showingTasks && !ui.showingCalendar
+            && !ui.browsing && !ui.showingTasks && !ui.showingCalendar && !ui.showingMusic
         let extra = ui.expanded ? max(0, (ui.cardsOnly || !ui.pendingLinks.isEmpty || ui.justOpened != nil ? 340 : (ui.showingClips && !ui.clipsInline) || ui.showingShelf ? 380 : threadBeside ? 1180 : 768) - (l + ui.notch.width + r)) : 0
         let side = max(l, r, extra > 0 ? (l + r + extra) / 2 : 0)
         let leftWidth = ui.expanded ? side : l, rightWidth = ui.expanded ? side : r
@@ -47,12 +51,13 @@ struct NotchContent: View {
             HStack(spacing: 0) {
                 HStack(spacing: 0) {
                     if grokDial { UsageDial(plan: usage.grok, name: "Grok Bot", color: .white, labelOnLeft: true).padding(.leading, 10) }
-                    Ear(agents: left)
+                    if music { MusicCoverEar(); MusicBarsEar() }
+                    if !left.isEmpty { Ear(agents: left) }
                 }
                 .frame(width: leftWidth, alignment: .trailing)
                 Color.clear.frame(width: ui.notch.width)
                 HStack(spacing: 0) {
-                    Ear(agents: right)
+                    if !right.isEmpty { Ear(agents: right) }
                     if claudeDial {
                         UsageDial(plan: usage.claude, name: "Claude", color: Color(red: 0.85, green: 0.47, blue: 0.34)).padding(.trailing, 10)
                     }
@@ -98,6 +103,8 @@ struct NotchContent: View {
         .animation(island, value: ui.cardsOnly)
         .animation(tabSwitch, value: ui.showingTasks)
         .animation(tabSwitch, value: ui.showingCalendar)
+        .animation(tabSwitch, value: ui.showingMusic)
+        .animation(island, value: music)
         .animation(island, value: ui.showingClips)
         .animation(island, value: ui.showingShelf)
         .animation(island, value: store.needing.count)
@@ -172,6 +179,8 @@ private struct ExpandedBody: View {
                     .zIndex(5)
                 if ui.showingCalendar {
                     CalendarView().transition(.opacity)
+                } else if ui.showingMusic {
+                    MusicView().transition(.opacity)
                 } else if ui.showingTasks {
                     // The board gets the full width; the island stays the same size either way.
                     TasksView()
@@ -889,16 +898,20 @@ private struct TopBar: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            tab("Chats", on: !ui.showingTasks && !ui.showingCalendar) {
-                withAnimation(tabSwitch) { ui.showingTasks = false; ui.showingCalendar = false }
+            tab("Chats", on: !ui.showingTasks && !ui.showingCalendar && !ui.showingMusic) {
+                withAnimation(tabSwitch) { ui.showingTasks = false; ui.showingCalendar = false; ui.showingMusic = false }
             }
             tab("Calendar", on: ui.showingCalendar) {
                 ui.composing = false
-                withAnimation(tabSwitch) { ui.showingTasks = false; ui.showingCalendar = true }
+                withAnimation(tabSwitch) { ui.showingTasks = false; ui.showingMusic = false; ui.showingCalendar = true }
             }
             tab("To-dos", count: NotionTasks.shared.connected ? NotionTasks.shared.tasks.count : nil, on: ui.showingTasks) {
                 ui.composing = false
-                withAnimation(tabSwitch) { ui.showingCalendar = false; ui.showingTasks = true }
+                withAnimation(tabSwitch) { ui.showingCalendar = false; ui.showingMusic = false; ui.showingTasks = true }
+            }
+            tab("Music", on: ui.showingMusic) {
+                ui.composing = false
+                withAnimation(tabSwitch) { ui.showingTasks = false; ui.showingCalendar = false; ui.showingMusic = true }
             }
             // Only when something is being held: a small tray with how many. Click for the shelf.
             if !Clips.shared.shelf.isEmpty {
