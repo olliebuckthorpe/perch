@@ -7,19 +7,23 @@ island opens by itself with just that prompt.
 
 A personal build inspired by Look Alive.
 
-## Install (no building needed)
+## Install
 
-Needs an Apple Silicon Mac on macOS 14 or later, and the GitHub CLI signed in to an account
-with access to this repo.
+Needs an Apple Silicon Mac on macOS 14 or later with Xcode installed (for `swift` and the
+Core ML compiler). Go is optional: when it is installed, the WhatsApp helper is built too.
 
 ```sh
-brew install gh && gh auth login
-gh repo clone Buckie2912/perch ~/perch && ~/perch/scripts/install.sh
+git clone https://github.com/olliebuckthorpe/perch ~/perch
+cd ~/perch
+./scripts/build-app.sh --run      # builds ~/Applications/Perch.app and launches it
+python3 scripts/install-hooks.py  # adds the Claude Code and Codex hooks (backs up first)
 ```
 
-That puts the newest release in `~/Applications/Perch.app`, adds the Claude Code and Codex
-hooks (your existing settings are backed up first) and opens Perch. To update later, run
-`~/perch/scripts/install.sh` again.
+To update later, `git pull` and run both commands again. To remove the hooks, run
+`python3 scripts/install-hooks.py --uninstall`.
+
+There is no prebuilt download yet. `scripts/install.sh` installs the newest GitHub release
+and `scripts/release.sh` publishes one, so both only work once this repo has a release.
 
 After the first open:
 
@@ -34,16 +38,6 @@ After the first open:
   Mac's user name.
 - **Grok Bot (optional):** needs the Grok Bot app and the grokbot Claude Code plugin.
 - **Voice messages:** `brew install ffmpeg`.
-
-New releases are made from this Mac with `./scripts/release.sh`.
-
-## Build and run
-
-```sh
-./scripts/build-app.sh --run      # builds ~/Applications/Perch.app and launches it
-python3 scripts/install-hooks.py  # adds the Claude Code and Codex hooks (backs up first)
-python3 scripts/install-hooks.py --uninstall
-```
 
 ## How it gets its data
 
