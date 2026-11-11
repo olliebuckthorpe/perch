@@ -125,6 +125,8 @@ final class NotchUI {
     var showingTasks = false
     /// The Calendar tab.
     var showingCalendar = false
+    /// The Music tab: what is playing, large, with its controls.
+    var showingMusic = false
     var showingClips = false
     /// The Slack conversation open in the notch.
     var slackTarget: SlackTarget? {
@@ -290,6 +292,7 @@ final class NotchUI {
         browsing = false
         showingTasks = false
         showingCalendar = false
+        showingMusic = false
         showingProfiles = false
         selectedID = nil
         slackTarget = t
@@ -322,6 +325,7 @@ final class NotchUI {
         showingClips = false
         showingTasks = false
         showingCalendar = false
+        showingMusic = false
         showingShelf = true
         expanded = true
     }
@@ -376,6 +380,7 @@ final class NotchUI {
         if clipsInline {
             showingTasks = false
             showingCalendar = false
+            showingMusic = false
             showingClips = true
             clipIndex = 0
             controller?.panel.makeKey()
@@ -387,6 +392,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingCalendar = false
+        showingMusic = false
         showingShelf = false
         showingClips = true
         clipIndex = 0
@@ -399,7 +405,7 @@ final class NotchUI {
     func openPinned() {
         let bots = AgentStore.shared.grokBots
         guard let bot = bots.first(where: { pinned.contains($0.name) }) ?? bots.first else { return }
-        if expanded, selectedID == bot.id, !showingClips, !showingTasks && !showingCalendar, !cardsOnly {
+        if expanded, selectedID == bot.id, !showingClips, !showingTasks && !showingCalendar && !showingMusic, !cardsOnly {
             collapse()
             return
         }
@@ -653,11 +659,11 @@ final class NotchUI {
             bannerFiles[Self.bannerKey(alert), default: []].append(contentsOf: images)
             return true
         }
-        if expanded, !cardsOnly, !showingClips, !showingShelf, !showingTasks && !showingCalendar, let t = slackTarget { return pasteImages(into: t) }
+        if expanded, !cardsOnly, !showingClips, !showingShelf, !showingTasks && !showingCalendar && !showingMusic, let t = slackTarget { return pasteImages(into: t) }
         // The chat on screen is the one being written to. (Going by which box last had the
         // cursor could point at a chat that is no longer showing, and the picture vanished.)
         // Starting a new chat collects them under "new"; otherwise the chat on screen.
-        guard expanded, !showingClips, !showingShelf, !showingTasks && !showingCalendar,
+        guard expanded, !showingClips, !showingShelf, !showingTasks && !showingCalendar && !showingMusic,
               let id = composing ? "new" : (selectedID ?? focusedAgentID) else { return false }
         let images = Attachment.fromPasteboard()
         guard !images.isEmpty else { return false }
@@ -783,6 +789,15 @@ final class NotchUI {
         resumeDraft()
     }
 
+    /// Opens the island on the Music tab: a click on the cover or bars in the closed notch.
+    func showMusic() {
+        expand()
+        composing = false
+        showingTasks = false
+        showingCalendar = false
+        showingMusic = true
+    }
+
     /// Back to the full list.
     func browse() {
         selectedID = nil
@@ -790,6 +805,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingCalendar = false
+        showingMusic = false
         showingClips = false
         slackTarget = nil
         clipsInline = false
@@ -852,6 +868,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingCalendar = false
+        showingMusic = false
         showingClips = false
         slackTarget = nil
         clipsInline = false
@@ -871,6 +888,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingCalendar = false
+        showingMusic = false
         showingClips = false
         slackTarget = nil
         clipsInline = false
@@ -898,6 +916,7 @@ final class NotchUI {
         showingProfiles = false
         showingTasks = false
         showingCalendar = false
+        showingMusic = false
         showingClips = false
         slackTarget = nil
         clipsInline = false
